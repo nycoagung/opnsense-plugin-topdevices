@@ -37,7 +37,7 @@ export default class TopDevices extends BaseWidget {
 
         this.state = {
             range: '24h', chart: 'pie', network: '', search: '',
-            sortKey: 'total', sortDir: 'desc',
+            sortKey: 'total', sortDir: 'desc', rowsN: 0,
             customFrom: '', customTo: '',
             rows: [], window: null, selected: null
         };
@@ -57,8 +57,8 @@ export default class TopDevices extends BaseWidget {
         return {
             rowsToShow: {
                 id: 'rowsToShow', title: 'Devices to show', type: 'select',
-                options: ['5', '10', '15', '20', '30', '50'].map(v => ({ value: v, label: v })),
-                default: '10', required: true
+                options: ['10', '20', '50', '100'].map(v => ({ value: v, label: v })),
+                default: '20', required: true
             },
             defaultRange: {
                 id: 'defaultRange', title: 'Default range', type: 'select',
@@ -90,7 +90,7 @@ export default class TopDevices extends BaseWidget {
             const s = this.state;
             localStorage.setItem(this.STORE, JSON.stringify({
                 range: s.range, chart: s.chart, network: s.network, search: s.search,
-                sortKey: s.sortKey, sortDir: s.sortDir,
+                sortKey: s.sortKey, sortDir: s.sortDir, rowsN: s.rowsN,
                 customFrom: s.customFrom, customTo: s.customTo
             }));
         } catch (e) { /* private mode / storage disabled - not fatal */ }
@@ -341,6 +341,12 @@ export default class TopDevices extends BaseWidget {
                 <select class="td-network" style="${selCss}width:140px;"></select>
                 <input type="text" class="form-control input-sm td-search" placeholder="Filter name or IP"
                        style="height:30px;font-size:12px;flex:1 1 140px;min-width:110px;"/>
+                <select class="td-rows" style="${selCss}width:96px;" title="Rows to show">
+                    <option value="10">10 rows</option>
+                    <option value="20">20 rows</option>
+                    <option value="50">50 rows</option>
+                    <option value="100">100 rows</option>
+                </select>
                 <div class="btn-group btn-group-sm td-chartbtns" style="flex:0 0 auto;">
                     <button type="button" class="btn btn-default" data-chart="pie">Pie</button>
                     <button type="button" class="btn btn-default" data-chart="bar">Bar</button>
@@ -357,17 +363,21 @@ export default class TopDevices extends BaseWidget {
             </div>
             <div class="td-window" style="margin-bottom:4px;"><small class="text-muted"></small></div>
             <div class="td-chartbox" style="height:175px;margin:4px 0;"><canvas class="td-canvas"></canvas></div>
-            <table class="table table-condensed table-hover" style="margin-bottom:4px;">
-                <thead><tr>
-                    <th class="td-sort" data-key="name"  style="cursor:pointer;text-align:left;">Device</th>
-                    <th class="td-sort" data-key="net"   style="cursor:pointer;text-align:left;">Network</th>
-                    <th class="td-sort" data-key="down"  style="cursor:pointer;text-align:right;">Down</th>
-                    <th class="td-sort" data-key="up"    style="cursor:pointer;text-align:right;">Up</th>
-                    <th class="td-sort" data-key="total" style="cursor:pointer;text-align:right;">Total</th>
-                </tr></thead>
-                <tbody class="td-body"></tbody>
-            </table>
-            <div class="td-details"></div>
+            <div class="td-main" style="display:flex;gap:12px;align-items:flex-start;">
+                <div class="td-tablewrap" style="flex:1 1 auto;min-width:0;max-height:420px;overflow-y:auto;">
+                    <table class="table table-condensed table-hover" style="margin-bottom:4px;">
+                        <thead style="position:sticky;top:0;z-index:2;background:inherit;box-shadow:inset 0 -1px 0 #ddd;"><tr>
+                            <th class="td-sort" data-key="name"  style="cursor:pointer;text-align:left;">Device</th>
+                            <th class="td-sort" data-key="net"   style="cursor:pointer;text-align:left;">Network</th>
+                            <th class="td-sort" data-key="down"  style="cursor:pointer;text-align:right;">Down</th>
+                            <th class="td-sort" data-key="up"    style="cursor:pointer;text-align:right;">Up</th>
+                            <th class="td-sort" data-key="total" style="cursor:pointer;text-align:right;">Total</th>
+                        </tr></thead>
+                        <tbody class="td-body"></tbody>
+                    </table>
+                </div>
+                <div class="td-details" style="flex:0 0 310px;position:sticky;top:0;"></div>
+            </div>
         </div>`);
     }
 
@@ -383,6 +393,8 @@ export default class TopDevices extends BaseWidget {
         await this._loadNetworks();
         this._fillNetworkSelect();
 
+        if (!this.state.rowsN) this.state.rowsN = parseInt(cfg.rowsToShow, 10) || 20;
+        $('.td-rows').val(String(this.state.rowsN));
         $('.td-range').val(this.state.range);
         $('.td-search').val(this.state.search);
         $('.td-network').val(this.state.network);
@@ -392,6 +404,7 @@ export default class TopDevices extends BaseWidget {
         $('.td-custom').css('display', this.state.range === 'custom' ? 'flex' : 'none');
 
         this._bind();
+        this._applyLayout();
         await this.refresh();
     }
 
@@ -425,6 +438,10 @@ export default class TopDevices extends BaseWidget {
         });
         $(document).on('input.topdevices', '.td-search', function () {
             self.state.search = $(this).val().toLowerCase().trim(); self._saveView(); self.render();
+        });
+        $(document).on('change.topdevices', '.td-rows', function () {
+            self.state.rowsN = parseInt($(this).val(), 10) || 20;
+            self._saveView(); self.render();
         });
         $(document).on('click.topdevices', '.td-chartbtns button', function () {
             self.state.chart = $(this).data('chart'); self._saveView(); self.render();
@@ -483,8 +500,12 @@ export default class TopDevices extends BaseWidget {
 
     async render() {
         const cfg = await this.getWidgetConfig() || {};
-        const limit = parseInt(cfg.rowsToShow, 10) || 10;
-        const rows = this._visibleRows().slice(0, limit);
+        const limit = this.state.rowsN || parseInt(cfg.rowsToShow, 10) || 20;
+        const all = this._visibleRows();
+        const rows = all.slice(0, limit);
+        // A pie or bar of 100 devices is unreadable, so the chart always shows the
+        // top 10 regardless of table length - labelled, never a silent truncation.
+        const CHART_MAX = 10;
 
         if (this.state.window) {
             $('.td-window small').text(
@@ -516,8 +537,14 @@ export default class TopDevices extends BaseWidget {
                     <td style="text-align:right;"><strong>${this._fmt(r.total)}</strong></td></tr>`;
             }).join(''));
         }
-        this._renderChart(rows);
-        if (!this.state.selected) $('.td-details').empty();
+        this._renderChart(rows.slice(0, CHART_MAX));
+        if (rows.length > CHART_MAX && this.state.chart !== 'none') {
+            $('.td-window small').append(
+                `<span class="text-muted"> \u00b7 chart: top ${CHART_MAX} of ${rows.length}</span>`);
+        }
+        if (!this.state.selected) {
+            $('.td-details').html('<small class="text-muted">Select a device for detail</small>');
+        }
     }
 
     _renderChart(rows) {
@@ -605,7 +632,38 @@ export default class TopDevices extends BaseWidget {
             </div>`);
     }
 
-    onWidgetResize() { if (this.chartObj) this.chartObj.resize(); return true; }
+    // Side-by-side needs room. Below ~780px the details column would squeeze the
+    // table into unreadability, so fall back to stacking it underneath.
+    _applyLayout() {
+        const w = $('.td-wrap').width() || 0;
+        const narrow = w > 0 && w < 780;
+        $('.td-main').css({ display: narrow ? 'block' : 'flex' });
+        $('.td-details').css({
+            flex: narrow ? '' : '0 0 310px',
+            width: narrow ? '100%' : '',
+            position: narrow ? 'static' : 'sticky',
+            marginTop: narrow ? '8px' : ''
+        });
+        $('.td-tablewrap').css({ maxHeight: narrow ? '' : '420px' });
+
+        // A sticky header inside a scrolling box needs an opaque background or the
+        // rows scroll through it. 'inherit' resolves to transparent, so walk up to
+        // the first ancestor that actually paints one - which keeps this working on
+        // dark themes instead of hardcoding white.
+        let bg = '', $p = $('.td-wrap');
+        while ($p.length && (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)')) {
+            bg = $p.css('background-color');
+            $p = $p.parent();
+        }
+        $('.td-tablewrap thead').css('background-color',
+            (bg && bg !== 'rgba(0, 0, 0, 0)') ? bg : '#fff');
+    }
+
+    onWidgetResize() {
+        this._applyLayout();
+        if (this.chartObj) this.chartObj.resize();
+        return true;
+    }
 
     onWidgetClose() {
         $(document).off('.topdevices');
