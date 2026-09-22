@@ -6,6 +6,7 @@
             <endpoint>/api/diagnostics/networkinsight/*</endpoint>
             <endpoint>/api/interfaces/overview/export</endpoint>
             <endpoint>/api/dnsmasq/leases/search</endpoint>
+            <endpoint>/api/dnsmasq/settings/searchHost</endpoint>
         </endpoints>
         <translations>
             <title>Top Devices</title>
