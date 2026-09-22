@@ -1,30 +1,31 @@
 /*
  * TopDevices.js - OPNsense dashboard widget
  *
- * Top local devices by traffic, from the built-in NetFlow/Insight aggregator.
- * Date-range picker, network/name/IP filtering, sortable columns, per-device
- * drill-down and pie/bar charts.
+ * Top local devices by traffic, split into download/upload, from the built-in
+ * NetFlow/Insight aggregator. Preset and custom date ranges, filtering by
+ * network / hostname / IP, sortable columns, per-device drill-down and charts.
  *
- * NOTHING IS HARDCODED:
- *   - local networks are derived from the firewall's own interface config
- *   - hostnames come from DHCP leases
- *   - row count, default range, default chart and refresh interval are
- *     widget configuration options
+ * NOTHING IS HARDCODED: local networks are derived from the firewall's own
+ * interface config; hostnames come from DHCP leases; row count, default range,
+ * default chart and refresh interval are widget options. View selections are
+ * remembered in localStorage.
  *
- * TWO LIMITATIONS OF THE UPSTREAM API, BOTH MEASURED, NOT ASSUMED:
+ * WHY THE DETAIL EXPORT RATHER THAN THE `top` ENDPOINT:
+ * `top` returns one scalar per address and has no notion of direction, so it
+ * cannot produce a download/upload split. It also ignores filter arguments
+ * entirely (eight syntaxes tested, all byte-identical). The detail export is
+ * the only source that carries direction, so it backs the table, the chart and
+ * the drill-down alike - fetched once per range and cached, which is why the
+ * default refresh is deliberately slow.
  *
- * 1. The Insight `top` endpoint ignores filter arguments entirely (eight
- *    different syntaxes tested, all byte-identical). Per-device drill-down
- *    therefore has to pull the full detail export and filter in the browser,
- *    which is why details load on demand and are cached per range.
+ * ATTRIBUTION: totals are keyed on dst_addr. NetFlow records each flow once per
+ * interface it crosses, with src/dst swapped between observations, so matching
+ * "device is src OR dst" double-counts every byte and makes the direction split
+ * meaningless (both halves come out identical). Keying on destination counts
+ * each flow once; verified to within 0.1% against the `top` leaderboard.
  *
- * 2. Windows wider than a few hours snap to whole day buckets aligned to UTC
- *    midnight - a 6h and a 24h query return identical totals. "Today" and
- *    "Yesterday" are therefore approximate. The widget always prints the
- *    window it actually asked for so the figure is never silently wrong.
- *
- * The figures are TOTAL traffic per device, internal plus internet. An NVR
- * pulling camera streams will dominate; that traffic never reaches the WAN.
+ * Figures are TOTAL traffic - internal plus internet. An NVR pulling camera
+ * streams will dominate with traffic that never reaches the WAN.
  */
 
 export default class TopDevices extends BaseWidget {
@@ -32,28 +33,23 @@ export default class TopDevices extends BaseWidget {
     constructor(config) {
         super(config);
         this.configurable = true;
+        this.STORE = 'opnsense.topdevices.view';
 
         this.state = {
-            range: '24h',
-            chart: 'pie',
-            network: '',
-            search: '',
-            sortKey: 'total',
-            sortDir: 'desc',
-            rows: [],
-            selected: null
+            range: '24h', chart: 'pie', network: '', search: '',
+            sortKey: 'total', sortDir: 'desc',
+            customFrom: '', customTo: '',
+            rows: [], window: null, selected: null
         };
 
-        this.networks = [];      // [{key, label, net, mask}] derived from the firewall
-        this.names = {};         // ip -> hostname, from DHCP leases
-        this.detailCache = {};   // range -> parsed export rows
+        this.networks = [];
+        this.names = {};
+        this.cache = {};          // cacheKey -> parsed export rows
         this.chartObj = null;
         this.loading = false;
     }
 
-    getGridOptions() {
-        return { sizeToContent: 900 };
-    }
+    getGridOptions() { return { sizeToContent: 1000 }; }
 
     async getWidgetOptions() {
         return {
@@ -69,27 +65,45 @@ export default class TopDevices extends BaseWidget {
             },
             defaultChart: {
                 id: 'defaultChart', title: 'Default chart', type: 'select',
-                options: [
-                    { value: 'pie', label: 'Pie' },
-                    { value: 'bar', label: 'Bar' },
-                    { value: 'none', label: 'None' }
-                ],
+                options: [{ value: 'pie', label: 'Pie' }, { value: 'bar', label: 'Bar' }, { value: 'none', label: 'Off' }],
                 default: 'pie', required: true
             },
             refreshInterval: {
                 id: 'refreshInterval', title: 'Refresh interval', type: 'select',
                 options: [
-                    { value: '60', label: '1 minute' },
                     { value: '300', label: '5 minutes' },
                     { value: '900', label: '15 minutes' },
+                    { value: '1800', label: '30 minutes' },
                     { value: '3600', label: '1 hour' }
                 ],
-                default: '300', required: true
+                default: '900', required: true
             }
         };
     }
 
-    /* ---------- ranges (computed, never hardcoded timestamps) ---------- */
+    /* ---------- view state persistence ---------- */
+
+    _saveView() {
+        try {
+            const s = this.state;
+            localStorage.setItem(this.STORE, JSON.stringify({
+                range: s.range, chart: s.chart, network: s.network, search: s.search,
+                sortKey: s.sortKey, sortDir: s.sortDir,
+                customFrom: s.customFrom, customTo: s.customTo
+            }));
+        } catch (e) { /* private mode / storage disabled - not fatal */ }
+    }
+
+    _loadView() {
+        try {
+            const raw = localStorage.getItem(this.STORE);
+            if (!raw) return null;
+            const v = JSON.parse(raw);
+            return (v && typeof v === 'object') ? v : null;
+        } catch (e) { return null; }
+    }
+
+    /* ---------- ranges ---------- */
 
     _ranges() {
         return [
@@ -97,23 +111,73 @@ export default class TopDevices extends BaseWidget {
             { key: '24h',       label: 'Last 24 hours' },
             { key: 'today',     label: 'Today' },
             { key: 'yesterday', label: 'Yesterday' },
-            { key: '7d',        label: 'Last 7 days' }
+            { key: '7d',        label: 'Last 7 days' },
+            { key: 'custom',    label: 'Custom range' }
         ];
     }
 
     _window(key) {
         const now = new Date();
-        const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000;
+        const mid = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
         const s = Math.floor(now.getTime() / 1000);
         const DAY = 86400;
         switch (key) {
             case '1h':        return [s - 3600, s];
-            case 'today':     return [Math.floor(midnight), s];
-            case 'yesterday': return [Math.floor(midnight) - DAY, Math.floor(midnight)];
+            case 'today':     return [mid, s];
+            case 'yesterday': return [mid - DAY, mid];
             case '7d':        return [s - (7 * DAY), s];
+            case 'custom': {
+                const f = this._localToEpoch(this.state.customFrom);
+                const t = this._localToEpoch(this.state.customTo);
+                if (f && t && t > f) return [f, t];
+                return [s - DAY, s];
+            }
             case '24h':
             default:          return [s - DAY, s];
         }
+    }
+
+    _localToEpoch(v) {
+        if (!v) return null;
+        const d = new Date(v);                       // datetime-local is parsed as local time
+        return isNaN(d.getTime()) ? null : Math.floor(d.getTime() / 1000);
+    }
+
+    _epochToLocal(ts) {
+        const d = new Date(ts * 1000);
+        const p = (x) => String(x).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+
+    // OPNsense/Unix `date` format, e.g. "Tue Sep 22 12:08:17 AEST 2026"
+    _dateStr(ts) {
+        const d = new Date(ts * 1000);
+        const p = (x) => String(x).padStart(2, '0');
+        const dow = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()];
+        const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
+        return `${dow} ${mon} ${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} `
+             + `${this._tzAbbr(d)} ${d.getFullYear()}`;
+    }
+
+    // "Australian Eastern Standard Time" -> "AEST". Browsers differ here, so try
+    // the long name first, then Intl's short name, then the raw GMT offset.
+    _tzAbbr(d) {
+        const m = String(d.toTimeString()).match(/\(([^)]+)\)/);
+        if (m && m[1]) {
+            const words = m[1].split(/[\s-]+/).filter(w => /^[A-Za-z]/.test(w));
+            if (words.length > 1) return words.map(w => w[0].toUpperCase()).join('');
+            if (words.length === 1) return words[0];
+        }
+        try {
+            const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' }).formatToParts(d);
+            const tz = parts.find(p => p.type === 'timeZoneName');
+            if (tz) return tz.value;
+        } catch (e) { /* fall through */ }
+        const off = -d.getTimezoneOffset();
+        const sg = off >= 0 ? '+' : '-';
+        return `GMT${sg}${String(Math.floor(Math.abs(off) / 60)).padStart(2, '0')}`
+             + String(Math.abs(off) % 60).padStart(2, '0');
     }
 
     /* ---------- helpers ---------- */
@@ -126,9 +190,7 @@ export default class TopDevices extends BaseWidget {
         return `${n.toFixed(1)} ${u[i]}`;
     }
 
-    _esc(s) {
-        return $('<div>').text(s === null || s === undefined ? '' : String(s)).html();
-    }
+    _esc(s) { return $('<div>').text(s === null || s === undefined ? '' : String(s)).html(); }
 
     _ip2int(ip) {
         const p = String(ip).split('.');
@@ -142,31 +204,12 @@ export default class TopDevices extends BaseWidget {
         return v;
     }
 
-    _inNet(ip, entry) {
-        const v = this._ip2int(ip);
-        return v !== null && (v & entry.mask) === entry.net;
-    }
-
-    _isLocal(ip) {
-        return this.networks.some(n => this._inNet(ip, n));
-    }
-
-    _netOf(ip) {
-        const hit = this.networks.find(n => this._inNet(ip, n));
-        return hit ? hit.key : '';
-    }
-
-    _stamp(ts) {
-        const d = new Date(ts * 1000);
-        const p = (x) => String(x).padStart(2, '0');
-        return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
-    }
+    _inNet(ip, e) { const v = this._ip2int(ip); return v !== null && (v & e.mask) === e.net; }
+    _isLocal(ip)  { return this.networks.some(n => this._inNet(ip, n)); }
+    _netOf(ip)    { const h = this.networks.find(n => this._inNet(ip, n)); return h ? h.key : ''; }
 
     /* ---------- data ---------- */
 
-    // Local networks come from the firewall's interface config. Anything
-    // outside RFC1918 is treated as upstream (a public WAN subnet is not a
-    // set of local devices), so this adapts to any installation.
     async _loadNetworks() {
         const rfc1918 = [
             { net: this._ip2int('10.0.0.0'),    mask: (0xff000000 | 0) },
@@ -174,24 +217,19 @@ export default class TopDevices extends BaseWidget {
             { net: this._ip2int('192.168.0.0'), mask: (0xffff0000 | 0) }
         ];
         const isPrivate = (v) => rfc1918.some(r => (v & r.mask) === (r.net & r.mask));
-
         let data = [];
-        try {
-            data = await this.ajaxCall('/api/interfaces/overview/export');
-        } catch (e) {
-            data = [];
-        }
+        try { data = await this.ajaxCall('/api/interfaces/overview/export'); } catch (e) { data = []; }
         const items = Array.isArray(data) ? data : (data.rows || []);
         const out = [];
         items.forEach((i) => {
             if (!i || typeof i !== 'object' || !i.identifier || !i.addr4) return;
-            const cidr = String(i.addr4).split('/');
-            const addr = this._ip2int(cidr[0]);
-            const bits = parseInt(cidr[1], 10);
+            const c = String(i.addr4).split('/');
+            const addr = this._ip2int(c[0]);
+            const bits = parseInt(c[1], 10);
             if (addr === null || isNaN(bits) || bits < 8 || bits > 32) return;
             const mask = bits === 0 ? 0 : ((0xffffffff << (32 - bits)) | 0);
             const net = (addr & mask) | 0;
-            if (!isPrivate(net)) return;                       // drops WAN / loopback
+            if (!isPrivate(net)) return;                 // drops WAN and loopback
             out.push({ key: i.identifier, label: i.description || i.identifier, net: net, mask: mask });
         });
         this.networks = out;
@@ -199,47 +237,19 @@ export default class TopDevices extends BaseWidget {
 
     async _loadNames() {
         try {
-            const r = await this.ajaxCall('/api/dnsmasq/leases/search',
-                JSON.stringify({ rowCount: 1000 }), 'POST');
+            const r = await this.ajaxCall('/api/dnsmasq/leases/search', JSON.stringify({ rowCount: 1000 }), 'POST');
             const map = {};
             ((r && r.rows) || []).forEach(l => { if (l.address && l.hostname) map[l.address] = l.hostname; });
             this.names = map;
-        } catch (e) {
-            this.names = {};
-        }
+        } catch (e) { this.names = {}; }
     }
 
-    async _loadTop() {
-        const cfg = await this.getWidgetConfig() || {};
-        const limit = Math.max(50, (parseInt(cfg.rowsToShow, 10) || 10) * 6);
-        const [from, to] = this._window(this.state.range);
-        const raw = await this.ajaxCall(
-            `/api/diagnostics/networkinsight/top/FlowSourceAddrDetails/${from}/${to}/dst_addr/octets/${limit}`
-        );
-        const rows = [];
-        (Array.isArray(raw) ? raw : []).forEach((r) => {
-            const ip = r.dst_addr;
-            // the API appends a summary row with an empty address
-            if (!ip || !this._isLocal(ip)) return;
-            rows.push({
-                ip: ip,
-                name: this.names[ip] || '',
-                net: this._netOf(ip),
-                total: parseFloat(r.total) || 0
-            });
-        });
-        this.state.rows = rows;
-        this.state.window = [from, to];
-    }
-
-    // Detail export is large (megabytes) and unfilterable server-side, so it is
-    // fetched only when a device is opened, and cached per range.
-    async _loadDetail(range) {
-        if (this.detailCache[range]) return this.detailCache[range];
-        const [from, to] = this._window(range);
+    async _export(from, to) {
+        const key = `${from}-${to}`;
+        if (this.cache[key]) return this.cache[key];
         const url = `/api/diagnostics/networkinsight/export/FlowSourceAddrDetails/${from}/${to}/86400/src_addr/octets`;
         const text = await new Promise((resolve, reject) => {
-            $.ajax({ url: url, dataType: 'text', timeout: 120000 })
+            $.ajax({ url: url, dataType: 'text', timeout: 180000 })
                 .done(resolve).fail(() => reject(new Error('export failed')));
         });
         const lines = text.split('\n');
@@ -252,40 +262,70 @@ export default class TopDevices extends BaseWidget {
             const c = line.split(',');
             rows.push({
                 src: c[ix.src_addr], dst: c[ix.dst_addr],
-                port: c[ix.service_port], proto: c[ix.protocol],
-                dir: c[ix.direction], iface: c[ix['if']],
+                port: c[ix.service_port], dir: c[ix.direction],
                 octets: parseFloat(c[ix.octets]) || 0
             });
         });
-        this.detailCache[range] = rows;
+        this.cache = {};                 // keep only the current range
+        this.cache[key] = rows;
         return rows;
+    }
+
+    async _load() {
+        const [from, to] = this._window(this.state.range);
+        const flows = await this._export(from, to);
+        const acc = {};
+        flows.forEach((r) => {
+            const ip = r.dst;            // dst-keyed: see ATTRIBUTION above
+            if (!ip || !this._isLocal(ip)) return;
+            if (!acc[ip]) acc[ip] = { ip: ip, down: 0, up: 0 };
+            if (r.dir === 'out') acc[ip].up += r.octets; else acc[ip].down += r.octets;
+        });
+        this.state.rows = Object.values(acc).map(d => ({
+            ip: d.ip, name: this.names[d.ip] || '', net: this._netOf(d.ip),
+            down: d.down, up: d.up, total: d.down + d.up
+        }));
+        this.state.window = [from, to];
     }
 
     /* ---------- markup ---------- */
 
     getMarkup() {
-        const ranges = this._ranges()
-            .map(r => `<option value="${r.key}">${this._esc(r.label)}</option>`).join('');
+        const ranges = this._ranges().map(r => `<option value="${r.key}">${this._esc(r.label)}</option>`).join('');
+        // explicit widths: `width:auto` on a select inside a flex row collapses
+        // and clips the label in the OPNsense theme
+        const selCss = 'height:30px;padding:3px 24px 3px 8px;font-size:12px;'
+                     + 'border:1px solid #ccc;border-radius:3px;background-color:#fff;flex:0 0 auto;';
         return $(`
         <div class="td-wrap">
-            <div class="td-controls" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;">
-                <select class="form-control input-sm td-range" style="width:auto;flex:0 0 auto;">${ranges}</select>
-                <select class="form-control input-sm td-network" style="width:auto;flex:0 0 auto;"></select>
+            <div class="td-controls" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px;">
+                <select class="td-range"   style="${selCss}width:140px;">${ranges}</select>
+                <select class="td-network" style="${selCss}width:140px;"></select>
                 <input type="text" class="form-control input-sm td-search" placeholder="Filter name or IP"
-                       style="width:auto;flex:1 1 120px;min-width:100px;"/>
+                       style="height:30px;font-size:12px;flex:1 1 140px;min-width:110px;"/>
                 <div class="btn-group btn-group-sm td-chartbtns" style="flex:0 0 auto;">
                     <button type="button" class="btn btn-default" data-chart="pie">Pie</button>
                     <button type="button" class="btn btn-default" data-chart="bar">Bar</button>
                     <button type="button" class="btn btn-default" data-chart="none">Off</button>
                 </div>
             </div>
-            <div class="td-window"><small class="text-muted"></small></div>
-            <div class="td-chartbox" style="height:170px;margin:4px 0;"><canvas class="td-canvas"></canvas></div>
+            <div class="td-custom" style="display:none;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">
+                <input type="datetime-local" step="1" class="form-control input-sm td-from"
+                       style="height:30px;font-size:12px;width:210px;"/>
+                <span class="text-muted">&rarr;</span>
+                <input type="datetime-local" step="1" class="form-control input-sm td-to"
+                       style="height:30px;font-size:12px;width:210px;"/>
+                <button type="button" class="btn btn-primary btn-sm td-apply">Apply</button>
+            </div>
+            <div class="td-window" style="margin-bottom:4px;"><small class="text-muted"></small></div>
+            <div class="td-chartbox" style="height:175px;margin:4px 0;"><canvas class="td-canvas"></canvas></div>
             <table class="table table-condensed table-hover" style="margin-bottom:4px;">
                 <thead><tr>
-                    <th class="td-sort" data-key="name"  style="cursor:pointer;">Device</th>
-                    <th class="td-sort" data-key="net"   style="cursor:pointer;">Network</th>
-                    <th class="td-sort" data-key="total" style="cursor:pointer;text-align:right;">Traffic</th>
+                    <th class="td-sort" data-key="name"  style="cursor:pointer;text-align:left;">Device</th>
+                    <th class="td-sort" data-key="net"   style="cursor:pointer;text-align:left;">Network</th>
+                    <th class="td-sort" data-key="down"  style="cursor:pointer;text-align:right;">Down</th>
+                    <th class="td-sort" data-key="up"    style="cursor:pointer;text-align:right;">Up</th>
+                    <th class="td-sort" data-key="total" style="cursor:pointer;text-align:right;">Total</th>
                 </tr></thead>
                 <tbody class="td-body"></tbody>
             </table>
@@ -297,23 +337,31 @@ export default class TopDevices extends BaseWidget {
         const cfg = await this.getWidgetConfig() || {};
         this.state.range = cfg.defaultRange || '24h';
         this.state.chart = cfg.defaultChart || 'pie';
-        this.tickTimeout = parseInt(cfg.refreshInterval, 10) || 300;
+        this.tickTimeout = parseInt(cfg.refreshInterval, 10) || 900;
 
-        $('.td-range', this.$widget || document).val(this.state.range);
+        const saved = this._loadView();
+        if (saved) Object.assign(this.state, saved);
 
         await this._loadNetworks();
         this._fillNetworkSelect();
+
+        $('.td-range').val(this.state.range);
+        $('.td-search').val(this.state.search);
+        $('.td-network').val(this.state.network);
+        const [f, t] = this._window(this.state.range);
+        $('.td-from').val(this.state.customFrom || this._epochToLocal(f));
+        $('.td-to').val(this.state.customTo || this._epochToLocal(t));
+        $('.td-custom').css('display', this.state.range === 'custom' ? 'flex' : 'none');
+
         this._bind();
         await this.refresh();
     }
 
     _fillNetworkSelect() {
-        const $sel = $('.td-network');
-        $sel.empty().append('<option value="">All networks</option>');
-        this.networks.forEach(n => {
-            $sel.append(`<option value="${this._esc(n.key)}">${this._esc(n.label)}</option>`);
-        });
-        $sel.val(this.state.network);
+        const $s = $('.td-network');
+        $s.empty().append('<option value="">All networks</option>');
+        this.networks.forEach(n => $s.append(`<option value="${this._esc(n.key)}">${this._esc(n.label)}</option>`));
+        $s.val(this.state.network);
     }
 
     _bind() {
@@ -323,29 +371,31 @@ export default class TopDevices extends BaseWidget {
         $(document).on('change.topdevices', '.td-range', function () {
             self.state.range = $(this).val();
             self.state.selected = null;
+            $('.td-custom').css('display', self.state.range === 'custom' ? 'flex' : 'none');
+            self._saveView();
+            if (self.state.range !== 'custom') self.refresh();
+        });
+        $(document).on('click.topdevices', '.td-apply', function () {
+            self.state.customFrom = $('.td-from').val();
+            self.state.customTo = $('.td-to').val();
+            self.state.selected = null;
+            self._saveView();
             self.refresh();
         });
         $(document).on('change.topdevices', '.td-network', function () {
-            self.state.network = $(this).val();
-            self.render();
+            self.state.network = $(this).val(); self._saveView(); self.render();
         });
         $(document).on('input.topdevices', '.td-search', function () {
-            self.state.search = $(this).val().toLowerCase().trim();
-            self.render();
+            self.state.search = $(this).val().toLowerCase().trim(); self._saveView(); self.render();
         });
         $(document).on('click.topdevices', '.td-chartbtns button', function () {
-            self.state.chart = $(this).data('chart');
-            self.render();
+            self.state.chart = $(this).data('chart'); self._saveView(); self.render();
         });
         $(document).on('click.topdevices', '.td-sort', function () {
-            const key = $(this).data('key');
-            if (self.state.sortKey === key) {
-                self.state.sortDir = self.state.sortDir === 'asc' ? 'desc' : 'asc';
-            } else {
-                self.state.sortKey = key;
-                self.state.sortDir = key === 'total' ? 'desc' : 'asc';
-            }
-            self.render();
+            const k = $(this).data('key');
+            if (self.state.sortKey === k) self.state.sortDir = self.state.sortDir === 'asc' ? 'desc' : 'asc';
+            else { self.state.sortKey = k; self.state.sortDir = (k === 'name' || k === 'net') ? 'asc' : 'desc'; }
+            self._saveView(); self.render();
         });
         $(document).on('click.topdevices', '.td-body tr', function () {
             const ip = $(this).data('ip');
@@ -358,25 +408,21 @@ export default class TopDevices extends BaseWidget {
     async refresh() {
         if (this.loading) return;
         this.loading = true;
+        $('.td-window small').text('Loading…');
         try {
             await this._loadNames();
-            await this._loadTop();
+            await this._load();
             this.render();
             if (this.state.selected) this.renderDetails(this.state.selected);
         } catch (e) {
-            $('.td-body').html('<tr><td colspan="3" class="text-danger">Unable to read NetFlow data</td></tr>');
-        } finally {
-            this.loading = false;
-        }
+            $('.td-body').html('<tr><td colspan="5" class="text-danger">Unable to read NetFlow data</td></tr>');
+            $('.td-window small').text('');
+        } finally { this.loading = false; }
     }
 
-    async onWidgetTick() {
-        await this.refresh();
-    }
+    async onWidgetTick() { await this.refresh(); }
 
-    async onWidgetOptionsChanged() {
-        await this.onMarkupRendered();
-    }
+    async onWidgetOptionsChanged() { await this.onMarkupRendered(); }
 
     /* ---------- render ---------- */
 
@@ -385,16 +431,14 @@ export default class TopDevices extends BaseWidget {
         let rows = s.rows.slice();
         if (s.network) rows = rows.filter(r => r.net === s.network);
         if (s.search) {
-            rows = rows.filter(r =>
-                r.ip.toLowerCase().indexOf(s.search) !== -1 ||
-                (r.name && r.name.toLowerCase().indexOf(s.search) !== -1));
+            rows = rows.filter(r => r.ip.toLowerCase().indexOf(s.search) !== -1 ||
+                                    (r.name && r.name.toLowerCase().indexOf(s.search) !== -1));
         }
         const dir = s.sortDir === 'asc' ? 1 : -1;
         rows.sort((a, b) => {
-            let av = a[s.sortKey], bv = b[s.sortKey];
-            if (s.sortKey === 'name') { av = (a.name || a.ip); bv = (b.name || b.ip); }
-            if (typeof av === 'string') return av.localeCompare(bv) * dir;
-            return (av - bv) * dir;
+            if (s.sortKey === 'name') return String(a.name || a.ip).localeCompare(String(b.name || b.ip)) * dir;
+            if (s.sortKey === 'net')  return String(a.net).localeCompare(String(b.net)) * dir;
+            return (a[s.sortKey] - b[s.sortKey]) * dir;
         });
         return rows;
     }
@@ -406,20 +450,19 @@ export default class TopDevices extends BaseWidget {
 
         if (this.state.window) {
             $('.td-window small').text(
-                `${this._stamp(this.state.window[0])} → ${this._stamp(this.state.window[1])}`);
+                `${this._dateStr(this.state.window[0])}  →  ${this._dateStr(this.state.window[1])}`);
         }
         $('.td-chartbtns button').removeClass('btn-primary').addClass('btn-default');
         $(`.td-chartbtns button[data-chart="${this.state.chart}"]`).removeClass('btn-default').addClass('btn-primary');
         $('.td-sort').each((i, el) => {
-            const k = $(el).data('key');
             $(el).find('.td-arrow').remove();
-            if (k === this.state.sortKey) {
+            if ($(el).data('key') === this.state.sortKey) {
                 $(el).append(`<span class="td-arrow"> ${this.state.sortDir === 'asc' ? '▲' : '▼'}</span>`);
             }
         });
 
         if (rows.length === 0) {
-            $('.td-body').html('<tr><td colspan="3" class="text-muted">No matching devices</td></tr>');
+            $('.td-body').html('<tr><td colspan="5" class="text-muted">No matching devices</td></tr>');
         } else {
             $('.td-body').html(rows.map((r) => {
                 const label = r.name
@@ -428,9 +471,11 @@ export default class TopDevices extends BaseWidget {
                 const net = this.networks.find(n => n.key === r.net);
                 const sel = this.state.selected === r.ip ? ' class="info"' : '';
                 return `<tr${sel} data-ip="${this._esc(r.ip)}" style="cursor:pointer;">
-                    <td>${label}</td>
-                    <td><small>${this._esc(net ? net.label : '')}</small></td>
-                    <td style="text-align:right;">${this._fmt(r.total)}</td></tr>`;
+                    <td style="text-align:left;">${label}</td>
+                    <td style="text-align:left;"><small>${this._esc(net ? net.label : '')}</small></td>
+                    <td style="text-align:right;">${this._fmt(r.down)}</td>
+                    <td style="text-align:right;">${this._fmt(r.up)}</td>
+                    <td style="text-align:right;"><strong>${this._fmt(r.total)}</strong></td></tr>`;
             }).join(''));
         }
         this._renderChart(rows);
@@ -439,32 +484,32 @@ export default class TopDevices extends BaseWidget {
 
     _renderChart(rows) {
         if (this.chartObj) { this.chartObj.destroy(); this.chartObj = null; }
-        if (this.state.chart === 'none' || rows.length === 0) {
-            $('.td-chartbox').hide();
-            return;
-        }
+        if (this.state.chart === 'none' || rows.length === 0) { $('.td-chartbox').hide(); return; }
         $('.td-chartbox').show();
-        const ctx = $('.td-canvas')[0];
-        if (!ctx) return;
+        const el = $('.td-canvas')[0];
+        if (!el) return;
         const labels = rows.map(r => r.name || r.ip);
-        const values = rows.map(r => r.total);
         const isPie = this.state.chart === 'pie';
-        this.chartObj = new Chart(ctx.getContext('2d'), {
+        const fmt = (v) => this._fmt(v);
+        this.chartObj = new Chart(el.getContext('2d'), {
             type: isPie ? 'doughnut' : 'bar',
             data: {
                 labels: labels,
-                datasets: [{ data: values, borderWidth: isPie ? 0 : 1 }]
+                datasets: isPie
+                    ? [{ data: rows.map(r => r.total), borderWidth: 0 }]
+                    : [{ label: 'Down', data: rows.map(r => r.down) },
+                       { label: 'Up',   data: rows.map(r => r.up) }]
             },
             options: {
-                responsive: true,
-                maintainAspectRatio: false,
+                responsive: true, maintainAspectRatio: false,
                 plugins: {
-                    legend: { display: isPie, position: 'right', labels: { boxWidth: 10, font: { size: 10 } } },
-                    tooltip: { callbacks: { label: (c) => `${c.label}: ${this._fmt(c.parsed.y ?? c.parsed)}` } }
+                    legend: { display: true, position: isPie ? 'right' : 'top',
+                              labels: { boxWidth: 10, font: { size: 10 } } },
+                    tooltip: { callbacks: { label: (c) => `${c.dataset.label || c.label}: ${fmt(c.parsed.y ?? c.parsed)}` } }
                 },
                 scales: isPie ? {} : {
-                    y: { ticks: { callback: (v) => this._fmt(v) } },
-                    x: { ticks: { font: { size: 9 } } }
+                    x: { stacked: true, ticks: { font: { size: 9 } } },
+                    y: { stacked: true, ticks: { callback: (v) => fmt(v) } }
                 }
             }
         });
@@ -472,53 +517,40 @@ export default class TopDevices extends BaseWidget {
 
     async renderDetails(ip) {
         const $d = $('.td-details');
-        $d.html('<small class="text-muted">Loading detail (large export, filtered in-browser)…</small>');
-        let rows;
-        try {
-            rows = await this._loadDetail(this.state.range);
-        } catch (e) {
-            $d.html('<small class="text-danger">Detail export unavailable for this range</small>');
-            return;
-        }
-        if (this.state.selected !== ip) return;   // selection changed while loading
+        const [from, to] = this.state.window || this._window(this.state.range);
+        let flows;
+        try { flows = await this._export(from, to); }
+        catch (e) { $d.html('<small class="text-danger">Detail unavailable for this range</small>'); return; }
+        if (this.state.selected !== ip) return;
 
         const peers = {}, ports = {};
-        let sent = 0, recv = 0;
-        // Count ONLY rows where the device is dst_addr. NetFlow records each flow
-        // once per interface it crosses, with src/dst swapped between the two
-        // observations, so matching "src OR dst" double-counts every byte and
-        // makes the in/out split meaningless (both halves come out identical).
-        // dst-keyed also matches how the leaderboard is built, so the detail
-        // figures add up to the row total.
-        rows.forEach((r) => {
-            if (r.dst !== ip) return;
+        let down = 0, up = 0;
+        flows.forEach((r) => {
+            if (r.dst !== ip) return;                 // dst-keyed, as above
             const peer = r.src;
             if (!peer) return;
             peers[peer] = (peers[peer] || 0) + r.octets;
-            const p = r.port && r.port !== '0' ? r.port : 'other';
+            const p = (r.port && r.port !== '0') ? r.port : 'other';
             ports[p] = (ports[p] || 0) + r.octets;
-            if (r.dir === 'out') sent += r.octets; else recv += r.octets;
+            if (r.dir === 'out') up += r.octets; else down += r.octets;
         });
-
         const topOf = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, 5);
-        const name = this.names[ip] || ip;
         const list = (pairs, resolve) => pairs.length
-            ? pairs.map(([k, v]) =>
-                `<tr><td>${this._esc(resolve ? (this.names[k] || k) : k)}</td>
-                     <td style="text-align:right;">${this._fmt(v)}</td></tr>`).join('')
+            ? pairs.map(([k, v]) => `<tr><td style="text-align:left;">${this._esc(resolve ? (this.names[k] || k) : k)}</td>`
+                                  + `<td style="text-align:right;">${this._fmt(v)}</td></tr>`).join('')
             : '<tr><td colspan="2" class="text-muted">none</td></tr>';
 
         $d.html(`
             <div style="border-top:1px solid #ddd;padding-top:6px;">
-                <strong>${this._esc(name)}</strong>
+                <strong>${this._esc(this.names[ip] || ip)}</strong>
                 <small class="text-muted">${this._esc(ip)}</small>
-                <div><small>in ${this._fmt(recv)} &middot; out ${this._fmt(sent)}</small></div>
+                <div><small>down ${this._fmt(down)} &middot; up ${this._fmt(up)}</small></div>
                 <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px;">
-                    <div style="flex:1 1 140px;">
+                    <div style="flex:1 1 150px;">
                         <small class="text-muted">Top peers</small>
                         <table class="table table-condensed" style="margin:0;">${list(topOf(peers), true)}</table>
                     </div>
-                    <div style="flex:1 1 100px;">
+                    <div style="flex:1 1 110px;">
                         <small class="text-muted">Top ports</small>
                         <table class="table table-condensed" style="margin:0;">${list(topOf(ports), false)}</table>
                     </div>
@@ -526,10 +558,7 @@ export default class TopDevices extends BaseWidget {
             </div>`);
     }
 
-    onWidgetResize() {
-        if (this.chartObj) this.chartObj.resize();
-        return true;
-    }
+    onWidgetResize() { if (this.chartObj) this.chartObj.resize(); return true; }
 
     onWidgetClose() {
         $(document).off('.topdevices');

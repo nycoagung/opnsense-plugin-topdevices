@@ -5,12 +5,18 @@ NetFlow/Insight aggregator. No extra collector required.
 
 ## Features
 
-- **Date range** — last hour, last 24 hours, today, yesterday, last 7 days
+- **Date range** — last hour, 24 hours, today, yesterday, 7 days, or a custom
+  from/to range picked to the second
+- **Download / upload split** per device, plus the combined total
 - **Filter** by network (LAN / IOT / GUEST / …), or free-text on hostname or IP
-- **Sort** by device name, network or traffic, ascending or descending
-- **Drill-down** — click a device for its top peers, top ports and in/out split
-- **Charts** — pie (doughnut) or bar, or off
+- **Sort** on any column, ascending or descending
+- **Drill-down** — click a device for its top peers, top ports and direction split
+- **Charts** — pie of totals, or a stacked bar of download vs upload
+- **Selections persist** across refreshes and reloads (localStorage)
 - **Configurable** — rows to show, default range, default chart, refresh interval
+
+The active window is shown in OPNsense's own date format, to the second and with
+the timezone, e.g. `Tue Sep 22 12:11:42 AEST 2026`.
 
 Nothing is hardcoded. Local networks are derived from the firewall's own
 interface configuration (anything outside RFC1918 is treated as upstream, so a
@@ -34,11 +40,14 @@ makes the drill-down reconcile with the table row (verified to within 0.1%).
 
 Both were measured against a live firewall, not assumed:
 
-1. **`top` ignores filter arguments.** Eight different filter syntaxes (path
-   segment, query string, `if=`, `direction=`, `dst_addr=`, …) all returned
-   byte-identical results. Per-device drill-down therefore pulls the full detail
-   export (~6 MB per day, ~3 s) and filters in the browser. It loads only when a
-   device is opened, and is cached per range.
+1. **`top` ignores filter arguments, and has no notion of direction.** Eight
+   filter syntaxes (path segment, query string, `if=`, `direction=`,
+   `dst_addr=`, …) all returned byte-identical results, and the endpoint returns
+   one scalar per address, so it cannot produce a download/upload split. The
+   detail export is therefore the source for the table, chart and drill-down
+   alike (~6 MB per day, ~3 s), fetched once per range and cached. That is why
+   the default refresh interval is deliberately slow — changing filters, sorting
+   or charts costs nothing, only changing the range refetches.
 
 2. **Wide windows snap to day buckets aligned to UTC midnight.** A 6-hour and a
    24-hour query return identical totals; only windows of roughly an hour return
