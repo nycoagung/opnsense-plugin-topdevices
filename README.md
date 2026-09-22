@@ -155,6 +155,44 @@ Requires a FreeBSD host matching the target ABI (26.7 / amd64 / FreeBSD 15.1):
 
 Rebuild whenever the OPNsense ABI changes (major releases).
 
+## What has been verified, and what has not
+
+Verified by measurement against a live firewall, not by reading the code:
+
+- **The download/upload split reconciles to 0.00%** against the `top` leaderboard
+  for every device, and the direction is semantically right — cameras read as
+  almost entirely upload, the NVR as almost entirely download, clients the
+  reverse.
+- **Local-network derivation** finds all five interface networks and correctly
+  rejects the public WAN, loopback and CGNAT `100.64/10` — the last of which a
+  naive "is private" check accepts.
+- **The drill-down reconciles** with its table row to within 0.1%, once keyed on
+  `dst_addr`; matching src-or-dst double-counts every byte and makes the
+  direction split come out identically 50/50.
+- **The date format** matches the firewall's own `date` output character for
+  character, including the timezone abbreviation.
+- **Cron self-heal works unattended** — observed pulling a new build and swapping
+  the widget on schedule with no manual trigger.
+
+**Not tested:** there are no automated tests. The data logic is the part worth
+covering; the sibling `os-parentalcontrol` plugin shows the shape (a pure
+function plus a table-driven suite that needs no OPNsense).
+
+**Known weakness in the installer.** It makes one GitHub API request per file —
+three per install, against an unauthenticated limit of 60 per hour **per public
+IP, which is the firewall's own address**. That is roughly 20 installs an hour,
+so it has not bitten here, but it is the same flaw that locked
+`os-parentalcontrol` out entirely at fifteen files. The better answer, used
+there, is a single `codeload.github.com` tarball: one request, no rate limit,
+and current content. Worth porting if this repo ever grows.
+
+Note also that the bootstrap one-liner above fetches `install.sh` from
+raw.githubusercontent, which is CDN-cached and lags pushes by minutes — and is
+cached *per edge*, so two machines can see different content at the same moment.
+That caused several installs here to silently fetch stale files and report
+success. Everything the installer subsequently fetches is SHA-verified; only
+that first hop is not.
+
 ## Requirements
 
 Reporting → NetFlow must be enabled with local aggregation on.
