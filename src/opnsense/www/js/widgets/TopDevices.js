@@ -37,7 +37,7 @@ export default class TopDevices extends BaseWidget {
 
         this.state = {
             range: '24h', chart: 'pie', network: '', search: '',
-            sortKey: 'total', sortDir: 'desc', rowsN: 0,
+            sortKey: 'total', sortDir: 'desc', rowsN: 0, detailN: 10,
             customFrom: '', customTo: '',
             rows: [], window: null, selected: null
         };
@@ -90,7 +90,7 @@ export default class TopDevices extends BaseWidget {
             const s = this.state;
             localStorage.setItem(this.STORE, JSON.stringify({
                 range: s.range, chart: s.chart, network: s.network, search: s.search,
-                sortKey: s.sortKey, sortDir: s.sortDir, rowsN: s.rowsN,
+                sortKey: s.sortKey, sortDir: s.sortDir, rowsN: s.rowsN, detailN: s.detailN,
                 customFrom: s.customFrom, customTo: s.customTo
             }));
         } catch (e) { /* private mode / storage disabled - not fatal */ }
@@ -326,6 +326,22 @@ export default class TopDevices extends BaseWidget {
         return name;
     }
 
+    // Resolve many addresses with bounded concurrency. Promise.all over 100 peers
+    // would queue behind the browser's ~6-per-host limit anyway and hammer the
+    // firewall; six workers keeps it responsive without capping the result set.
+    async _ptrMany(ips, limit) {
+        const out = new Array(ips.length);
+        let next = 0;
+        const worker = async () => {
+            while (next < ips.length) {
+                const i = next++;
+                out[i] = await this._ptr(ips[i]);
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(limit || 6, ips.length) }, worker));
+        return out;
+    }
+
     /* ---------- markup ---------- */
 
     getMarkup() {
@@ -336,11 +352,11 @@ export default class TopDevices extends BaseWidget {
                      + 'border:1px solid #ccc;border-radius:3px;background-color:#fff;flex:0 0 auto;';
         return $(`
         <div class="td-wrap">
-            <div class="td-controls" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px;">
+            <div class="td-controls" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:center;margin-bottom:6px;">
                 <select class="td-range"   style="${selCss}width:140px;">${ranges}</select>
                 <select class="td-network" style="${selCss}width:140px;"></select>
                 <input type="text" class="form-control input-sm td-search" placeholder="Filter name or IP"
-                       style="height:30px;font-size:12px;flex:1 1 140px;min-width:110px;"/>
+                       style="height:30px;font-size:12px;flex:0 1 320px;min-width:110px;"/>
                 <select class="td-rows" style="${selCss}width:96px;" title="Rows to show">
                     <option value="10">10 rows</option>
                     <option value="20">20 rows</option>
@@ -353,7 +369,7 @@ export default class TopDevices extends BaseWidget {
                     <button type="button" class="btn btn-default" data-chart="none">Off</button>
                 </div>
             </div>
-            <div class="td-custom" style="display:none;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px;">
+            <div class="td-custom" style="display:none;gap:6px;flex-wrap:wrap;align-items:center;justify-content:center;margin-bottom:6px;">
                 <input type="datetime-local" step="1" class="form-control input-sm td-from"
                        style="height:30px;font-size:12px;width:210px;"/>
                 <span class="text-muted">&rarr;</span>
@@ -438,6 +454,11 @@ export default class TopDevices extends BaseWidget {
         });
         $(document).on('input.topdevices', '.td-search', function () {
             self.state.search = $(this).val().toLowerCase().trim(); self._saveView(); self.render();
+        });
+        $(document).on('change.topdevices', '.td-detailrows', function () {
+            self.state.detailN = parseInt($(this).val(), 10) || 10;
+            self._saveView();
+            if (self.state.selected) self.renderDetails(self.state.selected);
         });
         $(document).on('change.topdevices', '.td-rows', function () {
             self.state.rowsN = parseInt($(this).val(), 10) || 20;
@@ -542,9 +563,8 @@ export default class TopDevices extends BaseWidget {
             $('.td-window small').append(
                 `<span class="text-muted"> \u00b7 chart: top ${CHART_MAX} of ${rows.length}</span>`);
         }
-        if (!this.state.selected) {
-            $('.td-details').html('<small class="text-muted">Select a device for detail</small>');
-        }
+        if (!this.state.selected) $('.td-details').empty();
+        this._applyLayout();
     }
 
     _renderChart(rows) {
@@ -599,10 +619,13 @@ export default class TopDevices extends BaseWidget {
             ports[p] = (ports[p] || 0) + r.octets;
             if (r.dir === 'out') up += r.octets; else down += r.octets;
         });
-        const topOf = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, 5);
+        const dn = this.state.detailN || 10;
+        const topOf = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, dn);
         const topPeers = topOf(peers);
         // local peers already have a name; remote ones get a reverse-DNS lookup
-        const ptrs = await Promise.all(topPeers.map(([k]) => this.names[k] ? '' : this._ptr(k)));
+        $d.find('.td-detailrows').prop('disabled', true);
+        const ptrs = await this._ptrMany(topPeers.map(([k]) => k), 6);
+        topPeers.forEach(([k], i) => { if (this.names[k]) ptrs[i] = ''; });
         if (this.state.selected !== ip) return;
 
         const list = (pairs, labels) => pairs.length
@@ -616,20 +639,28 @@ export default class TopDevices extends BaseWidget {
 
         $d.html(`
             <div style="border-top:1px solid #ddd;padding-top:6px;">
-                <strong>${this._esc(this.names[ip] || ip)}</strong>
-                <small class="text-muted">${this._esc(ip)}</small>
+                <div style="display:flex;align-items:center;gap:6px;">
+                    <div style="flex:1 1 auto;min-width:0;">
+                        <strong>${this._esc(this.names[ip] || ip)}</strong>
+                        <small class="text-muted">${this._esc(ip)}</small>
+                    </div>
+                    <select class="td-detailrows" style="height:26px;font-size:11px;padding:1px 18px 1px 6px;
+                            border:1px solid #ccc;border-radius:3px;background-color:#fff;flex:0 0 auto;">
+                        <option value="10">10</option>
+                        <option value="50">50</option>
+                        <option value="100">100</option>
+                    </select>
+                </div>
                 <div><small>down ${this._fmt(down)} &middot; up ${this._fmt(up)}</small></div>
-                <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px;">
-                    <div style="flex:1 1 150px;">
-                        <small class="text-muted">Top peers</small>
-                        <table class="table table-condensed" style="margin:0;">${list(topPeers, ptrs)}</table>
-                    </div>
-                    <div style="flex:1 1 110px;">
-                        <small class="text-muted">Top ports</small>
-                        <table class="table table-condensed" style="margin:0;">${list(topOf(ports), null)}</table>
-                    </div>
+                <div style="margin-top:6px;">
+                    <small class="text-muted">Top peers</small>
+                    <table class="table table-condensed" style="margin:0 0 8px 0;">${list(topPeers, ptrs)}</table>
+                    <small class="text-muted">Top ports</small>
+                    <table class="table table-condensed" style="margin:0;">${list(topOf(ports), null)}</table>
                 </div>
             </div>`);
+        // must run after the panel is rewritten, or the select always reads 10
+        $d.find('.td-detailrows').val(String(dn));
     }
 
     // Side-by-side needs room. Below ~780px the details column would squeeze the
@@ -637,12 +668,17 @@ export default class TopDevices extends BaseWidget {
     _applyLayout() {
         const w = $('.td-wrap').width() || 0;
         const narrow = w > 0 && w < 780;
+        const show = !!this.state.selected;
         $('.td-main').css({ display: narrow ? 'block' : 'flex' });
+        // hidden entirely when nothing is selected, so the table gets the full width
         $('.td-details').css({
-            flex: narrow ? '' : '0 0 310px',
+            display: show ? 'block' : 'none',
+            flex: narrow ? '' : '0 0 330px',
             width: narrow ? '100%' : '',
             position: narrow ? 'static' : 'sticky',
-            marginTop: narrow ? '8px' : ''
+            marginTop: narrow ? '8px' : '',
+            maxHeight: narrow ? '' : '420px',
+            overflowY: narrow ? '' : 'auto'
         });
         $('.td-tablewrap').css({ maxHeight: narrow ? '' : '420px' });
 
