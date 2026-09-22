@@ -110,6 +110,15 @@ Run once on the firewall as root:
 
     fetch -o - https://raw.githubusercontent.com/nycoagung/opnsense-plugin-topdevices/main/install.sh | sh
 
+The installer pulls each file from the **GitHub API**, not from
+raw.githubusercontent, and verifies it against the git blob SHA the API reports.
+raw is CDN-cached, lags pushes by minutes, and is cached *per edge*, so two
+machines can see different content at the same moment - three installs in a row
+silently fetched stale files and reported success. A stale or truncated download
+now fails loudly, and every install prints the SHA and byte count of what it
+actually wrote. (The bootstrap line above still comes from raw, since there is
+nothing installed yet to verify with; everything it then fetches is verified.)
+
 Then hard-refresh the dashboard (Cmd+Shift+R) and add **Top Devices** from the
 widget picker.
 
