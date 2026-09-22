@@ -381,13 +381,13 @@ export default class TopDevices extends BaseWidget {
             <div class="td-chartbox" style="height:175px;margin:4px 0;"><canvas class="td-canvas"></canvas></div>
             <div class="td-main" style="display:flex;gap:12px;align-items:flex-start;">
                 <div class="td-tablewrap" style="flex:1 1 0;min-width:0;max-height:420px;overflow-y:auto;">
-                    <table class="table table-condensed table-hover" style="margin-bottom:4px;">
+                    <table class="table table-condensed table-hover" style="margin-bottom:4px;table-layout:fixed;width:100%;">
                         <thead style="position:sticky;top:0;z-index:2;background:inherit;box-shadow:inset 0 -1px 0 #ddd;"><tr>
-                            <th class="td-sort" data-key="name"  style="cursor:pointer;text-align:left;">Device</th>
-                            <th class="td-sort" data-key="net"   style="cursor:pointer;text-align:left;">Network</th>
-                            <th class="td-sort" data-key="down"  style="cursor:pointer;text-align:right;">Down</th>
-                            <th class="td-sort" data-key="up"    style="cursor:pointer;text-align:right;">Up</th>
-                            <th class="td-sort" data-key="total" style="cursor:pointer;text-align:right;">Total</th>
+                            <th class="td-sort" data-key="name"  style="cursor:pointer;text-align:left;width:38%;">Device</th>
+                            <th class="td-sort" data-key="net"   style="cursor:pointer;text-align:left;width:16%;">Network</th>
+                            <th class="td-sort" data-key="down"  style="cursor:pointer;text-align:right;width:15%;">Down</th>
+                            <th class="td-sort" data-key="up"    style="cursor:pointer;text-align:right;width:15%;">Up</th>
+                            <th class="td-sort" data-key="total" style="cursor:pointer;text-align:right;width:16%;">Total</th>
                         </tr></thead>
                         <tbody class="td-body"></tbody>
                     </table>
@@ -545,14 +545,17 @@ export default class TopDevices extends BaseWidget {
             $('.td-body').html('<tr><td colspan="5" class="text-muted">No matching devices</td></tr>');
         } else {
             $('.td-body').html(rows.map((r) => {
+                const clip = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
                 const label = r.name
-                    ? `<strong>${this._esc(r.name)}</strong><br/><small class="text-muted">${this._esc(r.ip)}</small>`
-                    : `<strong>${this._esc(r.ip)}</strong>`;
+                    ? `<strong style="display:block;${clip}">${this._esc(r.name)}</strong>`
+                      + `<small class="text-muted" style="display:block;${clip}">${this._esc(r.ip)}</small>`
+                    : `<strong style="display:block;${clip}">${this._esc(r.ip)}</strong>`;
                 const net = this.networks.find(n => n.key === r.net);
                 const sel = this.state.selected === r.ip ? ' class="info"' : '';
-                return `<tr${sel} data-ip="${this._esc(r.ip)}" style="cursor:pointer;">
-                    <td style="text-align:left;">${label}</td>
-                    <td style="text-align:left;"><small>${this._esc(net ? net.label : '')}</small></td>
+                return `<tr${sel} data-ip="${this._esc(r.ip)}" style="cursor:pointer;"
+                        title="${this._esc((r.name ? r.name + ' ' : '') + r.ip)}">
+                    <td style="text-align:left;${clip}">${label}</td>
+                    <td style="text-align:left;${clip}"><small>${this._esc(net ? net.label : '')}</small></td>
                     <td style="text-align:right;">${this._fmt(r.down)}</td>
                     <td style="text-align:right;">${this._fmt(r.up)}</td>
                     <td style="text-align:right;"><strong>${this._fmt(r.total)}</strong></td></tr>`;
@@ -631,9 +634,10 @@ export default class TopDevices extends BaseWidget {
         const list = (pairs, labels) => pairs.length
             ? pairs.map(([k, v], i) => {
                 const label = (labels && labels[i]) || this.names[k] || k;
-                return `<tr><td style="text-align:left;word-break:break-all;" title="${this._esc(k)}">`
-                     + `${this._esc(label)}</td>`
-                     + `<td style="text-align:right;white-space:nowrap;">${this._fmt(v)}</td></tr>`;
+                return `<tr title="${this._esc(label === k ? k : label + '  ' + k)}">`
+                     + `<td style="text-align:left;white-space:nowrap;overflow:hidden;`
+                     + `text-overflow:ellipsis;max-width:0;">${this._esc(label)}</td>`
+                     + `<td style="text-align:right;white-space:nowrap;width:78px;">${this._fmt(v)}</td></tr>`;
               }).join('')
             : '<tr><td colspan="2" class="text-muted">none</td></tr>';
 
@@ -646,7 +650,7 @@ export default class TopDevices extends BaseWidget {
                 </div>
                 <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:3px;">
                     <small class="text-muted">down ${this._fmt(down)} &middot; up ${this._fmt(up)}</small>
-                    <select class="td-detailrows" title="Rows per list" style="width:68px;flex:0 0 68px;height:26px;font-size:11px;padding:1px 4px;border:1px solid #ccc;border-radius:3px;background-color:#fff;">
+                    <select class="td-detailrows" title="Rows per list" style="width:68px !important;max-width:68px;min-width:68px;flex:0 0 68px;height:26px;font-size:11px;padding:1px 4px;border:1px solid #ccc;border-radius:3px;background-color:#fff;">
                         <option value="10">10</option>
                         <option value="50">50</option>
                         <option value="100">100</option>
@@ -655,11 +659,11 @@ export default class TopDevices extends BaseWidget {
                 <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;">
                     <div style="flex:1 1 260px;min-width:0;">
                         <small class="text-muted">Top peers</small>
-                        <table class="table table-condensed" style="margin:0;">${list(topPeers, ptrs)}</table>
+                        <table class="table table-condensed" style="margin:0;table-layout:fixed;width:100%;">${list(topPeers, ptrs)}</table>
                     </div>
                     <div style="flex:1 1 150px;min-width:0;">
                         <small class="text-muted">Top ports</small>
-                        <table class="table table-condensed" style="margin:0;">${list(topOf(ports), null)}</table>
+                        <table class="table table-condensed" style="margin:0;table-layout:fixed;width:100%;">${list(topOf(ports), null)}</table>
                     </div>
                 </div>
             </div>`);
