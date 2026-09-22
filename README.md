@@ -108,19 +108,25 @@ Both were measured against a live firewall, not assumed:
 
 Run once on the firewall as root:
 
-    fetch -o - https://raw.githubusercontent.com/nycoagung/opnsense-plugin-topdevices/main/install.sh | sh
-
-The installer pulls each file from the **GitHub API**, not from
-raw.githubusercontent, and verifies it against the git blob SHA the API reports.
-raw is CDN-cached, lags pushes by minutes, and is cached *per edge*, so two
-machines can see different content at the same moment - three installs in a row
-silently fetched stale files and reported success. A stale or truncated download
-now fails loudly, and every install prints the SHA and byte count of what it
-actually wrote. (The bootstrap line above still comes from raw, since there is
-nothing installed yet to verify with; everything it then fetches is verified.)
+    fetch -qo /tmp/td.tgz https://codeload.github.com/nycoagung/opnsense-plugin-topdevices/tar.gz/refs/heads/main && \
+      rm -rf /tmp/tdx && mkdir -p /tmp/tdx && tar -xzf /tmp/td.tgz -C /tmp/tdx && \
+      sh /tmp/tdx/opnsense-plugin-topdevices-main/install.sh
 
 Then hard-refresh the dashboard (Cmd+Shift+R) and add **Top Devices** from the
-widget picker.
+widget picker. Afterwards `configctl topdevices install` does the same thing.
+
+Sources come from **codeload**, which serves the git ref directly: one request
+for the whole tree, no rate limit, current content. The two alternatives both
+fail here — the **GitHub API** costs one rate-limited request per file (60/hour
+per IP, and it is the firewall's own public address that counts), and
+**raw.githubusercontent** is CDN-cached, lags pushes by minutes and is cached per
+edge, so it silently served stale files here more than once.
+
+Files are staged beside their destination and renamed into place, so a failed
+fetch cannot half-install, and the script can safely replace itself — `cp` over a
+running script shifts the shell's read offset and kills it mid-file, `mv` does
+not. Running it from an already-extracted archive installs from there, making the
+bootstrap exactly one fetch.
 
 ### Self-healing via cron
 
@@ -178,20 +184,11 @@ Verified by measurement against a live firewall, not by reading the code:
 covering; the sibling `os-parentalcontrol` plugin shows the shape (a pure
 function plus a table-driven suite that needs no OPNsense).
 
-**Known weakness in the installer.** It makes one GitHub API request per file —
-three per install, against an unauthenticated limit of 60 per hour **per public
-IP, which is the firewall's own address**. That is roughly 20 installs an hour,
-so it has not bitten here, but it is the same flaw that locked
-`os-parentalcontrol` out entirely at fifteen files. The better answer, used
-there, is a single `codeload.github.com` tarball: one request, no rate limit,
-and current content. Worth porting if this repo ever grows.
-
-Note also that the bootstrap one-liner above fetches `install.sh` from
-raw.githubusercontent, which is CDN-cached and lags pushes by minutes — and is
-cached *per edge*, so two machines can see different content at the same moment.
-That caused several installs here to silently fetch stale files and report
-success. Everything the installer subsequently fetches is SHA-verified; only
-that first hop is not.
+**The installer was ported to codeload** after the GitHub API's per-file rate
+limit locked the sibling `os-parentalcontrol` plugin out entirely. No GitHub API
+request is made at all now, and no hop goes through raw's per-edge cache — both
+of which silently served stale files here before. The codeload path was dry-run
+against the live repo and installs all three files byte-identically.
 
 ## Requirements
 
