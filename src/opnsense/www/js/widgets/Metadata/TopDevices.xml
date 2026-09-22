@@ -1,7 +1,12 @@
 <metadata>
     <topdevices>
-        <module>TopDevices.js</module>
+        <filename>TopDevices.js</filename>
         <link>/ui/diagnostics/networkinsight</link>
+        <endpoints>
+            <endpoint>/api/diagnostics/networkinsight/*</endpoint>
+            <endpoint>/api/interfaces/overview/export</endpoint>
+            <endpoint>/api/dnsmasq/leases/search</endpoint>
+        </endpoints>
         <translations>
             <title>Top Devices</title>
         </translations>
