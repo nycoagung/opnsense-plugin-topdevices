@@ -1,6 +1,9 @@
 <metadata>
     <topdevices>
-        <title>Top Devices</title>
+        <module>TopDevices.js</module>
         <link>/ui/diagnostics/networkinsight</link>
+        <translations>
+            <title>Top Devices</title>
+        </translations>
     </topdevices>
 </metadata>
