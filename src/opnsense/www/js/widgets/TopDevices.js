@@ -366,6 +366,35 @@ export default class TopDevices extends BaseWidget {
         return out;
     }
 
+    // The dashboard grid sizes a widget to its content, but only recalculates on
+    // its own events - filtering down to three rows leaves the cell at its old
+    // height. gridstack exposes resizeToContent, so ask for it after a render.
+    _fitHeight() {
+        try {
+            const item = $('.td-wrap').closest('.grid-stack-item')[0];
+            if (!item) return;
+            const gridEl = item.closest('.grid-stack');
+            const grid = gridEl && gridEl.gridstack;
+            if (grid && typeof grid.resizeToContent === 'function') grid.resizeToContent(item);
+        } catch (e) { /* not on a gridstack dashboard - nothing to do */ }
+    }
+
+    _loading(on) {
+        $('.td-loading').css('display', on ? 'flex' : 'none');
+    }
+
+    // The widget header is rendered by the dashboard, not by us, so the refresh
+    // control is injected beside the header's link icon. No-ops if absent.
+    _installRefreshButton() {
+        const $item = $('.td-wrap').closest('.grid-stack-item');
+        if (!$item.length || $item.find('.td-refresh').length) return;
+        const $btn = $('<a href="#" class="td-refresh" title="Refresh"><i class="fa fa-refresh"></i></a>')
+            .css({ marginRight: '8px', cursor: 'pointer' });
+        const $link = $item.find('a[href*="networkinsight"]').first();
+        if ($link.length) $link.before($btn);
+        else $item.find('.widget-header, .panel-heading, .card-header').first().append($btn);
+    }
+
     /* ---------- markup ---------- */
 
     getMarkup() {
@@ -375,7 +404,11 @@ export default class TopDevices extends BaseWidget {
         const selCss = 'height:30px;padding:3px 24px 3px 8px;font-size:12px;'
                      + 'border:1px solid #ccc;border-radius:3px;background-color:#fff;flex:0 0 auto;';
         return $(`
-        <div class="td-wrap">
+        <div class="td-wrap" style="position:relative;">
+            <div class="td-loading" style="display:none;position:absolute;top:0;left:0;right:0;bottom:0;
+                 background:rgba(127,127,127,0.12);z-index:20;align-items:center;justify-content:center;">
+                <i class="fa fa-spinner fa-spin fa-2x" style="opacity:0.7;"></i>
+            </div>
             <div class="td-controls" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:center;margin-bottom:6px;">
                 <select class="td-range"   style="${selCss}width:140px;">${ranges}</select>
                 <select class="td-network" style="${selCss}width:140px;"></select>
@@ -450,6 +483,7 @@ export default class TopDevices extends BaseWidget {
 
         this._bind();
         this._applyLayout();
+        this._installRefreshButton();
         await this.refresh();
     }
 
@@ -477,6 +511,10 @@ export default class TopDevices extends BaseWidget {
             self.state.selected = null;
             self._saveView();
             self.refresh();
+        });
+        $(document).on('click.topdevices', '.td-refresh', function (e) {
+            e.preventDefault();
+            self.refresh(true);
         });
         $(document).on('change.topdevices', '.td-scope', function () {
             self.state.scope = $(this).val();
@@ -516,10 +554,11 @@ export default class TopDevices extends BaseWidget {
         });
     }
 
-    async refresh() {
+    async refresh(force) {
         if (this.loading) return;
         this.loading = true;
-        $('.td-window small').text('Loading…');
+        this._loading(true);
+        if (force) this.cache = {};          // drop the cached export on an explicit refresh
         try {
             await this._loadNames();
             await this._load();
@@ -528,7 +567,7 @@ export default class TopDevices extends BaseWidget {
         } catch (e) {
             $('.td-body').html('<tr><td colspan="5" class="text-danger">Unable to read NetFlow data</td></tr>');
             $('.td-window small').text('');
-        } finally { this.loading = false; }
+        } finally { this.loading = false; this._loading(false); }
     }
 
     async onWidgetTick() { await this.refresh(); }
@@ -612,6 +651,7 @@ export default class TopDevices extends BaseWidget {
         }
         if (!this.state.selected) $('.td-details').empty();
         this._applyLayout();
+        this._fitHeight();
     }
 
     _renderChart(rows) {
@@ -714,6 +754,7 @@ export default class TopDevices extends BaseWidget {
             </div>`);
         // must run after the panel is rewritten, or the select always reads 10
         $d.find('.td-detailrows').val(String(dn));
+        this._fitHeight();
     }
 
     // Side-by-side needs room. Below ~780px the details column would squeeze the
@@ -756,6 +797,7 @@ export default class TopDevices extends BaseWidget {
 
     onWidgetClose() {
         $(document).off('.topdevices');
+        $('.td-refresh').remove();
         if (this.chartObj) { this.chartObj.destroy(); this.chartObj = null; }
     }
 }

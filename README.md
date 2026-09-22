@@ -18,6 +18,10 @@ NetFlow/Insight aggregator. No extra collector required.
 - **Drill-down** — click a device for its top peers, top ports and direction split
 - **Charts** — pie of totals, or a stacked bar of download vs upload
 - **Selections persist** across refreshes and reloads (localStorage)
+- **Refresh control** in the widget header, and a loading overlay while the
+  export is being fetched
+- The widget **resizes to its content** after filtering, via gridstack's
+  `resizeToContent`
 - **Configurable** — rows to show, default range, default chart, refresh interval
 
 The active window is shown in OPNsense's own date format, to the second and with
@@ -69,6 +73,17 @@ asked for, but its query log records only the reply *type*, not the answer
 address, so domain-to-IP correlation is not possible either. Real per-flow
 domains require deep packet inspection (Zenarmor, Suricata), which is a
 different tool entirely.
+
+## WireGuard peers and the internet-only scope
+
+WireGuard peers show traffic under *All traffic* but nothing under *Internet
+only*, and that is correct rather than a filtering bug. Measured over 7 days on
+the reference install: a peer address appears as a flow endpoint only alongside
+*local* peers (26 MB on `ue0`/`vlan01`). Tunnel-interface flows carrying the
+peer's internet traffic have **neither** endpoint local (233 MB on `wg0`) —
+the peer address is already translated away. NetFlow therefore never attributes
+a byte of VPN internet traffic to the peer address, on any interface, so there
+is nothing for the widget to count.
 
 ## Two upstream API limitations
 
