@@ -48,12 +48,33 @@ Both were measured against a live firewall, not assumed:
 
 ## Install without building
 
-Run on the firewall as root:
+Run once on the firewall as root:
 
     fetch -o - https://raw.githubusercontent.com/nycoagung/opnsense-plugin-topdevices/main/install.sh | sh
 
 Then hard-refresh the dashboard (Cmd+Shift+R) and add **Top Devices** from the
-widget picker. Re-run after each OPNsense upgrade, or put it in cron to self-heal.
+widget picker.
+
+### Self-healing via cron
+
+These files are not owned by any package, so a firmware upgrade can remove them.
+The installer therefore also drops a copy of itself in
+`/usr/local/opnsense/scripts/topdevices/` and registers a configd action, so the
+refresh can then be scheduled from **System → Settings → Cron** by picking
+*Install/refresh TopDevices dashboard widget* — no further SSH.
+
+Two things worth being clear about:
+
+- **Cron does not avoid root.** OPNsense runs cron jobs through configd, as root.
+  What cron avoids is an interactive SSH session.
+- **Cron cannot run arbitrary commands.** It only invokes registered configd
+  actions, so the action file has to be installed first - which is itself a root
+  filesystem write. The first install needs a shell either way; the payoff is
+  that every subsequent refresh does not.
+
+The installer is idempotent and safe to run repeatedly. It rewrites the configd
+action only when the content actually changes, because restarting configd from a
+script that configd itself launched would kill that script mid-run.
 
 ## Build as a real package
 
