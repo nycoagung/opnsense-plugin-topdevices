@@ -46,6 +46,7 @@ export default class TopDevices extends BaseWidget {
         this.ifaceNames = {};
         this.names = {};
         this.cache = {};          // cacheKey -> parsed export rows
+        this.ptrCache = {};       // peer ip -> reverse-DNS name ('' = none)
         this.chartObj = null;
         this.loading = false;
     }
@@ -309,6 +310,22 @@ export default class TopDevices extends BaseWidget {
         this.state.window = [from, to];
     }
 
+    // Reverse DNS for a peer address. The endpoint echoes the address back when
+    // there is no PTR record, which is how "unresolved" is detected. Coverage is
+    // genuinely partial - Cloudflare-fronted hosts publish no PTR at all - so the
+    // raw IP remains the fallback rather than a guess.
+    async _ptr(ip) {
+        if (this.ptrCache[ip] !== undefined) return this.ptrCache[ip];
+        let name = '';
+        try {
+            const r = await this.ajaxCall('/api/diagnostics/dns/reverse_lookup?address=' + encodeURIComponent(ip));
+            const v = r && r[ip];
+            if (v && v !== ip) name = String(v).replace(/\.$/, '');
+        } catch (e) { /* unresolved - keep the IP */ }
+        this.ptrCache[ip] = name;
+        return name;
+    }
+
     /* ---------- markup ---------- */
 
     getMarkup() {
@@ -556,9 +573,18 @@ export default class TopDevices extends BaseWidget {
             if (r.dir === 'out') up += r.octets; else down += r.octets;
         });
         const topOf = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, 5);
-        const list = (pairs, resolve) => pairs.length
-            ? pairs.map(([k, v]) => `<tr><td style="text-align:left;">${this._esc(resolve ? (this.names[k] || k) : k)}</td>`
-                                  + `<td style="text-align:right;">${this._fmt(v)}</td></tr>`).join('')
+        const topPeers = topOf(peers);
+        // local peers already have a name; remote ones get a reverse-DNS lookup
+        const ptrs = await Promise.all(topPeers.map(([k]) => this.names[k] ? '' : this._ptr(k)));
+        if (this.state.selected !== ip) return;
+
+        const list = (pairs, labels) => pairs.length
+            ? pairs.map(([k, v], i) => {
+                const label = (labels && labels[i]) || this.names[k] || k;
+                return `<tr><td style="text-align:left;word-break:break-all;" title="${this._esc(k)}">`
+                     + `${this._esc(label)}</td>`
+                     + `<td style="text-align:right;white-space:nowrap;">${this._fmt(v)}</td></tr>`;
+              }).join('')
             : '<tr><td colspan="2" class="text-muted">none</td></tr>';
 
         $d.html(`
@@ -569,11 +595,11 @@ export default class TopDevices extends BaseWidget {
                 <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px;">
                     <div style="flex:1 1 150px;">
                         <small class="text-muted">Top peers</small>
-                        <table class="table table-condensed" style="margin:0;">${list(topOf(peers), true)}</table>
+                        <table class="table table-condensed" style="margin:0;">${list(topPeers, ptrs)}</table>
                     </div>
                     <div style="flex:1 1 110px;">
                         <small class="text-muted">Top ports</small>
-                        <table class="table table-condensed" style="margin:0;">${list(topOf(ports), false)}</table>
+                        <table class="table table-condensed" style="margin:0;">${list(topOf(ports), null)}</table>
                     </div>
                 </div>
             </div>`);

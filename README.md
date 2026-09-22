@@ -38,6 +38,23 @@ matching "device is source *or* destination" double-counts every byte and makes
 the in/out split meaningless. Keying on destination counts each flow once and
 makes the drill-down reconcile with the table row (verified to within 0.1%).
 
+## Peer names in the drill-down
+
+Peer addresses are resolved via reverse DNS (`diagnostics/dns/reverse_lookup`),
+cached per address. Be realistic about what this gives you: it names the *hosting
+provider*, not the site. Apple and Instagram addresses resolve usefully; AWS,
+Google Cloud and Akamai resolve to generic infrastructure names; Cloudflare
+publishes no PTR at all. On a typical sample 5 of 8 peers resolved, but only one
+identified an actual service.
+
+NetFlow records addresses, ports and byte counts - there is no hostname, no TLS
+SNI and no HTTP path in the data, so true per-flow domains are not obtainable
+from this source however it is queried. Pi-hole knows which domains a client
+asked for, but its query log records only the reply *type*, not the answer
+address, so domain-to-IP correlation is not possible either. Real per-flow
+domains require deep packet inspection (Zenarmor, Suricata), which is a
+different tool entirely.
+
 ## Two upstream API limitations
 
 Both were measured against a live firewall, not assumed:

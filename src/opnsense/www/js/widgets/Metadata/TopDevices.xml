@@ -5,6 +5,7 @@
         <endpoints>
             <endpoint>/api/diagnostics/networkinsight/*</endpoint>
             <endpoint>/api/interfaces/overview/export</endpoint>
+            <endpoint>/api/diagnostics/dns/reverse_lookup</endpoint>
             <endpoint>/api/dnsmasq/leases/search</endpoint>
             <endpoint>/api/dnsmasq/settings/searchHost</endpoint>
         </endpoints>
