@@ -235,13 +235,21 @@ export default class TopDevices extends BaseWidget {
         this.networks = out;
     }
 
+    // Names come from two sources. DHCP leases cover devices that are only ever
+    // dynamic; static host records cover everything with a fixed address, which
+    // never appears in the lease table at all (servers, the firewall itself).
+    // Host records win where both exist: they are the curated name.
     async _loadNames() {
+        const map = {};
         try {
             const r = await this.ajaxCall('/api/dnsmasq/leases/search', JSON.stringify({ rowCount: 1000 }), 'POST');
-            const map = {};
             ((r && r.rows) || []).forEach(l => { if (l.address && l.hostname) map[l.address] = l.hostname; });
-            this.names = map;
-        } catch (e) { this.names = {}; }
+        } catch (e) { /* leases unavailable - fall back to host records alone */ }
+        try {
+            const r = await this.ajaxCall('/api/dnsmasq/settings/searchHost', JSON.stringify({ rowCount: 1000 }), 'POST');
+            ((r && r.rows) || []).forEach(h => { if (h.ip && h.host) map[h.ip] = h.host; });
+        } catch (e) { /* host records unavailable - leases alone still work */ }
+        this.names = map;
     }
 
     async _export(from, to) {

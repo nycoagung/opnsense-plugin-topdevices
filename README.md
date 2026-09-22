@@ -20,8 +20,10 @@ the timezone, e.g. `Tue Sep 22 12:11:42 AEST 2026`.
 
 Nothing is hardcoded. Local networks are derived from the firewall's own
 interface configuration (anything outside RFC1918 is treated as upstream, so a
-public WAN subnet is never mistaken for local devices). Hostnames come from DHCP
-leases. Every limit and default is a widget option.
+public WAN subnet is never mistaken for local devices). Hostnames are merged from DHCP leases and
+static dnsmasq host records, with the static record winning where both exist -
+static hosts (servers, cameras, the firewall) never appear in the lease table
+at all. Every limit and default is a widget option.
 
 ## What the numbers mean
 
