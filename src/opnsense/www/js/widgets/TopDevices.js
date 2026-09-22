@@ -532,11 +532,13 @@ export default class TopDevices extends BaseWidget {
             e.preventDefault();
             self.refresh(true);
         });
-        $(document).on('change.topdevices', '.td-scope', function () {
+        $(document).on('change.topdevices', '.td-scope', async function () {
             self.state.scope = $(this).val();
             self._saveView();
-            self.render();                       // export is cached; only the filter changed
-            if (self.state.selected) self.renderDetails(self.state.selected);
+            // must await: render() drops a selection the new scope excludes, and
+            // reading state.selected before that lands re-renders the stale device
+            await self.render();                 // export is cached; only the filter changed
+            if (self.state.selected) await self.renderDetails(self.state.selected);
         });
         $(document).on('change.topdevices', '.td-network', function () {
             self.state.network = $(this).val(); self._saveView(); self.render();
@@ -562,11 +564,11 @@ export default class TopDevices extends BaseWidget {
             else { self.state.sortKey = k; self.state.sortDir = (k === 'name' || k === 'net') ? 'asc' : 'desc'; }
             self._saveView(); self.render();
         });
-        $(document).on('click.topdevices', '.td-body tr', function () {
+        $(document).on('click.topdevices', '.td-body tr', async function () {
             const ip = $(this).data('ip');
             self.state.selected = (self.state.selected === ip) ? null : ip;
-            self.render();
-            if (self.state.selected) self.renderDetails(self.state.selected);
+            await self.render();
+            if (self.state.selected) await self.renderDetails(self.state.selected);
         });
     }
 
@@ -578,8 +580,8 @@ export default class TopDevices extends BaseWidget {
         try {
             await this._loadNames();
             await this._load();
-            this.render();
-            if (this.state.selected) this.renderDetails(this.state.selected);
+            await this.render();
+            if (this.state.selected) await this.renderDetails(this.state.selected);
         } catch (e) {
             $('.td-body').html('<tr><td colspan="5" class="text-danger">Unable to read NetFlow data</td></tr>');
             $('.td-window small').text('');
