@@ -37,13 +37,14 @@ export default class TopDevices extends BaseWidget {
 
         this.state = {
             range: '24h', chart: 'pie', network: '', search: '',
-            sortKey: 'total', sortDir: 'desc', rowsN: 0, detailN: 10,
+            sortKey: 'total', sortDir: 'desc', rowsN: 0, detailN: 10, scope: 'all',
             customFrom: '', customTo: '',
             rows: [], window: null, selected: null
         };
 
         this.networks = [];
         this.ifaceNames = {};
+        this.wanDevs = [];       // device names of the upstream interface(s)
         this.names = {};
         this.cache = {};          // cacheKey -> parsed export rows
         this.ptrCache = {};       // peer ip -> reverse-DNS name ('' = none)
@@ -90,7 +91,7 @@ export default class TopDevices extends BaseWidget {
             const s = this.state;
             localStorage.setItem(this.STORE, JSON.stringify({
                 range: s.range, chart: s.chart, network: s.network, search: s.search,
-                sortKey: s.sortKey, sortDir: s.sortDir, rowsN: s.rowsN, detailN: s.detailN,
+                sortKey: s.sortKey, sortDir: s.sortDir, rowsN: s.rowsN, detailN: s.detailN, scope: s.scope,
                 customFrom: s.customFrom, customTo: s.customTo
             }));
         } catch (e) { /* private mode / storage disabled - not fatal */ }
@@ -215,6 +216,16 @@ export default class TopDevices extends BaseWidget {
     }
     _netOf(ip)    { const h = this.networks.find(n => this._inNet(ip, n)); return h ? h.key : ''; }
 
+    // A flow is recorded once per interface it crosses. Counting only the rows
+    // seen on the upstream interface therefore yields internet traffic alone -
+    // anything that never leaves the LAN (an NVR pulling camera streams, a NAS
+    // copy) is simply absent from those rows. At the WAN both directions are
+    // still keyed on dst_addr, so the down/up split is unchanged.
+    _inScope(r) {
+        if (this.state.scope !== 'wan') return true;
+        return this.wanDevs.indexOf(r.iface) !== -1;
+    }
+
     /* ---------- data ---------- */
 
     async _loadNetworks() {
@@ -224,7 +235,11 @@ export default class TopDevices extends BaseWidget {
             { net: this._ip2int('192.168.0.0'), mask: (0xffff0000 | 0) }
         ];
         const isPrivate = (v) => rfc1918.some(r => (v & r.mask) === (r.net & r.mask));
+        // loopback and link-local are not upstream, and must not be mistaken for it
+        const isSpecial = (v) => ((v & (0xff000000 | 0)) === (this._ip2int('127.0.0.0') & (0xff000000 | 0)))
+                              || ((v & (0xffff0000 | 0)) === (this._ip2int('169.254.0.0') & (0xffff0000 | 0)));
         const ifaceNames = {};
+        const wan = [];
         let data = [];
         try { data = await this.ajaxCall('/api/interfaces/overview/export'); } catch (e) { data = []; }
         const items = Array.isArray(data) ? data : (data.rows || []);
@@ -237,7 +252,12 @@ export default class TopDevices extends BaseWidget {
             if (addr === null || isNaN(bits) || bits < 8 || bits > 32) return;
             const mask = bits === 0 ? 0 : ((0xffffffff << (32 - bits)) | 0);
             const net = (addr & mask) | 0;
-            if (!isPrivate(net)) return;                 // drops WAN and loopback
+            if (!isPrivate(net)) {
+                // anything not RFC1918 and not loopback/link-local is upstream:
+                // its device name is what identifies WAN traffic in the export
+                if (!isSpecial(net) && i.device) wan.push(i.device);
+                return;
+            }
             const label = i.description || i.identifier;
             out.push({ key: i.identifier, label: label, net: net, mask: mask,
                        bcast: (net | (~mask)) | 0 });
@@ -247,6 +267,7 @@ export default class TopDevices extends BaseWidget {
         });
         this.networks = out;
         this.ifaceNames = ifaceNames;
+        this.wanDevs = wan;
     }
 
     // Names come from two sources. DHCP leases cover devices that are only ever
@@ -285,6 +306,7 @@ export default class TopDevices extends BaseWidget {
             rows.push({
                 src: c[ix.src_addr], dst: c[ix.dst_addr],
                 port: c[ix.service_port], dir: c[ix.direction],
+                iface: c[ix['if']],
                 octets: parseFloat(c[ix.octets]) || 0
             });
         });
@@ -300,6 +322,7 @@ export default class TopDevices extends BaseWidget {
         flows.forEach((r) => {
             const ip = r.dst;            // dst-keyed: see ATTRIBUTION above
             if (!ip || !this._isLocal(ip) || this._isBroadcast(ip)) return;
+            if (!this._inScope(r)) return;
             if (!acc[ip]) acc[ip] = { ip: ip, down: 0, up: 0 };
             if (r.dir === 'out') acc[ip].up += r.octets; else acc[ip].down += r.octets;
         });
@@ -308,6 +331,7 @@ export default class TopDevices extends BaseWidget {
             down: d.down, up: d.up, total: d.down + d.up
         }));
         this.state.window = [from, to];
+        this._scopeShown = this.state.scope;
     }
 
     // Reverse DNS for a peer address. The endpoint echoes the address back when
@@ -355,6 +379,10 @@ export default class TopDevices extends BaseWidget {
             <div class="td-controls" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:center;margin-bottom:6px;">
                 <select class="td-range"   style="${selCss}width:140px;">${ranges}</select>
                 <select class="td-network" style="${selCss}width:140px;"></select>
+                <select class="td-scope" style="${selCss}width:130px;" title="Traffic scope">
+                    <option value="all">All traffic</option>
+                    <option value="wan">Internet only</option>
+                </select>
                 <input type="text" class="form-control input-sm td-search" placeholder="Filter name or IP"
                        style="height:30px;font-size:12px;flex:0 1 320px;min-width:110px;"/>
                 <select class="td-rows" style="${selCss}width:96px;" title="Rows to show">
@@ -411,6 +439,7 @@ export default class TopDevices extends BaseWidget {
 
         if (!this.state.rowsN) this.state.rowsN = parseInt(cfg.rowsToShow, 10) || 20;
         $('.td-rows').val(String(this.state.rowsN));
+        $('.td-scope').val(this.state.scope || 'all');
         $('.td-range').val(this.state.range);
         $('.td-search').val(this.state.search);
         $('.td-network').val(this.state.network);
@@ -448,6 +477,12 @@ export default class TopDevices extends BaseWidget {
             self.state.selected = null;
             self._saveView();
             self.refresh();
+        });
+        $(document).on('change.topdevices', '.td-scope', function () {
+            self.state.scope = $(this).val();
+            self._saveView();
+            self.render();                       // export is cached; only the filter changed
+            if (self.state.selected) self.renderDetails(self.state.selected);
         });
         $(document).on('change.topdevices', '.td-network', function () {
             self.state.network = $(this).val(); self._saveView(); self.render();
@@ -520,6 +555,12 @@ export default class TopDevices extends BaseWidget {
     }
 
     async render() {
+        // _load() applies the scope filter while aggregating, so a scope change
+        // needs a re-aggregate. The export itself is cached, so this is cheap.
+        if (this._scopeShown !== this.state.scope && this.state.window) {
+            this._scopeShown = this.state.scope;
+            try { await this._load(); } catch (e) { /* keep previous rows */ }
+        }
         const cfg = await this.getWidgetConfig() || {};
         const limit = this.state.rowsN || parseInt(cfg.rowsToShow, 10) || 20;
         const all = this._visibleRows();
@@ -615,6 +656,7 @@ export default class TopDevices extends BaseWidget {
         let down = 0, up = 0;
         flows.forEach((r) => {
             if (r.dst !== ip) return;                 // dst-keyed, as above
+            if (!this._inScope(r)) return;
             const peer = r.src;
             if (!peer) return;
             peers[peer] = (peers[peer] || 0) + r.octets;
