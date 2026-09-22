@@ -570,8 +570,11 @@ export default class TopDevices extends BaseWidget {
         const CHART_MAX = 10;
 
         if (this.state.window) {
+            const scopeTxt = this.state.scope === 'wan'
+                ? ` · internet only (via ${this.wanDevs.join(', ') || 'WAN'})`
+                : ' · all traffic';
             $('.td-window small').text(
-                `${this._dateStr(this.state.window[0])}  →  ${this._dateStr(this.state.window[1])}`);
+                `${this._dateStr(this.state.window[0])}  →  ${this._dateStr(this.state.window[1])}${scopeTxt}`);
         }
         $('.td-chartbtns button').removeClass('btn-primary').addClass('btn-default');
         $(`.td-chartbtns button[data-chart="${this.state.chart}"]`).removeClass('btn-default').addClass('btn-primary');
