@@ -383,6 +383,22 @@ export default class TopDevices extends BaseWidget {
         $('.td-loading').css('display', on ? 'flex' : 'none');
     }
 
+    // Reference-counted so nested work (refresh -> render -> details) does not
+    // hide the overlay early, and delayed by 150ms so operations that run off
+    // the cached export - most filter changes - never flash it.
+    _busy(on) {
+        this._busyN = Math.max(0, (this._busyN || 0) + (on ? 1 : -1));
+        if (this._busyN > 0) {
+            if (!this._busyTimer) {
+                this._busyTimer = setTimeout(() => { this._busyTimer = null; this._loading(true); }, 150);
+            }
+        } else {
+            clearTimeout(this._busyTimer);
+            this._busyTimer = null;
+            this._loading(false);
+        }
+    }
+
     // The widget header is rendered by the dashboard, not by us, so the refresh
     // control is injected beside the header's link icon. No-ops if absent.
     _installRefreshButton() {
@@ -557,7 +573,7 @@ export default class TopDevices extends BaseWidget {
     async refresh(force) {
         if (this.loading) return;
         this.loading = true;
-        this._loading(true);
+        this._busy(true);
         if (force) this.cache = {};          // drop the cached export on an explicit refresh
         try {
             await this._loadNames();
@@ -567,7 +583,7 @@ export default class TopDevices extends BaseWidget {
         } catch (e) {
             $('.td-body').html('<tr><td colspan="5" class="text-danger">Unable to read NetFlow data</td></tr>');
             $('.td-window small').text('');
-        } finally { this.loading = false; this._loading(false); }
+        } finally { this.loading = false; this._busy(false); }
     }
 
     async onWidgetTick() { await this.refresh(); }
@@ -594,6 +610,11 @@ export default class TopDevices extends BaseWidget {
     }
 
     async render() {
+        this._busy(true);
+        try { await this._render(); } finally { this._busy(false); }
+    }
+
+    async _render() {
         // _load() applies the scope filter while aggregating, so a scope change
         // needs a re-aggregate. The export itself is cached, so this is cheap.
         if (this._scopeShown !== this.state.scope && this.state.window) {
@@ -688,7 +709,17 @@ export default class TopDevices extends BaseWidget {
     }
 
     async renderDetails(ip) {
+        this._busy(true);
+        try { await this._renderDetails(ip); } finally { this._busy(false); }
+    }
+
+    async _renderDetails(ip) {
         const $d = $('.td-details');
+        // clicking a device must acknowledge immediately: the aggregate is cheap
+        // but resolving peer names can take a second or more
+        $d.html('<div style="padding:12px 0;text-align:center;">'
+              + '<i class="fa fa-spinner fa-spin" style="opacity:0.6;"></i></div>');
+        this._applyLayout();
         const [from, to] = this.state.window || this._window(this.state.range);
         let flows;
         try { flows = await this._export(from, to); }
