@@ -43,6 +43,7 @@ export default class TopDevices extends BaseWidget {
         };
 
         this.networks = [];
+        this.ifaceNames = {};
         this.names = {};
         this.cache = {};          // cacheKey -> parsed export rows
         this.chartObj = null;
@@ -206,6 +207,11 @@ export default class TopDevices extends BaseWidget {
 
     _inNet(ip, e) { const v = this._ip2int(ip); return v !== null && (v & e.mask) === e.net; }
     _isLocal(ip)  { return this.networks.some(n => this._inNet(ip, n)); }
+    // x.x.x.255 and friends carry broadcast/multicast chatter, not device traffic
+    _isBroadcast(ip) {
+        const v = this._ip2int(ip);
+        return v !== null && this.networks.some(n => (v | 0) === n.bcast);
+    }
     _netOf(ip)    { const h = this.networks.find(n => this._inNet(ip, n)); return h ? h.key : ''; }
 
     /* ---------- data ---------- */
@@ -217,6 +223,7 @@ export default class TopDevices extends BaseWidget {
             { net: this._ip2int('192.168.0.0'), mask: (0xffff0000 | 0) }
         ];
         const isPrivate = (v) => rfc1918.some(r => (v & r.mask) === (r.net & r.mask));
+        const ifaceNames = {};
         let data = [];
         try { data = await this.ajaxCall('/api/interfaces/overview/export'); } catch (e) { data = []; }
         const items = Array.isArray(data) ? data : (data.rows || []);
@@ -230,9 +237,15 @@ export default class TopDevices extends BaseWidget {
             const mask = bits === 0 ? 0 : ((0xffffffff << (32 - bits)) | 0);
             const net = (addr & mask) | 0;
             if (!isPrivate(net)) return;                 // drops WAN and loopback
-            out.push({ key: i.identifier, label: i.description || i.identifier, net: net, mask: mask });
+            const label = i.description || i.identifier;
+            out.push({ key: i.identifier, label: label, net: net, mask: mask,
+                       bcast: (net | (~mask)) | 0 });
+            // the firewall's own address on this segment is a real endpoint (DNS,
+            // DHCP) but it is not one of the user's devices - label it as such
+            ifaceNames[c[0]] = `${label} gateway`;
         });
         this.networks = out;
+        this.ifaceNames = ifaceNames;
     }
 
     // Names come from two sources. DHCP leases cover devices that are only ever
@@ -285,12 +298,12 @@ export default class TopDevices extends BaseWidget {
         const acc = {};
         flows.forEach((r) => {
             const ip = r.dst;            // dst-keyed: see ATTRIBUTION above
-            if (!ip || !this._isLocal(ip)) return;
+            if (!ip || !this._isLocal(ip) || this._isBroadcast(ip)) return;
             if (!acc[ip]) acc[ip] = { ip: ip, down: 0, up: 0 };
             if (r.dir === 'out') acc[ip].up += r.octets; else acc[ip].down += r.octets;
         });
         this.state.rows = Object.values(acc).map(d => ({
-            ip: d.ip, name: this.names[d.ip] || '', net: this._netOf(d.ip),
+            ip: d.ip, name: this.names[d.ip] || (this.ifaceNames || {})[d.ip] || '', net: this._netOf(d.ip),
             down: d.down, up: d.up, total: d.down + d.up
         }));
         this.state.window = [from, to];
