@@ -380,7 +380,7 @@ export default class TopDevices extends BaseWidget {
             <div class="td-window" style="margin-bottom:4px;"><small class="text-muted"></small></div>
             <div class="td-chartbox" style="height:175px;margin:4px 0;"><canvas class="td-canvas"></canvas></div>
             <div class="td-main" style="display:flex;gap:12px;align-items:flex-start;">
-                <div class="td-tablewrap" style="flex:1 1 auto;min-width:0;max-height:420px;overflow-y:auto;">
+                <div class="td-tablewrap" style="flex:1 1 0;min-width:0;max-height:420px;overflow-y:auto;">
                     <table class="table table-condensed table-hover" style="margin-bottom:4px;">
                         <thead style="position:sticky;top:0;z-index:2;background:inherit;box-shadow:inset 0 -1px 0 #ddd;"><tr>
                             <th class="td-sort" data-key="name"  style="cursor:pointer;text-align:left;">Device</th>
@@ -392,7 +392,7 @@ export default class TopDevices extends BaseWidget {
                         <tbody class="td-body"></tbody>
                     </table>
                 </div>
-                <div class="td-details" style="flex:0 0 310px;position:sticky;top:0;"></div>
+                <div class="td-details" style="flex:1 1 0;min-width:0;position:sticky;top:0;"></div>
             </div>
         </div>`);
     }
@@ -639,24 +639,28 @@ export default class TopDevices extends BaseWidget {
 
         $d.html(`
             <div style="border-top:1px solid #ddd;padding-top:6px;">
-                <div style="display:flex;align-items:center;gap:6px;">
-                    <div style="flex:1 1 auto;min-width:0;">
-                        <strong>${this._esc(this.names[ip] || ip)}</strong>
-                        <small class="text-muted">${this._esc(ip)}</small>
-                    </div>
-                    <select class="td-detailrows" style="height:26px;font-size:11px;padding:1px 18px 1px 6px;
-                            border:1px solid #ccc;border-radius:3px;background-color:#fff;flex:0 0 auto;">
+                <div title="${this._esc((this.names[ip] || ip) + ' ' + ip)}"
+                     style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                    <strong>${this._esc(this.names[ip] || ip)}</strong>
+                    <small class="text-muted">${this._esc(ip)}</small>
+                </div>
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:3px;">
+                    <small class="text-muted">down ${this._fmt(down)} &middot; up ${this._fmt(up)}</small>
+                    <select class="td-detailrows" title="Rows per list" style="width:68px;flex:0 0 68px;height:26px;font-size:11px;padding:1px 4px;border:1px solid #ccc;border-radius:3px;background-color:#fff;">
                         <option value="10">10</option>
                         <option value="50">50</option>
                         <option value="100">100</option>
                     </select>
                 </div>
-                <div><small>down ${this._fmt(down)} &middot; up ${this._fmt(up)}</small></div>
-                <div style="margin-top:6px;">
-                    <small class="text-muted">Top peers</small>
-                    <table class="table table-condensed" style="margin:0 0 8px 0;">${list(topPeers, ptrs)}</table>
-                    <small class="text-muted">Top ports</small>
-                    <table class="table table-condensed" style="margin:0;">${list(topOf(ports), null)}</table>
+                <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;">
+                    <div style="flex:1 1 260px;min-width:0;">
+                        <small class="text-muted">Top peers</small>
+                        <table class="table table-condensed" style="margin:0;">${list(topPeers, ptrs)}</table>
+                    </div>
+                    <div style="flex:1 1 150px;min-width:0;">
+                        <small class="text-muted">Top ports</small>
+                        <table class="table table-condensed" style="margin:0;">${list(topOf(ports), null)}</table>
+                    </div>
                 </div>
             </div>`);
         // must run after the panel is rewritten, or the select always reads 10
@@ -673,7 +677,7 @@ export default class TopDevices extends BaseWidget {
         // hidden entirely when nothing is selected, so the table gets the full width
         $('.td-details').css({
             display: show ? 'block' : 'none',
-            flex: narrow ? '' : '0 0 330px',
+            flex: narrow ? '' : '1 1 0',
             width: narrow ? '100%' : '',
             position: narrow ? 'static' : 'sticky',
             marginTop: narrow ? '8px' : '',
