@@ -10,6 +10,9 @@ NetFlow/Insight aggregator. No extra collector required.
 - **Download / upload split** per device, plus the combined total
 - **Filter** by network (LAN / IOT / GUEST / …), or free-text on hostname or IP
 - **Sort** on any column, ascending or descending
+- **Row count** selectable at 10 / 20 / 50 / 100
+- **Detail column** beside the table, so the list stays visible while you click
+  through devices; collapses to below the table when the widget is narrow
 - **Drill-down** — click a device for its top peers, top ports and direction split
 - **Charts** — pie of totals, or a stacked bar of download vs upload
 - **Selections persist** across refreshes and reloads (localStorage)
