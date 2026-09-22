@@ -624,6 +624,13 @@ export default class TopDevices extends BaseWidget {
         const cfg = await this.getWidgetConfig() || {};
         const limit = this.state.rowsN || parseInt(cfg.rowsToShow, 10) || 20;
         const all = this._visibleRows();
+        // A filter change can exclude the selected device. Drop the selection
+        // rather than leaving its detail panel on screen next to a table that no
+        // longer lists it - checked against the filtered set, not the truncated
+        // page, so a device hidden only by the row limit keeps its panel.
+        if (this.state.selected && !all.some(r => r.ip === this.state.selected)) {
+            this.state.selected = null;
+        }
         const rows = all.slice(0, limit);
         // A pie or bar of 100 devices is unreadable, so the chart always shows the
         // top 10 regardless of table length - labelled, never a silent truncation.
