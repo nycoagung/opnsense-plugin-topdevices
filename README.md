@@ -8,6 +8,8 @@ NetFlow/Insight aggregator. No extra collector required.
 - **Date range** — last hour, 24 hours, today, yesterday, 7 days, or a custom
   from/to range picked to the second
 - **Download / upload split** per device, plus the combined total
+- **All traffic or internet only** — the latter counts flows at the WAN,
+  so purely local traffic is excluded
 - **Filter** by network (LAN / IOT / GUEST / …), or free-text on hostname or IP
 - **Sort** on any column, ascending or descending
 - **Row count** selectable at 10 / 20 / 50 / 100
@@ -30,10 +32,20 @@ at all. Every limit and default is a widget option.
 
 ## What the numbers mean
 
-Figures are **total traffic per device — internal plus internet**. An NVR pulling
-camera streams will dominate the list with traffic that never reaches the WAN.
-For WAN-only internet usage you need a different query; this widget deliberately
-does not claim to provide it.
+The **All traffic / Internet only** selector decides this.
+
+*All traffic* counts everything — internal plus internet — so an NVR pulling
+camera streams dominates the list with bytes that never reach the WAN.
+
+*Internet only* counts a flow just once, on the upstream interface, so purely
+local traffic disappears entirely. The upstream device is derived from the
+interface configuration (the one addressed outside RFC1918, excluding loopback
+and link-local), never hardcoded. On the reference install the difference is
+dramatic: an NVR showing 53.4 GB of total traffic is 16.1 MB of internet, and
+cameras showing 16.3 GB of upload are ~5 MB.
+
+The active scope is always printed beside the date range, so a figure is never
+ambiguous about which it is.
 
 Totals are keyed on `dst_addr`. NetFlow records each flow once per interface it
 crosses, with source and destination swapped between the two observations, so
