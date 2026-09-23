@@ -66,10 +66,24 @@ globalThis.localStorage = {
     removeItem: (k) => { store.delete(k); }
 };
 globalThis.Chart = class {
-    constructor(el, cfg) { this.config = { type: cfg.type }; this.data = cfg.data; }
-    update() {}
+    constructor(el, cfg) {
+        this.config = { type: cfg.type }; this.data = cfg.data; this.options = cfg.options;
+        this._built = new Set(cfg.data.datasets);
+    }
+    update(mode) {
+        // chartjs-plugin-streaming 3.0.2 (the dashboard's): a 'quiet' update first
+        // patches every dataset's controller, and a dataset added since the last
+        // update has none yet - the real page threw exactly this
+        if (mode === 'quiet' && this.data.datasets.some(ds => !this._built.has(ds))) {
+            throw new TypeError("Cannot set properties of null (setting '_setStyle')");
+        }
+        this._built = new Set(this.data.datasets);
+    }
     destroy() {}
 };
+// the dashboard loads chartjs-plugin-streaming, which registers the 'realtime' scale
+const withStreaming = { getScale(id) { if (id === 'realtime') return {}; throw new Error(`"${id}" is not a registered scale.`); } };
+globalThis.Chart.registry = withStreaming;
 
 const m = await import('../src/opnsense/www/js/widgets/TopDevices.js');
 const TopDevices = m.default;
@@ -134,11 +148,6 @@ test('status timeouts scale with the interval actually in use', () => {
     assert.equal(m.liveStatusFor(31000, 5), 'unavailable');   // 6 x 5 s
     assert.equal(m.liveStatusFor(25000, 10), 'live');         // throttled to 10 s: 3 x 10 s
     assert.equal(m.liveStatusFor(31000, 10), 'reconnecting');
-});
-
-test('row order holds while hovering, new rows follow', () => {
-    const rows = ['a', 'b', 'c', 'd'].map(ip => ({ ip }));
-    assert.deepEqual(m.holdOrder(rows, ['c', 'a']).map(r => r.ip), ['c', 'a', 'b', 'd']);
 });
 
 test('fmtRate', () => {
@@ -412,4 +421,148 @@ test('the table is rebuilt when its rows change, and only patched when their rat
     assert.notEqual(m.liveRowsKey([nas, tv]), m.liveRowsKey([tv, nas]));
     assert.notEqual(m.liveRowsKey([nas, tv]), m.liveRowsKey([{ ...nas, name: 'nas-2' }, tv]));
     assert.notEqual(m.liveRowsKey([nas]), m.liveRowsKey([nas, tv]));
+});
+
+/* ---------- line graph, a bar axis that only grows, only the busiest moves (Live) ---------- */
+
+test('with nothing picked, only the busiest device moves, to the top', () => {
+    const r = (ip, total) => ({ ip, name: '', net: 'lan', down: total, up: 0, total });
+    // seeded busiest first
+    assert.deepEqual(m.dynamicOrder(null, [r('a', 9), r('b', 5), r('c', 1), r('d', 0)], 3), ['a', 'b', 'c']);
+    // c is the busiest now: it moves to the top and nothing else moves
+    assert.deepEqual(m.dynamicOrder(['a', 'b', 'c'], [r('c', 9), r('a', 5), r('b', 1)], 3), ['c', 'a', 'b']);
+    // a new busiest enters at the top and the bottom row drops off
+    assert.deepEqual(m.dynamicOrder(['a', 'b', 'c'], [r('x', 9), r('a', 5), r('b', 4), r('c', 3)], 3), ['x', 'a', 'b']);
+    // the busiest already on top, or nobody busy at all: no change
+    assert.deepEqual(m.dynamicOrder(['a', 'b', 'c'], [r('a', 9), r('c', 8), r('b', 7)], 3), ['a', 'b', 'c']);
+    assert.deepEqual(m.dynamicOrder(['b', 'a', 'c'], [r('a', 0), r('b', 0), r('c', 0)], 3), ['b', 'a', 'c']);
+    // a row whose device is gone is dropped, and a short list is topped up in the order given
+    assert.deepEqual(m.dynamicOrder(['a', 'gone', 'c'], [r('a', 9), r('c', 0), r('d', 0)], 3), ['a', 'c', 'd']);
+    assert.deepEqual(m.dynamicOrder(['a'], [r('a', 9), r('b', 0), r('c', 0)], 3), ['a', 'b', 'c']);
+    // under the pointer nothing moves at all
+    assert.deepEqual(m.dynamicOrder(['a', 'b', 'c'], [r('c', 9), r('a', 5), r('b', 1)], 3, true), ['a', 'b', 'c']);
+});
+
+test('with nothing picked, Live lists the rows setting exactly, topped up with known devices', async (t) => {
+    const { w, send } = await running(t);
+    networks(w);
+    w.names = { '192.168.1.10': 'alpha', '192.168.1.11': 'bravo', '192.168.1.12': 'charlie', '192.168.1.13': 'delta' };
+    w.state.rowsN = 3;
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.12': dev([900, 0]), '192.168.1.13': dev([300, 0]) } });
+    assert.deepEqual(w._liveTableRows().map(r => r.ip), ['192.168.1.12', '192.168.1.13', '192.168.1.10']);
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.13': dev([9000, 0]) } });
+    assert.deepEqual(w._liveTableRows().map(r => r.ip), ['192.168.1.13', '192.168.1.12', '192.168.1.10']);
+});
+
+test('axis tops round up to a round figure', () => {
+    const want = [[0, 0], [950, 1000], [1000000, 1000000], [2600000, 3000000], [7400000, 8000000],
+                  [12000000, 12000000], [12500000, 15000000], [334700000, 400000000]];
+    for (const [v, top] of want) assert.equal(m.niceCeil(v), top, `niceCeil(${v})`);
+});
+
+test('the Live bar axis only grows, and starts fresh when Live restarts', async (t) => {
+    const { w, send } = await running(t);
+    w.state.liveChart = 'bar';
+    const top = () => w.chartObj.options.scales.y.max;
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([7000000, 400000]) } });
+    assert.equal(top(), 8000000);                        // 7.4 Mb/s down + up, rounded up
+    for (let i = 0; i < 3; i++) send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([100000, 0]) } });
+    assert.equal(top(), 8000000);                        // the 3 s average is down to 0.1 Mb/s; the axis holds
+    await w._startLive();                                // the refresh button, a scope or filter change
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([100000, 0]) } });
+    assert.equal(top(), 100000);
+});
+
+test('the Live line graph plots each interval: download per device, upload in the point, 0 while idle', async (t) => {
+    const { w, send } = await running(t);
+    w.state.livePick = ['192.168.1.10', '192.168.1.11'];
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([5000, 50]) } });
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.11': dev([7000, 70]) } });
+    assert.equal(w.chartObj.config.type, 'line');
+    const byIp = Object.fromEntries(w.chartObj.data.datasets.map(d => [d.ip, d]));
+    assert.deepEqual(byIp['192.168.1.10'].data.map(p => [p.y, p.up]), [[5000, 50], [0, 0]]);
+    assert.deepEqual(byIp['192.168.1.11'].data.map(p => [p.y, p.up]), [[0, 0], [7000, 70]]);
+});
+
+test('a device keeps its line colour when the listed devices change', async (t) => {
+    const { w, send } = await running(t);
+    const colours = () => Object.fromEntries(w.chartObj.data.datasets.map(d => [d.ip, d.borderColor]));
+    w.state.livePick = ['192.168.1.10', '192.168.1.11'];
+    send({ dt: 1, effective: 1, wan, devices: {} });
+    const before = colours();
+    assert.notEqual(before['192.168.1.10'], before['192.168.1.11']);
+    w.state.livePick = ['192.168.1.11'];
+    send({ dt: 1, effective: 1, wan, devices: {} });
+    w.state.livePick = ['192.168.1.9', '192.168.1.10', '192.168.1.11'];
+    send({ dt: 1, effective: 1, wan, devices: {} });
+    const after = colours();
+    assert.equal(after['192.168.1.10'], before['192.168.1.10']);
+    assert.equal(after['192.168.1.11'], before['192.168.1.11']);
+    assert.ok(![before['192.168.1.10'], before['192.168.1.11']].includes(after['192.168.1.9']));
+});
+
+test('Live keeps its own chart choice, and only Live offers the line graph', () => {
+    const w = widget();
+    assert.equal(w._chartKind(), 'line');                // Live starts on the line graph
+    assert.equal(w._setChart('bar'), true);
+    assert.equal(w._chartKind(), 'bar');
+    w.state.range = '24h';
+    assert.equal(w._chartKind(), 'pie');                 // the NetFlow ranges keep their own choice
+    assert.equal(w._setChart('line'), false);            // and are never offered the line graph
+    assert.equal(w._chartKind(), 'pie');
+    w._setChart('none');
+    w.state.range = 'live';
+    assert.equal(w._chartKind(), 'bar');
+});
+
+test('without the streaming plugin, Live draws the bar chart instead of the line graph', (t) => {
+    Chart.registry = { getScale(id) { throw new Error(`"${id}" is not a registered scale.`); } };
+    t.after(() => { Chart.registry = withStreaming; });
+    const w = widget();
+    assert.equal(w.state.liveChart, 'line');
+    assert.equal(w._chartKind(), 'bar');
+});
+
+test('a device joining the line graph does not break its streaming update', async (t) => {
+    const { w, send } = await running(t);
+    w.state.livePick = ['192.168.1.10'];
+    send({ dt: 1, effective: 1, wan, devices: {} });
+    w.state.livePick = ['192.168.1.10', '192.168.1.11'];
+    send({ dt: 1, effective: 1, wan, devices: {} });       // threw inside chartjs-plugin-streaming
+    assert.deepEqual(w.chartObj.data.datasets.map(d => d.ip), ['192.168.1.10', '192.168.1.11']);
+});
+
+test('listed devices never share a line colour, even after more than ten have been drawn', async (t) => {
+    const { w, send } = await running(t);
+    const ips = (from, n) => Array.from({ length: n }, (_, i) => `192.168.1.${from + i}`);
+    for (const pick of [ips(10, 10), ips(30, 5), ips(10, 5).concat(ips(30, 5))]) {
+        w.state.livePick = pick;
+        send({ dt: 1, effective: 1, wan, devices: {} });
+        const colours = w.chartObj.data.datasets.map(d => d.borderColor);
+        assert.equal(new Set(colours).size, colours.length, colours.join(' '));
+    }
+});
+
+test("a lease hostname of '*' (Dnsmasq's 'none') is no name", async () => {
+    const w = widget();
+    w.ajaxCall = async (url) => (url.includes('leases')
+        ? { rows: [{ address: '192.168.20.136', hostname: '*' }, { address: '192.168.1.5', hostname: 'mac' }] }
+        : { rows: [] });
+    await w._loadNames();
+    assert.deepEqual(w.names, { '192.168.1.5': 'mac' });
+});
+
+test('with nothing picked, the list is seeded busiest first from the first measured interval', async (t) => {
+    const w = widget();
+    t.after(() => w._stopLive());
+    networks(w);                                      // as on the dashboard: known before Live starts
+    const leases = [['192.168.1.10', 'alpha'], ['192.168.1.11', 'bravo'], ['192.168.1.12', 'charlie']];
+    w.ajaxCall = async (url) => ({ rows: url.includes('leases') ? leases.map(([address, hostname]) => ({ address, hostname })) : [] });
+    w.state.rowsN = 3;
+    await w._startLive();                             // renders once before any data
+    const send = (e) => w.eventSource.onmessage({ data: JSON.stringify(e) });
+    send({ dt: 0, effective: 1, wan, devices: {} });  // the sampler's baseline
+    send({ dt: 1, effective: 1, wan, devices: {
+        '192.168.1.12': dev([900, 0]), '192.168.1.11': dev([500, 0]), '192.168.1.10': dev([100, 0]) } });
+    assert.deepEqual(w._liveTableRows().map(r => r.ip), ['192.168.1.12', '192.168.1.11', '192.168.1.10']);
 });
