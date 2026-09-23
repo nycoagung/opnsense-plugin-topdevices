@@ -157,7 +157,9 @@ Requires a FreeBSD host matching the target ABI (26.7 / amd64 / FreeBSD 15.1):
     cp -R opnsense-plugin-topdevices plugins/net-mgmt/topdevices
     cd plugins/net-mgmt/topdevices && make package
 
-    pkg add https://github.com/nycoagung/opnsense-plugin-topdevices/releases/download/v1.1/os-topdevices-1.1.pkg
+That builds `os-topdevices-0.0.1.pkg`; `pkg add` it on the firewall, or run
+`make upgrade` instead of `make package` to build and install in one step.
+GitHub releases carry source only - no prebuilt package is published.
 
 Rebuild whenever the OPNsense ABI changes (major releases).
 
