@@ -975,6 +975,9 @@ export default class TopDevices extends BaseWidget {
         parts.push(this.state.scope === 'wan' ? 'internet only' : 'all traffic');
         parts.push(e && e.throttled ? `throttled to ${e.effective} s` : `${l.interval} s`);
         if (e && e.coverage && e.coverage.ok === false) parts.push('\u26a0 totals disagree with the WAN counters');
+        // a gap in what was measured must not pass for a quiet network
+        if (e && e.v6_skipped > 0) parts.push(`IPv6 not counted (${e.v6_skipped} connections)`);
+        if (e && e.unparsed > 0) parts.push(`\u26a0 ${e.unparsed} unreadable state lines`);
         if (e && e.error) parts.push(`\u26a0 ${e.error}`);
         const status = { connecting: 'connecting\u2026', measuring: 'measuring\u2026',
                          reconnecting: 'reconnecting\u2026' }[l.status];
