@@ -255,6 +255,10 @@ class Topology:
                 self.upstream_addrs.add(str(ip))
             elif any(ip in net for net in RFC1918) and iface.network not in self.local_nets:
                 self.local_nets.append(iface.network)
+        # traffic reaches a subnet's broadcast address (NetBIOS, SSDP), but it is
+        # not a device - the NetFlow view drops these addresses too
+        self.never_devices = set(self.fw_addrs) | {
+            str(net.broadcast_address) for net in self.local_nets if net.prefixlen < 31}
         self._local = {}
 
     def is_local(self, addr):
@@ -312,7 +316,7 @@ def credits(state, b0, b1, topo):
     if state['af'] != 4:
         return []
     src, dst, nat, port = state['src'], state['dst'], state['nat'], state['dst_port']
-    local, fw, upstream = topo.is_local, topo.fw_addrs, topo.upstream_addrs
+    local, fw, upstream, never = topo.is_local, topo.fw_addrs, topo.upstream_addrs, topo.never_devices
     out = []
     if state['dir'] == 'out':
         # 'all' is counted on ingress states only: every routed flow also has
@@ -324,13 +328,13 @@ def credits(state, b0, b1, topo):
         elif nat is None and src in upstream:
             out.append((FW, None, None, port, b1, b0))
         return out
-    if nat is not None and not local(nat) and local(dst) and dst not in fw and not local(src):
+    if nat is not None and not local(nat) and local(dst) and dst not in never and not local(src):
         out.append((INET, dst, src, port, b0, b1))       # port-forward: remote initiator
     elif nat is None and dst in upstream:
         out.append((FW, None, None, port, b0, b1))
-    if local(src) and src not in fw:
+    if local(src) and src not in never:
         out.append((ALL, src, dst, port, b1, b0))
-    if local(dst) and dst not in fw:
+    if local(dst) and dst not in never:
         out.append((ALL, dst, src, port, b0, b1))
     return out
 
