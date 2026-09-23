@@ -78,7 +78,7 @@ FLOW_MUTANTS = [
     ("a device's upload judged by where it came in",
      '            peer, inet = dst, if_out in net.upstream', '            peer, inet = dst, if_in in net.upstream'),
     ("lists not capped at the panel's 100 rows", 'TOP = 100 ', 'TOP = 1000 '),
-    ('the clock slack dropped', '    if frm < now - DAY - SLACK:', '    if frm < now - DAY:'),
+    ('the clock slack dropped', "    if mode == 'totals' and frm < now - DAY - SLACK:", "    if mode == 'totals' and frm < now - DAY:"),
     ('non-ASCII digits accepted', '    if not (DIGITS.fullmatch(frm) and DIGITS.fullmatch(to)):',
      '    if not (frm.isdigit() and to.isdigit()):'),
     ('a non-device given a panel', '    if not net.is_device(ip):\n        raise', '    if False:\n        raise'),
@@ -94,6 +94,11 @@ FLOW_MUTANTS = [
      '                except OSError:\n                    continue                      # rotated away since the listing'),
     ('an upstream device missing from the map ignored', '    if missing:\n        raise', '    if False:\n        raise'),
     ('only ValueError answered', '    except Exception as exc:', '    except ValueError as exc:'),
+    ('the day bound applied to device panels', "    if mode == 'totals' and frm < now - DAY - SLACK:", '    if frm < now - DAY - SLACK:'),
+    ('the device answer given its range reversed',
+     "            out = answer_device(req['ip'], req['from'], req['to'], now, opened, net, workers)",
+     "            out = answer_device(req['ip'], req['to'], req['from'], now, opened, net, workers)"),
+    ('a log nobody rotates read anyway', '        if biggest > MAX_FILE:', '        if False:'),
 ]
 
 
