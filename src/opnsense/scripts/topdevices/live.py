@@ -269,3 +269,144 @@ class Topology:
         return hit
 
 
+# ---------------------------------------------------------------- accounting
+
+
+def deltas(prev, cur, dt):
+    """Bytes each state moved since the previous sample: [(state, b0, b1)].
+
+    A state seen before contributes the difference. A new state contributes
+    everything it carries if it is young enough to have started inside the
+    interval. A negative difference means pf reused the id for a different
+    connection, which is then treated as new. A vanished state contributes
+    nothing: its final partial interval is lost.
+    """
+    out = []
+    horizon = dt + 1
+    for sid, s in cur.items():
+        p = prev.get(sid)
+        if p is not None:
+            d0, d1 = s['b0'] - p['b0'], s['b1'] - p['b1']
+            if d0 < 0 or d1 < 0:
+                if s['age'] > horizon:
+                    continue
+                d0, d1 = s['b0'], s['b1']
+        elif s['age'] <= horizon:
+            d0, d1 = s['b0'], s['b1']
+        else:
+            continue
+        if d0 or d1:
+            out.append((s, d0, d1))
+    return out
+
+
+def credits(state, b0, b1, topo):
+    """Who a state's bytes belong to: [(scope, device, peer, port, down, up)].
+
+    'inet' and 'all' credit a device. 'fw' is the firewall's own upstream
+    traffic, kept only for the drift check: device and peer are None and
+    down/up are relative to the WAN. IPv6 states return [] and are counted by
+    the caller. b0 is initiator->responder and b1 the reverse; for outbound NAT
+    b1 is the download, verified against the kernel counters (spec 5.4).
+    """
+    if state['af'] != 4:
+        return []
+    src, dst, nat, port = state['src'], state['dst'], state['nat'], state['dst_port']
+    local, fw, upstream = topo.is_local, topo.fw_addrs, topo.upstream_addrs
+    out = []
+    if state['dir'] == 'out':
+        # 'all' is counted on ingress states only: every routed flow also has
+        # an out state with identical counters, and counting both doubles it.
+        if nat is not None and nat in fw:
+            out.append((FW, None, None, port, b1, b0))
+        elif nat is not None and local(nat) and not local(src):
+            out.append((INET, nat, dst, port, b1, b0))
+        elif nat is None and src in upstream:
+            out.append((FW, None, None, port, b1, b0))
+        return out
+    if nat is not None and not local(nat) and local(dst) and dst not in fw and not local(src):
+        out.append((INET, dst, src, port, b0, b1))       # port-forward: remote initiator
+    elif nat is None and dst in upstream:
+        out.append((FW, None, None, port, b0, b1))
+    if local(src) and src not in fw:
+        out.append((ALL, src, dst, port, b1, b0))
+    if local(dst) and dst not in fw:
+        out.append((ALL, dst, src, port, b0, b1))
+    return out
+
+
+def aggregate(rows, dt, topo):
+    """One interval's credits -> (devices, fw_bytes).
+
+    devices: {ip: {'all': [down, up], 'inet': [down, up],
+                   'peers': [[ip, down, up, inet]],
+                   'ports': {'all': [[port, down, up]], 'inet': [[port, down, up]]}}}
+    in bits per second. peers is the union of the top TOP_PEERS by all traffic
+    and the top TOP_PEERS internet peers, so a device whose local traffic
+    dominates still shows its internet peers. fw_bytes: [down, up] bytes of the
+    firewall's own upstream traffic.
+    """
+    acc = {}
+    fw_bytes = [0, 0]
+    for scope, dev, peer, port, down, up in rows:
+        if scope == FW:
+            fw_bytes[0] += down
+            fw_bytes[1] += up
+            continue
+        d = acc.get(dev)
+        if d is None:
+            d = acc[dev] = {ALL: [0, 0], INET: [0, 0], 'peers': {}, 'ports': {ALL: {}, INET: {}}}
+        d[scope][0] += down
+        d[scope][1] += up
+        if scope == ALL:
+            pr = d['peers'].setdefault(peer, [0, 0])
+            pr[0] += down
+            pr[1] += up
+        pt = d['ports'][scope].setdefault(port, [0, 0])
+        pt[0] += down
+        pt[1] += up
+    scale = 8.0 / dt
+
+    def bps(value):
+        return int(round(value * scale))
+
+    def ranked(items):
+        return sorted(items, key=lambda kv: -(kv[1][0] + kv[1][1]))
+
+    devices = {}
+    for ip, d in acc.items():
+        peers = ranked(d['peers'].items())
+        chosen = {k for k, _ in peers[:TOP_PEERS]}
+        chosen |= {k for k, _ in [kv for kv in peers if not topo.is_local(kv[0])][:TOP_PEERS]}
+        devices[ip] = {
+            ALL: [bps(d[ALL][0]), bps(d[ALL][1])],
+            INET: [bps(d[INET][0]), bps(d[INET][1])],
+            'peers': [[k, bps(v[0]), bps(v[1]), 0 if topo.is_local(k) else 1] for k, v in peers if k in chosen],
+            'ports': {s: [[p, bps(v[0]), bps(v[1])] for p, v in ranked(d['ports'][s].items())[:TOP_PORTS]]
+                      for s in (ALL, INET)},
+        }
+    return devices, fw_bytes
+
+
+def wan_rates(prev, cur, devs, dt):
+    """Interface counters -> (down_bps, up_bps, sample) for the upstream devices.
+
+    sample holds the byte deltas and the per-frame header bytes the drift check
+    subtracts. A counter that went backwards (interface reset) counts as zero.
+    """
+    rx = tx = hrx = htx = 0
+    for dev in devs:
+        a, b = prev.get(dev), cur.get(dev)
+        if not a or not b:
+            continue
+        drx, dtx = max(0, b['rx'] - a['rx']), max(0, b['tx'] - a['tx'])
+        prx, ptx = max(0, b['rxp'] - a['rxp']), max(0, b['txp'] - a['txp'])
+        rx += drx
+        tx += dtx
+        if b['ether']:
+            hrx += prx * ETHER_HEADER
+            htx += ptx * ETHER_HEADER
+    return (int(round(rx * 8 / dt)), int(round(tx * 8 / dt)),
+            {'rx': rx, 'tx': tx, 'hdr_rx': hrx, 'hdr_tx': htx})
+
+
