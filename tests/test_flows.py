@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import warnings
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -316,6 +317,42 @@ class Reading(unittest.TestCase):
         self.assertEqual(flows.answer_totals(T0, T0 + 100, T0 + 300, before, NET, lambda lo, hi: [], 1)['devices'],
                          expected)
 
+    def test_a_rotation_while_the_files_are_opened_reads_each_once(self):
+        log = write_log(self.tmp.name, [('flowd.log.000001', EARLY + KINDS[0], T0 + 100),
+                                        ('flowd.log', KINDS[1], T0 + 200)])
+        real_open, rotated = os.open, []
+
+        def open_after_a_rotation(path, *args, **kwargs):
+            if not rotated:                       # core rotates between the listing and the first open
+                rotated.append(path)
+                os.rename(log + '.000001', log + '.000002')
+                os.rename(log, log + '.000001')
+                write_log(self.tmp.name, [('flowd.log', KINDS[2], T0 + 300)])
+            return real_open(path, *args, **kwargs)
+
+        with unittest.mock.patch('os.open', open_after_a_rotation):
+            opened = flows.open_log(log)
+        self.addCleanup(flows.close_log, opened)
+        self.assertEqual([flows._read(fd) for fd, _, _ in opened], [EARLY + KINDS[0], KINDS[1], KINDS[2]])
+
+    def test_a_log_that_never_settles_is_an_error(self):
+        log = write_log(self.tmp.name, [('flowd.log', KINDS[0], T0 + 100)])
+        with unittest.mock.patch.object(flows, '_files_now', lambda log: {}), \
+                self.assertRaisesRegex(RuntimeError, 'kept rotating'):
+            flows.open_log(log)
+
+    def test_a_file_that_cannot_be_opened_is_an_error_not_a_gap(self):
+        log = write_log(self.tmp.name, [('flowd.log.000001', EARLY, T0 + 100), ('flowd.log', KINDS[0], T0 + 200)])
+        real_open = os.open
+
+        def refuse_one(path, *args, **kwargs):
+            if path.endswith('.000001'):
+                raise PermissionError(13, 'Permission denied', path)
+            return real_open(path, *args, **kwargs)
+
+        with unittest.mock.patch('os.open', refuse_one), self.assertRaises(PermissionError):
+            flows.open_log(log)
+
 
 class Attribution(unittest.TestCase):
     def scan(self, data, a, i):
@@ -383,6 +420,21 @@ class Totals(unittest.TestCase):
         self.assertEqual(a['all']['hourly_until'], seam)
         self.assertEqual(a['inet'], {'from': L, 'to': to})
         self.assertEqual(a['devices']['192.168.1.200'], [3600, 0, 0, 0])   # a device only the hourly records have
+
+    def test_all_traffic_is_the_hourly_records_before_the_seam_and_the_log_after_it(self):
+        # a log complete from T0 (EARLY) that reaches past its first whole hour, the seam
+        seam = -(-T0 // 3600) * 3600
+        before = flow('8.8.8.8', '192.168.1.10', 500, recv=T0 + 200, start=T0 + 100, end=T0 + 200, if_in=1)
+        after = flow('8.8.8.8', '192.168.1.10', 1000, recv=seam + 200, start=seam + 100, end=seam + 200, if_in=1)
+        with tempfile.TemporaryDirectory() as d:
+            opened = flows.open_log(write_log(d, [('flowd.log', EARLY + before + after, seam + 300)]))
+            self.addCleanup(flows.close_log, opened)
+            rows = [{'start_time': utc(seam - 3600), 'src_addr': '192.168.1.10', 'direction': 'out', 'octets': 3600.0}]
+            a = flows.answer_totals(T0 - 7200, seam + 600, seam + 900, opened, NET, lambda lo, hi: rows, 1)
+        # all traffic: the hourly record before the seam, plus the log after it;
+        # internet only: the log from where it is complete (T0)
+        self.assertEqual(a['devices'], {'192.168.1.10': [3600 + 1000, 0, 500 + 1000, 0],
+                                        '192.168.1.11': [0, 0, 1, 0]})
 
 
 CORE_NETFLOW = next((p for p in (os.environ.get('CORE_NETFLOW'),
