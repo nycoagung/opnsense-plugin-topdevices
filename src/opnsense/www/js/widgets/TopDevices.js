@@ -217,7 +217,8 @@ export function liveRowsKey(rows) {
 
 // What core's aggregator keeps (26.7.4, scripts/netflow/lib/aggregates/source.py).
 const TOTALS = 'FlowSourceAddrTotals', DETAILS = 'FlowSourceAddrDetails';
-const TOTALS_KEPT = [[300, 3600], [3600, 86400], [86400, Infinity]];     // [bucket, seconds kept]
+const DAY = 86400, TOTALS_DAYS = 365, DETAILS_DAYS = 62;
+const TOTALS_KEPT = [[300, 3600], [3600, DAY], [DAY, TOTALS_DAYS * DAY]];     // [bucket, seconds kept]
 
 // The export returns every bucket that starts in [floor(from), to). Snapping the
 // window to the nearest bucket boundaries first gives a range the buckets that
@@ -233,19 +234,37 @@ function snapWindow(from, to, now, res) {
     return [start, end];
 }
 
+export const planKey = (p) => `${p.provider}/${p.start}/${p.end}/${p.res}`;
+
+// Snapped, then kept to what core surely still holds. Its cleanup drops buckets
+// older than its newest one less the history - or than now less the history,
+// while it holds rows stamped in the future - so the oldest bucket safe either
+// way is the first to start at or after now less the history. `clipped` says
+// the window was cut to it; an empty span (end <= start) has nothing to read.
+function planFor(provider, res, kept, from, to, now) {
+    let [start, end] = snapWindow(from, to, now, res);
+    const oldest = Math.ceil((now - kept) / res) * res;
+    const clipped = start < oldest;
+    if (clipped) start = oldest;
+    if (end < start) end = start;
+    return { provider, res, start, end, clipped };
+}
+
 export function detailsPlan(from, to, now) {
-    const [start, end] = snapWindow(from, to, now, 86400);
-    return { provider: DETAILS, res: 86400, start, end };
+    return planFor(DETAILS, DAY, DETAILS_DAYS * DAY, from, to, now);
 }
 
 // Which export, bucket size and span answer [from, to] at `now`: the finest
-// totals still kept for the window. Internet only needs the interface a flow
-// crossed, which only the daily details record.
+// totals whose history the window reaches back no further than one bucket past.
+// Internet only needs the details: the totals do carry an interface, but the one
+// on the device's own side, which cannot tell whether a flow crossed the WAN.
 export function nfPlan(from, to, now, scope) {
     if (scope === 'wan') return detailsPlan(from, to, now);
     for (const [res, kept] of TOTALS_KEPT) {
-        const [start, end] = snapWindow(from, to, now, res);
-        if (start >= Math.floor(now / res) * res - kept) return { provider: TOTALS, res, start, end };
+        const [start] = snapWindow(from, to, now, res);
+        if (res === DAY || start >= Math.ceil((now - kept) / res) * res - res) {
+            return planFor(TOTALS, res, kept, from, to, now);
+        }
     }
 }
 
@@ -392,13 +411,14 @@ export default class TopDevices extends BaseWidget {
 
     _window(key, nowMs = Date.now()) {
         const now = new Date(nowMs);
-        const mid = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
+        // local midnights, from the calendar: a day with a clock change is 23 or 25 hours
+        const midnight = (back) => Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate() - back).getTime() / 1000);
+        const mid = midnight(0);
         const s = Math.floor(now.getTime() / 1000);
-        const DAY = 86400;
         switch (key) {
             case '1h':        return [s - 3600, s];
             case 'today':     return [mid, s];
-            case 'yesterday': return [mid - DAY, mid];
+            case 'yesterday': return [midnight(1), mid];
             case '7d':        return [s - (7 * DAY), s];
             case 'custom': {
                 const f = this._localToEpoch(this.state.customFrom);
@@ -494,8 +514,8 @@ export default class TopDevices extends BaseWidget {
     // anything that never leaves the LAN (an NVR pulling camera streams, a NAS
     // copy) is simply absent from those rows. At the WAN both directions are
     // still keyed on dst_addr, so the down/up split is unchanged.
-    _inScope(r) {
-        if (this.state.scope !== 'wan') return true;
+    _inScope(r, scope = this.state.scope) {
+        if (scope !== 'wan') return true;
         return this.wanDevs.indexOf(r.iface) !== -1;
     }
 
@@ -563,7 +583,8 @@ export default class TopDevices extends BaseWidget {
 
     // plan: an nfPlan() / detailsPlan() result
     async _export(plan) {
-        const key = `${plan.provider}/${plan.start}/${plan.end}/${plan.res}`;
+        if (plan.end <= plan.start) return [];
+        const key = planKey(plan);
         if (this.cache[key]) return this.cache[key];
         const url = `/api/diagnostics/networkinsight/export/${key}`;
         const text = await new Promise((resolve, reject) => {
@@ -585,27 +606,46 @@ export default class TopDevices extends BaseWidget {
                 octets: parseFloat(c[ix.octets]) || 0
             });
         });
-        // the table's export, the drill-down's, and the one a scope change left
-        const keys = Object.keys(this.cache);
-        if (keys.length >= 3) delete this.cache[keys[0]];
         this.cache[key] = rows;
         return rows;
     }
 
-    async _load(nowMs = Date.now()) {
+    // Keep what the window on screen can still use - either scope's table and
+    // the drill-down's lists - and drop the exports of earlier windows.
+    _pruneCache(q) {
+        const want = new Set([nfPlan(q.from, q.to, q.now, 'all'), detailsPlan(q.from, q.to, q.now)].map(planKey));
+        Object.keys(this.cache).forEach((k) => { if (!want.has(k)) delete this.cache[k]; });
+    }
+
+    // Load the table for the range at `nowMs`. The scope is read once: each scope
+    // reads its own export. Resolves false when a newer load started meanwhile -
+    // its result stands, and its caller renders it.
+    async _load(nowMs = Date.now(), scope = this.state.scope) {
+        const token = this._loadToken = (this._loadToken || 0) + 1;
         const now = Math.floor(nowMs / 1000);
         const [from, to] = this._window(this.state.range, nowMs);
-        const plan = nfPlan(from, to, now, this.state.scope);
+        const plan = nfPlan(from, to, now, scope);
         const flows = await this._export(plan);
-        const keep = (ip, r) => this._isLocal(ip) && !this._isBroadcast(ip) && this._inScope(r);
+        if (token !== this._loadToken) return false;
+        const keep = (ip, r) => this._isLocal(ip) && !this._isBroadcast(ip) && this._inScope(r, scope);
         this.state.rows = Object.values(deviceTotals(flows, plan.provider, keep)).map(d => ({
             ip: d.ip, name: this.names[d.ip] || (this.ifaceNames || {})[d.ip] || '', net: this._netOf(d.ip),
             down: d.down, up: d.up, total: d.down + d.up
         }));
         this.state.window = [plan.start, plan.end];          // what the figures cover
         this.state.plan = plan;
-        this.state.request = { from, to, now, scope: this.state.scope };   // what the range asked for
-        this._scopeShown = this.state.scope;
+        this.state.request = { from, to, now, scope };        // what the range asked for
+        this._pruneCache(this.state.request);
+        return true;
+    }
+
+    // A load that failed leaves no rows it cannot vouch for, and no panel beside them.
+    _loadFailed() {
+        $('.td-body').html('<tr><td colspan="5" class="text-danger">Unable to read NetFlow data</td></tr>');
+        $('.td-window small').text('');
+        this.state.selected = null;
+        $('.td-details').empty();
+        this._applyLayout();
     }
 
     // The span the figures cover, and a note when the buckets are coarser than
@@ -616,31 +656,45 @@ export default class TopDevices extends BaseWidget {
         const scopeTxt = q.scope === 'wan'
             ? ` · internet only (via ${this.wanDevs.join(', ') || 'WAN'})`
             : ' · all traffic';
+        const days = p.provider === DETAILS ? DETAILS_DAYS : TOTALS_DAYS;
+        if (p.end <= p.start) {                  // nothing recorded, or nothing kept: say which
+            return { text: `${this._dateStr(q.from)}  →  ${this._dateStr(q.to)}${scopeTxt}`,
+                     note: p.clipped ? `No NetFlow data: only the last ${days} days are kept`
+                                     : 'No NetFlow data for this range' };
+        }
         const text = `${this._dateStr(p.start)}  →  ${this._dateStr(p.end)}${scopeTxt}`;
         let note = null;
-        if (p.res === 86400 && (Math.abs(p.start - q.from) >= 3600 || Math.abs(p.end - q.to) >= 3600)) {
-            const perDay = `kept per day (days start at ${this._hm(p.start)})`;
+        // off by an hour, or by a tenth of a shorter range: 10:00 -> 10:05 is not the last hour
+        const off = Math.max(Math.abs(p.start - q.from), Math.abs(p.end - q.to));
+        if (p.res === DAY && (p.clipped || off >= Math.min(3600, (q.to - q.from) / 10))) {
+            // a range across a clock change has days starting at two local times
+            const first = this._hm(p.start), last = this._hm(Math.floor((p.end - 1) / DAY) * DAY);
+            const starts = first === last ? first : `${first}, then ${last}`;
+            const perDay = `kept per day (days start at ${starts})${p.clipped ? `, for ${days} days` : ''}`;
+            const span = this._span(p.start, p.end, q.now);
             note = q.scope === 'wan'
-                ? `Internet only is ${perDay}: these cover ${this._span(p.start, p.end, q.now)}`
-                : `History older than a day is ${perDay}`;
+                ? `Internet only is ${perDay}: these cover ${span}`
+                : `History older than a day is ${perDay}${p.clipped ? `: these cover ${span}` : ''}`;
         }
         return { text, note };
     }
 
-    _hm(ts) {
+    _hm(ts, secs = false) {
         const d = new Date(ts * 1000);
         const p = (x) => String(x).padStart(2, '0');
-        return `${p(d.getHours())}:${p(d.getMinutes())}`;
+        return `${p(d.getHours())}:${p(d.getMinutes())}` + (secs ? `:${p(d.getSeconds())}` : '');
     }
 
-    // "10:00 → 19:08" within today, otherwise with the dates
+    // "10:00 → 19:08" within today, otherwise with the dates; in seconds when
+    // both ends fall in the same minute
     _span(a, b, now) {
         const day = (t) => new Date(t * 1000).toDateString();
-        if (day(a) === day(now) && day(b) === day(now)) return `${this._hm(a)} → ${this._hm(b)}`;
+        const secs = day(a) === day(b) && this._hm(a) === this._hm(b);
+        if (day(a) === day(now) && day(b) === day(now)) return `${this._hm(a, secs)} → ${this._hm(b, secs)}`;
         const full = (t) => {
             const d = new Date(t * 1000);
             const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
-            return `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${d.getDate()} ${mon} ${this._hm(t)}`;
+            return `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${d.getDate()} ${mon} ${this._hm(t, secs)}`;
         };
         return `${full(a)} → ${full(b)}`;
     }
@@ -877,7 +931,7 @@ export default class TopDevices extends BaseWidget {
             self._liveViewChanged();
             // must await: render() drops a selection the new scope excludes, and
             // reading state.selected before that lands re-renders the stale device
-            await self.render();                 // export is cached; only the filter changed
+            await self.render();                 // reloads for the new scope, at the same moment
             if (self.state.selected) await self.renderDetails(self.state.selected);
         });
         $(document).on('change.topdevices', '.td-network', function () {
@@ -928,12 +982,12 @@ export default class TopDevices extends BaseWidget {
         if (force) this.cache = {};          // drop the cached export on an explicit refresh
         try {
             await this._loadNames();
-            await this._load();
-            await this.render();
-            if (this.state.selected) await this.renderDetails(this.state.selected);
+            if (await this._load()) {
+                await this.render();
+                if (this.state.selected) await this.renderDetails(this.state.selected);
+            }
         } catch (e) {
-            $('.td-body').html('<tr><td colspan="5" class="text-danger">Unable to read NetFlow data</td></tr>');
-            $('.td-window small').text('');
+            this._loadFailed();
         } finally { this.loading = false; this._busy(false); }
     }
 
@@ -970,11 +1024,17 @@ export default class TopDevices extends BaseWidget {
 
     async _render() {
         if (this.state.range === 'live') { this._renderLive(); return; }
-        // Each scope reads its own export (see nfPlan), so a scope change reloads;
-        // the exports stay cached, so switching back costs nothing.
-        if (this._scopeShown !== this.state.scope && this.state.window) {
-            this._scopeShown = this.state.scope;
-            try { await this._load(); } catch (e) { /* keep previous rows */ }
+        // Each scope reads its own export (see nfPlan). A scope change reloads at
+        // the moment already on screen, so both scopes describe the same window
+        // and switching back is served from the cache - until the rows match the
+        // control, since a load for a scope the user has already left can land last.
+        let q = this.state.request;
+        while (this.state.window && q && q.scope !== this.state.scope) {
+            let current;
+            try { current = await this._load(q.now * 1000, this.state.scope); }
+            catch (e) { this._loadFailed(); return; }
+            if (!current) return;
+            q = this.state.request;
         }
         const cfg = await this.getWidgetConfig() || {};
         const limit = this.state.rowsN || parseInt(cfg.rowsToShow, 10) || 20;
@@ -1575,7 +1635,7 @@ export default class TopDevices extends BaseWidget {
         let down = 0, up = 0;
         flows.forEach((r) => {
             if (r.dst !== ip) return;                 // dst-keyed, see deviceTotals
-            if (!this._inScope(r)) return;
+            if (!this._inScope(r, q.scope)) return;
             const peer = r.src;
             if (!peer) return;
             peers[peer] = (peers[peer] || 0) + r.octets;
@@ -1585,8 +1645,9 @@ export default class TopDevices extends BaseWidget {
         });
         const row = this.state.rows.find(x => x.ip === ip);
         if (row) { down = row.down; up = row.up; }
-        const same = plan.provider === table.provider && plan.start === table.start && plan.end === table.end;
-        const note = same ? null : `Peers and ports cover ${this._span(plan.start, plan.end, q.now)} (kept per day)`;
+        const same = plan.start === table.start && plan.end === table.end;
+        const note = plan.end <= plan.start ? `Peers and ports are only kept for ${DETAILS_DAYS} days`
+            : same ? null : `Peers and ports cover ${this._span(plan.start, plan.end, q.now)} (kept per day)`;
         return { peers, ports, down, up, note };
     }
 

@@ -26,6 +26,11 @@ Plugin Changelog
   24 hours and Today; every window snaps to whole buckets
 * The caption shows the span the figures cover, with a note when daily
   buckets stand in for a shorter range (internet only, older history)
+* Ranges further back than NetFlow keeps (62 days for internet only and the
+  drill-down, a year for all traffic) are cut to what is kept, and say so
+* Switching scope while data loads can no longer show one scope's rows under
+  the other's caption; switching back reuses the loaded data
+* Yesterday follows the calendar across daylight-saving changes
 
 0.1.1
 
