@@ -1,6 +1,21 @@
-Dashboard widget listing the busiest local devices over the last 24 hours,
-with the previous 24 hours alongside for comparison.
+Dashboard widget listing local devices by traffic, split into download and
+upload, from the built-in NetFlow/Insight aggregator. No extra collector is
+required.
 
-Data comes from the built-in NetFlow/Insight aggregator, so no extra
-collector is required. Figures are TOTAL traffic per device (internal plus
-internet), not WAN-only internet usage.
+Pick a range (last hour, last 24 hours, today, yesterday, last 7 days or a
+custom range) and a scope (all traffic, or internet only). Filter by network,
+hostname or IP, sort any column, and click a device for its top peers and
+ports. Totals can be charted as a pie or a stacked bar.
+
+Local networks and the upstream interface come from the interface
+configuration, and hostnames from Dnsmasq DHCP leases and host records.
+Nothing is hardcoded.
+
+WWW: https://github.com/nycoagung/opnsense-plugin-topdevices
+
+Plugin Changelog
+----------------
+
+0.0.1
+
+* Initial release
