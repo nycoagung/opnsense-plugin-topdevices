@@ -110,7 +110,8 @@ way core's own Traffic Graph streams interface counters.
   the pointer is over the table.
 - **What it cannot see.** A connection that opens and closes between two samples;
   traffic between two devices on the same network, which never reaches the
-  firewall; and IPv6, which is counted but not attributed.
+  firewall; and IPv6, which is counted but not attributed - the summary line says
+  how many connections that is.
 - **Behind an ISP router.** The WAN is found by its default route as well as by
   its address, so a WAN with a private address (double NAT) works. The NetFlow
   ranges still use the address-only rule.
@@ -124,6 +125,9 @@ way core's own Traffic Graph streams interface counters.
   of showing quietly wrong numbers.
 - **Access.** The stream needs the *Dashboard: Top Devices live traffic*
   privilege. It shows every device's peers, as Diagnostics → States does.
+  OPNsense offers a widget only to users who hold the privileges of every
+  endpoint it declares, so from 0.1.0 a non-root user needs this privilege to
+  see the widget at all.
 
 ## Two upstream API limitations
 
