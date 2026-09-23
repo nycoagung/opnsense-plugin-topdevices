@@ -5,6 +5,8 @@ NetFlow/Insight aggregator. No extra collector required.
 
 ## Features
 
+- **Live** — each device's current download and upload, updated every second,
+  from the firewall's connection table (see *Live traffic*)
 - **Date range** — last hour, 24 hours, today, yesterday, 7 days, or a custom
   from/to range picked to the second
 - **Download / upload split** per device, plus the combined total
@@ -85,6 +87,44 @@ the peer address is already translated away. NetFlow therefore never attributes
 a byte of VPN internet traffic to the peer address, on any interface, so there
 is nothing for the widget to count.
 
+The **Live** view does attribute it: the pf state table keeps each connection's
+address from before NAT, so a WireGuard client appears under its tunnel address.
+
+## Live traffic
+
+Pick **Live** in the range list for each device's current download and upload,
+in bits per second, updated every second (or every 2 or 5 seconds, a widget
+option). NetFlow is not involved: a small sampler on the firewall
+(`/usr/local/opnsense/scripts/topdevices/live.py`) reads the pf state table once
+per interval and streams per-device rates to the widget through configd, the
+way core's own Traffic Graph streams interface counters.
+
+- **Accuracy.** Measured against the kernel's interface counters on the reference
+  install, this method accounts for 100.0% of WAN download and 100.3% of upload
+  once the firewall's own traffic and 14 bytes of Ethernet header per packet are
+  counted. Core's iftop-based *Top talkers* read 32-68% of the same steady load,
+  which is why it is not used.
+- **What the numbers are.** Rows and chart show a 3-second average, refreshed each
+  interval; the WAN figure beside the range is the last interval alone. A device
+  that goes quiet stays listed at 0 for 10 seconds. Row order holds still while
+  the pointer is over the table.
+- **What it cannot see.** A connection that opens and closes between two samples;
+  traffic between two devices on the same network, which never reaches the
+  firewall; and IPv6, which is counted but not attributed.
+- **Behind an ISP router.** The WAN is found by its default route as well as by
+  its address, so a WAN with a private address (double NAT) works. The NetFlow
+  ranges still use the address-only rule.
+- **Cost.** One sampler per open dashboard, only while Live is on screen and the
+  tab is visible. It measures its own CPU and slows down rather than use more
+  than 10% of one core, and says so (*throttled to N s*). It restarts itself every
+  hour; the browser reconnects about a second later.
+- **Self-check.** Each update compares the attributed traffic with the WAN
+  counters over the last 60 seconds. If they disagree by more than 10% - the sign
+  of a firmware update having changed pfctl's output - the widget says so instead
+  of showing quietly wrong numbers.
+- **Access.** The stream needs the *Dashboard: Top Devices live traffic*
+  privilege. It shows every device's peers, as Diagnostics → States does.
+
 ## Two upstream API limitations
 
 Both were measured against a live firewall, not assumed:
@@ -114,6 +154,11 @@ Run once on the firewall as root:
 
 Then hard-refresh the dashboard (Cmd+Shift+R) and add **Top Devices** from the
 widget picker. Afterwards `configctl topdevices install` does the same thing.
+
+**Upgrading from 0.0.1:** run the bootstrap command above once. The 0.0.1
+installer only knows its own three files, so `configctl topdevices install` (or
+the weekly cron job) would install the new widget without the live backend
+until its next run.
 
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
@@ -157,7 +202,7 @@ Requires a FreeBSD host matching the target ABI (26.7 / amd64 / FreeBSD 15.1):
     cp -R opnsense-plugin-topdevices plugins/net-mgmt/topdevices
     cd plugins/net-mgmt/topdevices && make package
 
-That builds `os-topdevices-0.0.1.pkg`; `pkg add` it on the firewall, or run
+That builds `os-topdevices-0.1.0.pkg`; `pkg add` it on the firewall, or run
 `make upgrade` instead of `make package` to build and install in one step.
 GitHub releases carry source only - no prebuilt package is published.
 
@@ -182,9 +227,8 @@ Verified by measurement against a live firewall, not by reading the code:
 - **Cron self-heal works unattended** — observed pulling a new build and swapping
   the widget on schedule with no manual trigger.
 
-**Not tested:** there are no automated tests. The data logic is the part worth
-covering; the sibling `os-parentalcontrol` plugin shows the shape (a pure
-function plus a table-driven suite that needs no OPNsense).
+**Automated tests** cover the live sampler and the widget's live logic (see
+*Tests*). The NetFlow views still have none.
 
 **The installer was ported to codeload** after the GitHub API's per-file rate
 limit locked the sibling `os-parentalcontrol` plugin out entirely. No GitHub API
@@ -192,6 +236,37 @@ request is made at all now, and no hop goes through raw's per-edge cache — bot
 of which silently served stale files here before. The codeload path was dry-run
 against the live repo and installs all three files byte-identically.
 
+## Tests
+
+    python3 -m unittest discover -s tests -v    # sampler: parser, crediting rules, loop
+    node --test tests/live_view.test.mjs         # widget: averaging, lifecycle, watchdog
+    sh tests/test_install.sh                     # installer dry run into a scratch root
+    python3 tests/mutate.py                      # each planted sampler bug must fail the suite
+    node tests/mutate_widget.mjs                 # the same for the widget
+
+`tests/test_core_parity.py` compares our pfctl parser with core's own on the
+fixture: point `OPNSENSE_CORE` at an opnsense/core checkout, or `CORE_STATES_PY` at
+its `states.py`. On the firewall, `python3 tests/parity_live.py` does the same
+over the live state table.
+
+## Removing
+
+Remove the weekly *Install/refresh TopDevices dashboard widget* job under
+System → Settings → Cron first, or it puts everything back. Then, as root:
+
+    rm -f /usr/local/opnsense/www/js/widgets/TopDevices.js \
+          /usr/local/opnsense/www/js/widgets/Metadata/TopDevices.xml \
+          /usr/local/opnsense/service/conf/actions.d/actions_topdevices.conf
+    rm -rf /usr/local/opnsense/scripts/topdevices \
+           /usr/local/opnsense/mvc/app/controllers/OPNsense/TopDevices \
+           /usr/local/opnsense/mvc/app/models/OPNsense/TopDevices
+    service configd restart
+
+Rolling back to 0.0.1 with its bootstrap command leaves the live sampler, the
+controller and the ACL behind. They are inert without the `live` action, and the
+commands above remove them.
+
 ## Requirements
 
-Reporting → NetFlow must be enabled with local aggregation on.
+Reporting → NetFlow must be enabled with local aggregation on, for the
+historical ranges. Live needs nothing extra.
