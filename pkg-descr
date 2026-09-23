@@ -1,20 +1,30 @@
 Dashboard widget listing local devices by traffic, split into download and
-upload, from the built-in NetFlow/Insight aggregator. No extra collector is
-required.
+upload. Historical ranges come from the built-in NetFlow/Insight aggregator;
+a Live view streams current rates, updated every second, from the pf state
+table. No extra collector is required.
 
-Pick a range (last hour, last 24 hours, today, yesterday, last 7 days or a
-custom range) and a scope (all traffic, or internet only). Filter by network,
-hostname or IP, sort any column, and click a device for its top peers and
-ports. Totals can be charted as a pie or a stacked bar.
+Pick a range (live, last hour, last 24 hours, today, yesterday, last 7 days
+or a custom range) and a scope (all traffic, or internet only). Filter by
+network, hostname or IP, sort any column, and click a device for its top
+peers and ports. Totals can be charted as a pie or a stacked bar.
 
-Local networks and the upstream interface come from the interface
-configuration, and hostnames from Dnsmasq DHCP leases and host records.
-Nothing is hardcoded.
+Local networks and the upstream interface come from the firewall's own
+interfaces (and, for Live, its routes), and hostnames from Dnsmasq DHCP
+leases and host records. Nothing is hardcoded.
 
 WWW: https://github.com/nycoagung/opnsense-plugin-topdevices
 
 Plugin Changelog
 ----------------
+
+0.1.0
+
+* Live view: per-device download and upload rates, streamed from the pf
+  state table and updated every second
+* The live sampler throttles itself, checks its totals against the WAN
+  counters and restarts hourly
+* The installer adds the live backend, clears the ACL cache and restarts
+  configd detached
 
 0.0.1
 
