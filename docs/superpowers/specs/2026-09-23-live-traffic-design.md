@@ -150,6 +150,10 @@ kernel counters: `b1` is download for outbound NAT.
 | Firewall's own | `nat` is a firewall address; or no `nat` and `src` (out) or `dst` (in) is a firewall upstream address | drift check only | none | | | |
 | IPv6 | any | counted in `v6_skipped`, bytes to the drift check | none | | | |
 
+*(Refined after review:)* a local subnet's broadcast address is never a device either.
+NetBIOS or SSDP traffic to `x.x.x.255` creates ordinary states, and the NetFlow view has
+always dropped these addresses.
+
 Consequences, each one a test case:
 
 - **Internet classification needs no WAN address.** It only asks "did NAT translate
@@ -320,7 +324,9 @@ at 365-day retention.
 - **Summary line.** It reads
   `Live · WAN ↓ 6.1 Mb/s ↑ 0.2 Mb/s (via em0) · internet only · 1 s`. It adds
   `throttled to N s` when the sampler has slowed down, and a warning when `coverage.ok`
-  is `false`.
+  is `false`. *(Refined after review:)* it also names the IPv6 connections and
+  unreadable state lines when there are any, so a gap in what was measured never
+  passes for a quiet network.
 - **Readability.**
   - Rows and chart show a 3-second time-weighted average (`Σ rate·dt / Σ dt`), and the
     WAN figure shows the last interval alone.
@@ -361,6 +367,11 @@ at 365-day retention.
   override does not, and the base implementation is what closes the stream.
 - **Connection failures.** `openEventSource` gives up silently after 3 failed connects,
   hence the widget's own watchdog in §7.2.
+- **The connect timer** *(found in review)*. `openEventSource` arms a reconnect timer
+  that only a successful open clears, and it reopens with the URL it captured. A stream
+  left before it connected, or one of a widget already removed, would come back by
+  itself. The widget overrides `openEventSource` to refuse any open outside Live or
+  after removal.
 
 ### 7.4 Testable core
 
@@ -491,8 +502,10 @@ The user installs the branch. Checks run through the API unless marked (user).
    - The stream delivers events.
    - Parental Control's per-minute sync has run since the restart.
    - The dashboard loads.
-3. **Run §11.** Finish before Sunday 05:00, or pause the weekly TopDevices job,
-   because that job reinstalls `main`.
+3. **Run §11.** *(Corrected in review:)* once the branch's installer is on the firewall,
+   a weekly run against a `main` still at 0.0.1 fails closed ("missing from source")
+   and changes nothing. So the test install survives Sunday's job, which logs an error
+   for that run.
 4. **Merge only after §11 passes.** The branch carries `0.1.0` from the start, in
    `Makefile`, a `pkg-descr` changelog entry and the sampler's `v`, so §11.1 can check
    it. Merge to `main`, tag `0.1.0`, publish the GitHub release, and update the README
