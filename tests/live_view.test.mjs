@@ -57,7 +57,59 @@ const chain = new Proxy(function () {}, {
     get: (t, p) => (p === Symbol.toPrimitive ? () => '' : p === 'length' ? 0 : chain),
     apply: () => chain
 });
-globalThis.$ = chain;
+// ...except the table body, whose rows the tests read back. It is rebuilt from the
+// markup _rowsHtml writes (<tr data-ip> with five <td>, the total in <strong>) and
+// patched through the jQuery calls _paintLiveRows makes.
+class El {
+    constructor(tag, ip) { this.tag = tag; this.ip = ip; this.kids = []; this.textValue = ''; this.classes = new Set(); }
+}
+const tbody = new El('tbody');
+function parseRows(markup) {
+    const rows = [];
+    for (const [, attrs, inner] of markup.matchAll(/<tr([^>]*)>([\s\S]*?)<\/tr>/g)) {
+        const tr = new El('tr', (attrs.match(/data-ip="([^"]*)"/) || [])[1]);
+        if (/class="info"/.test(attrs)) tr.classes.add('info');
+        for (const [, cell] of inner.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)) {
+            const td = new El('td');
+            const strong = cell.trim().match(/^<strong[^>]*>([\s\S]*)<\/strong>$/);
+            if (strong) { const b = new El('strong'); b.textValue = strong[1]; td.kids.push(b); }
+            td.textValue = cell.replace(/<[^>]+>/g, '').trim();
+            tr.kids.push(td);
+        }
+        rows.push(tr);
+    }
+    return rows;
+}
+function wrap(list) {
+    return {
+        length: list.length,
+        children(sel) {
+            const want = sel === 'tr[data-ip]' ? (k) => k.tag === 'tr' && k.ip !== undefined : (k) => k.tag === sel;
+            return wrap(list.flatMap(el => el.kids.filter(want)));
+        },
+        map(fn) { const out = list.map((el, i) => fn(i, el)); return { get: () => out }; },
+        each(fn) { list.forEach((el, i) => fn(i, el)); return this; },
+        eq(i) { return wrap(list[i] ? [list[i]] : []); },
+        attr(name) { return name === 'data-ip' && list[0] ? list[0].ip : undefined; },
+        text(v) { list.forEach(el => { el.textValue = String(v); }); return this; },
+        toggleClass(c, on) { list.forEach(el => (on ? el.classes.add(c) : el.classes.delete(c))); return this; },
+        html(markup) { tbody.kids = parseRows(String(markup)); return this; }
+    };
+}
+// $('<div>').text(s).html(), which _esc() relies on, escapes as the DOM does
+function escaper() {
+    let t = '';
+    const o = { text(s) { t = String(s); return o; }, html: () => t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') };
+    return o;
+}
+globalThis.$ = new Proxy(chain, {
+    apply: (target, self, [arg]) => (arg === '.td-body' ? wrap([tbody])
+        : arg instanceof El ? wrap([arg])
+        : arg === '<div>' ? escaper()
+        : chain)
+});
+// a row's five cells as shown: the total's text lives in its <strong>
+const cells = (tr) => tr.kids.map(td => (td.kids[0] && td.kids[0].tag === 'strong' ? td.kids[0].textValue : td.textValue));
 globalThis.document = { hidden: false };
 const store = new Map();                     // localStorage, for the remembered view
 globalThis.localStorage = {
@@ -79,7 +131,7 @@ globalThis.Chart = class {
         }
         this._built = new Set(this.data.datasets);
     }
-    destroy() {}
+    destroy() { this.destroyed = true; }
 };
 // the dashboard loads chartjs-plugin-streaming, which registers the 'realtime' scale
 const withStreaming = { getScale(id) { if (id === 'realtime') return {}; throw new Error(`"${id}" is not a registered scale.`); } };
@@ -403,14 +455,16 @@ test('the picker offers named devices and anything Live saw, never the firewall 
     const { w, send } = await running(t);
     networks(w);
     w.names = { '192.168.1.10': 'nas', '192.168.20.5': 'camera', '192.168.1.254': 'opnsense', '8.8.8.8': 'dns.google' };
-    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.77': dev([5, 5]), '192.168.20.255': dev([1, 1]) } });
+    // 172.16.5.5: seen by the sampler on an interface the widget has no network for
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.77': dev([5, 5]), '192.168.20.255': dev([1, 1]),
+                                             '172.16.5.5': dev([3, 3]) } });
     send({ dt: 1, effective: 1, wan, devices: {} });
     w.state.livePick = ['192.168.1.99', '10.9.9.9'];     // picked on another day; 10.9.9.9 is on no network now
     assert.deepEqual(w._pickChoices(), [
         { label: 'LAN', devices: [{ ip: '192.168.1.77', name: '' }, { ip: '192.168.1.99', name: '' },
                                   { ip: '192.168.1.10', name: 'nas' }] },
         { label: 'IOT', devices: [{ ip: '192.168.20.5', name: 'camera' }] },
-        { label: 'Other', devices: [{ ip: '10.9.9.9', name: '' }] }
+        { label: 'Other', devices: [{ ip: '10.9.9.9', name: '' }, { ip: '172.16.5.5', name: '' }] }
     ]);
 });
 
@@ -565,4 +619,101 @@ test('with nothing picked, the list is seeded busiest first from the first measu
     send({ dt: 1, effective: 1, wan, devices: {
         '192.168.1.12': dev([900, 0]), '192.168.1.11': dev([500, 0]), '192.168.1.10': dev([100, 0]) } });
     assert.deepEqual(w._liveTableRows().map(r => r.ip), ['192.168.1.12', '192.168.1.11', '192.168.1.10']);
+});
+
+/* ---------- review fixes: the line graph's lifecycle ---------- */
+
+// Date.now() under the test's control: the line graph stamps its points with it
+function clock(t) {
+    const real = Date.now;
+    let now = 1_000_000_000_000;
+    Date.now = () => now;
+    t.after(() => { Date.now = real; });
+    return { advance: (ms) => { now += ms; } };
+}
+
+test('re-entering Live starts the line axis afresh, while a refresh keeps what is still on screen', async (t) => {
+    const time = clock(t);
+    const { w, send } = await running(t);
+    w.state.livePick = ['192.168.1.10'];
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([90000000, 0]) } });
+    assert.equal(w.chartObj.options.scales.y.max, 100000000);         // 90 Mb/s on screen
+    time.advance(2000);
+    await w._startLive();                                            // the refresh button: the spike is 2 s old
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([100000, 0]) } });
+    assert.equal(w.chartObj.options.scales.y.max, 100000000);         // still drawn, so still covered
+    w.state.range = '24h';
+    w._stopLive();
+    time.advance(600000);                                            // back ten minutes later
+    w.state.range = 'live';
+    await w._startLive();
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([100000, 0]) } });
+    assert.equal(w.chartObj.options.scales.y.max, 100000);
+});
+
+test('leaving Live stops its line graph, and a restart draws it with the current interval', async (t) => {
+    const { w, send } = await running(t);
+    w.state.livePick = ['192.168.1.10'];
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([5000, 50]) } });
+    const first = w.chartObj;
+    assert.equal(first.options.scales.x.realtime.delay, 2000);        // 1 s interval + 1 s
+    w.state.range = '24h';
+    w._stopLive();                                                   // a NetFlow range that may never load
+    assert.equal(first.destroyed, true);
+    assert.equal(w.chartObj, null);
+    w.state.range = 'live';
+    w.config.widget.liveInterval = '5';                               // the options dialog, then refresh
+    await w._startLive();
+    send({ dt: 5, effective: 5, wan, devices: { '192.168.1.10': dev([5000, 50]) } });
+    assert.equal(w.chartObj.options.scales.x.realtime.delay, 6000);
+});
+
+/* ---------- review fixes: the table is patched in place ---------- */
+
+test('while the listed devices stay the same, Live patches their figures in place', async (t) => {
+    const { w, send } = await running(t);
+    w.state.livePick = ['192.168.1.10', '192.168.1.11'];
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([8000, 800]) } });
+    const before = tbody.kids.slice();
+    assert.deepEqual(before.map(tr => tr.ip), ['192.168.1.10', '192.168.1.11']);
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([16000, 1600]) } });
+    assert.ok(tbody.kids.length === 2 && tbody.kids.every((tr, i) => tr === before[i]), 'the rows were rebuilt');
+    assert.deepEqual(cells(tbody.kids[0]).slice(2), ['12.0 kb/s', '1.2 kb/s', '13.2 kb/s']);   // 2 s average
+    assert.deepEqual(cells(tbody.kids[1]).slice(2), ['0 b/s', '0 b/s', '0 b/s']);
+});
+
+test('the selected row keeps its highlight through in-place updates', async (t) => {
+    const { w, send } = await running(t);
+    w.state.livePick = ['192.168.1.10', '192.168.1.11'];
+    send({ dt: 1, effective: 1, wan, devices: {} });
+    const rows = tbody.kids.slice();
+    w.state.selected = '192.168.1.11';
+    send({ dt: 1, effective: 1, wan, devices: {} });
+    assert.ok(tbody.kids.every((tr, i) => tr === rows[i]), 'the rows were rebuilt');
+    assert.deepEqual(tbody.kids.map(tr => tr.classes.has('info')), [false, true]);
+    w.state.selected = null;
+    send({ dt: 1, effective: 1, wan, devices: {} });
+    assert.deepEqual(tbody.kids.map(tr => tr.classes.has('info')), [false, false]);
+});
+
+test('a change in the listed devices rebuilds the table', async (t) => {
+    const { w, send } = await running(t);
+    w.state.livePick = ['192.168.1.10'];
+    send({ dt: 1, effective: 1, wan, devices: {} });
+    const first = tbody.kids[0];
+    w.state.livePick = ['192.168.1.10', '192.168.1.11'];
+    send({ dt: 1, effective: 1, wan, devices: {} });
+    assert.deepEqual(tbody.kids.map(tr => tr.ip), ['192.168.1.10', '192.168.1.11']);
+    assert.notEqual(tbody.kids[0], first);
+});
+
+test('switching the Live chart sizes the new one afresh', async (t) => {
+    const { w, send } = await running(t);
+    w.state.livePick = ['192.168.1.10'];
+    w.state.liveChart = 'bar';
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([1000000, 7000000]) } });
+    assert.equal(w.chartObj.options.scales.y.max, 8000000);          // the bar stacks down + up
+    w._setChart('line');
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([1000000, 7000000]) } });
+    assert.equal(w.chartObj.options.scales.y.max, 1000000);          // the line plots download only
 });
