@@ -437,6 +437,49 @@ class Totals(unittest.TestCase):
                                         '192.168.1.11': [0, 0, 1, 0]})
 
 
+class Device(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def answer(self, data, frm, to, ip='192.168.1.10', early=True):
+        opened = flows.open_log(write_log(self.tmp.name, [('flowd.log', (EARLY if early else b'') + data, T0 + 100)]))
+        self.addCleanup(flows.close_log, opened)
+        return flows.answer_device(IP(ip), frm, to, T0 + 200, opened, NET, 1)
+
+    def test_peers_and_ports_in_both_directions_and_both_scopes(self):
+        data = b''.join(KINDS) + flow('8.8.8.8', '192.168.1.10', 500, recv=T0 + 100, start=T0 + 10, end=T0 + 90,
+                                      if_in=1, if_out=2, ports=(53, 5353))
+        a = self.answer(data, T0, T0 + 100)
+        self.assertEqual((a['ip'], a['from'], a['to']), ('192.168.1.10', T0, T0 + 100))
+        self.assertEqual(a['peers'], {'all': [['8.8.8.8', 1500], ['1.1.1.1', 300], ['192.168.20.5', 50],
+                                              ['192.168.1.255', 7]],
+                                      'inet': [['8.8.8.8', 1500], ['1.1.1.1', 300]]})
+        self.assertEqual(a['ports'], {'all': [['443', 1357], ['53', 500]], 'inet': [['443', 1300], ['53', 500]]})
+
+    def test_port_zero_is_other(self):
+        a = self.answer(flow('8.8.8.8', '192.168.1.10', 5, recv=T0 + 100, start=T0, end=T0 + 90, ports=(0, 0)),
+                        T0, T0 + 100)
+        self.assertEqual(a['ports']['all'], [['other', 5]])
+
+    def test_lists_stop_at_the_panels_hundred_rows(self):
+        data = b''.join(flow('8.8.%d.%d' % (i // 250, i % 250), '192.168.1.10', 1000 + i, recv=T0 + 100,
+                             start=T0, end=T0 + 90, if_in=1) for i in range(105))
+        a = self.answer(data, T0, T0 + 100)
+        self.assertEqual(len(a['peers']['all']), 100)
+        self.assertEqual(a['peers']['all'][0], ['8.8.0.104', 1104])
+
+    def test_the_lists_cover_the_log_part_of_the_range(self):
+        a = self.answer(b''.join(KINDS), T0 - 500, T0 + 100, early=False)
+        self.assertEqual((a['from'], a['log_from']), (T0 + 100, T0 + 100))   # KINDS arrive at T0 + 100
+        self.assertEqual(a['peers'], {'all': [], 'inet': []})
+
+    def test_only_a_device_has_a_panel(self):
+        for ip in ('192.168.1.255', '8.8.8.8'):
+            with self.subTest(ip=ip), self.assertRaises(ValueError):
+                self.answer(b''.join(KINDS), T0, T0 + 100, ip=ip)
+
+
 CORE_NETFLOW = next((p for p in (os.environ.get('CORE_NETFLOW'),
                                  os.path.join(os.environ.get('OPNSENSE_CORE', '/nonexistent'), 'src/opnsense/scripts/netflow'),
                                  flows.NETFLOW_LIB)
@@ -508,6 +551,24 @@ class CoreParity(unittest.TestCase):
         for ip, (down, up) in fill.items():
             self.assertAlmostEqual(down, raw[ip][0], delta=1e-3)
             self.assertAlmostEqual(up, raw[ip][1], delta=1e-3)
+
+    def test_device_lists_match_cores_details(self):
+        a0 = -(-T0 // 300) * 300
+        lo, hi = a0 + 300, a0 + 1800
+        for dev in ('192.168.1.12', '192.168.20.103'):
+            core = {}
+            for row in self.details.get_data(lo, hi):
+                if row['dst_addr'] != dev:        # dst-keyed: both directions of the device's flows
+                    continue
+                t = core.setdefault(row['src_addr'], [0.0, 0.0])
+                t[0] += row['octets']
+                if row['if'] == 'em0':
+                    t[1] += row['octets']
+            peers, _ = flows.scan_device((self.opened[0][0], lo, hi, IP(dev), NET))
+            self.assertEqual({flows._ip_str(p) for p in peers}, set(core), dev)
+            for p, v in peers.items():
+                for k in (0, 1):
+                    self.assertAlmostEqual(v[k], core[flows._ip_str(p)][k], delta=1e-3)
 
 
 if __name__ == '__main__':

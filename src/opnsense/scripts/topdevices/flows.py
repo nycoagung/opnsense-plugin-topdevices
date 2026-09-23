@@ -364,3 +364,69 @@ def answer_totals(frm, to, now, opened, net, hourly_rows, workers):
             'wan': net.upstream_names,
             'devices': {_ip_str(ip): [int(round(x)) for x in v] for ip, v in sorted(acc.items())},
             'files': len(jobs), 'workers': max(1, min(workers, len(jobs)))}
+
+
+# ---------------------------------------------------------------- one device
+
+
+def scan_device(job):
+    """One file's peers and ports for one device over [lo, hi), in both scopes:
+    ({peer: [all, inet]}, {port: [all, inet]}), both directions summed. A port is the
+    service port as core's details define it: the lower of the flow's two."""
+    fd, lo, hi, ip, net = job
+    peers, ports = {}, {}
+    for recv, src, dst, sp, dp, octets, if_in, if_out, fs, fe, dur in records(_read(fd), ports=True):
+        if recv < lo or (src != ip and dst != ip):
+            continue
+        b = share(fs, fe, dur, octets, lo, hi)
+        if not b:
+            continue
+        if dst == ip:                     # its download: internet when it came in upstream
+            peer, inet = src, if_in in net.upstream
+        else:                             # its upload: internet when it left upstream
+            peer, inet = dst, if_out in net.upstream
+        port = min(sp, dp)
+        for key, table in ((peer, peers), (port, ports)):
+            t = table.get(key) or table.setdefault(key, [0.0, 0.0])
+            t[0] += b
+            if inet:
+                t[1] += b
+    return peers, ports
+
+
+def _merge2(into, part):
+    for key, v in part.items():
+        t = into.setdefault(key, [0.0, 0.0])
+        t[0] += v[0]
+        t[1] += v[1]
+
+
+def top(table, k, name, n=TOP):
+    """The n biggest entries of table by scope k (0 all, 1 internet), biggest first,
+    as [[name(key), bytes]]."""
+    items = sorted(((key, v[k]) for key, v in table.items() if v[k] > 0), key=lambda kv: (-kv[1], kv[0]))
+    return [[name(key), int(round(b))] for key, b in items[:n]]
+
+
+def _port_str(port):
+    return str(port) if port else 'other'
+
+
+def answer_device(ip, frm, to, now, opened, net, workers):
+    """One device's peers and ports over [max(frm, L), to), both scopes (spec §5.5)."""
+    if not net.is_device(ip):
+        raise ValueError('%s is not a local device' % _ip_str(ip))
+    L = log_from(opened)
+    if L is None:
+        raise ValueError('the NetFlow flow log holds no flows yet')
+    lo = max(frm, L)
+    peers, ports, jobs = {}, {}, []
+    if lo < to:
+        jobs = [(fd, lo, to, ip, net) for fd, _, _ in files_for(opened, lo)]
+        for p, q in run_parallel(scan_device, jobs, workers):
+            _merge2(peers, p)
+            _merge2(ports, q)
+    return {'now': now, 'log_from': L, 'ip': _ip_str(ip), 'from': lo, 'to': to,
+            'peers': {'all': top(peers, 0, _ip_str), 'inet': top(peers, 1, _ip_str)},
+            'ports': {'all': top(ports, 0, _port_str), 'inet': top(ports, 1, _port_str)},
+            'files': len(jobs), 'workers': max(1, min(workers, len(jobs)))}
