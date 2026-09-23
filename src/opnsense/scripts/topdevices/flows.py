@@ -214,3 +214,130 @@ def hourly_fill(rows, lo, hi, now, net):
             t = out.setdefault(ip, [0.0, 0.0])
             t[0 if row['direction'] == 'out' else 1] += w * float(row['octets'] or 0)
     return out
+
+
+# ---------------------------------------------------------------- the log
+
+
+def open_log(log=LOG):
+    """Every flow log file, opened now, oldest first: [(fd, last write, size)].
+    Reading through descriptors opened at once keeps a rotation meanwhile - which
+    renames every file and deletes the oldest - from mixing up which is which."""
+    opened = []
+    for path in glob.glob(glob.escape(log) + '*'):
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except OSError:
+            continue                              # rotated away since the listing
+        st = os.fstat(fd)
+        opened.append((fd, st.st_mtime, st.st_size))
+    opened.sort(key=lambda f: f[1])
+    return opened
+
+
+def close_log(opened):
+    for fd, _, _ in opened:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def _read(fd):
+    """The whole file behind fd, as far as it is written now."""
+    size = os.fstat(fd).st_size
+    chunks, off = [], 0
+    while off < size:
+        chunk = os.pread(fd, size - off, off)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        off += len(chunk)
+    return b''.join(chunks)
+
+
+def log_from(opened):
+    """When the log becomes complete (spec §4): the receive time of the oldest IPv4
+    record still in it. None when it holds none."""
+    for fd, _, _ in opened:
+        for r in records(os.pread(fd, 65536, 0)):
+            return r[0]
+    return None
+
+
+def files_for(opened, lo):
+    """The files that can hold records overlapping a span from lo - those written to
+    at or after lo, since a record received before lo ended before it - biggest
+    first, so the last file a worker starts is a small one."""
+    return sorted((f for f in opened if f[1] >= lo), key=lambda f: -f[2])
+
+
+def scan_totals(job):
+    """One file's bytes per device: {ip: [all_down, all_up, inet_down, inet_up]}, all
+    traffic over [a_lo, a_hi) and internet only over [i_lo, i_hi) (spec §5.3). The
+    destination device downloads, the source device uploads; a download is internet
+    when it came in upstream, an upload when it left upstream."""
+    fd, a_lo, a_hi, i_lo, i_hi, net = job
+    lo = min(a_lo, i_lo)
+    acc = {}
+    for recv, src, dst, _, _, octets, if_in, if_out, fs, fe, dur in records(_read(fd)):
+        if recv < lo:
+            continue                              # ended before either span
+        a = share(fs, fe, dur, octets, a_lo, a_hi) if a_hi > a_lo else 0.0
+        i = share(fs, fe, dur, octets, i_lo, i_hi) if i_hi > i_lo else 0.0
+        if not (a or i):
+            continue
+        if net.is_device(dst):
+            t = acc.get(dst) or acc.setdefault(dst, [0.0, 0.0, 0.0, 0.0])
+            t[0] += a
+            if if_in in net.upstream:
+                t[2] += i
+        if net.is_device(src):
+            t = acc.get(src) or acc.setdefault(src, [0.0, 0.0, 0.0, 0.0])
+            t[1] += a
+            if if_out in net.upstream:
+                t[3] += i
+    return acc
+
+
+def merge_totals(parts):
+    out = {}
+    for part in parts:
+        for ip, v in part.items():
+            t = out.setdefault(ip, [0.0, 0.0, 0.0, 0.0])
+            for k in range(4):
+                t[k] += v[k]
+    return out
+
+
+def run_parallel(fn, jobs, workers):
+    """fn over every job, in up to `workers` forked processes. The descriptors in
+    the jobs are inherited: the log files are opened before the fork."""
+    if workers <= 1 or len(jobs) <= 1:
+        return [fn(j) for j in jobs]
+    with multiprocessing.get_context('fork').Pool(min(workers, len(jobs))) as pool:
+        return pool.map(fn, jobs, chunksize=1)
+
+
+def answer_totals(frm, to, now, opened, net, hourly_rows, workers):
+    """The totals answer (spec §5.1) for [frm, to) at now. hourly_rows(lo, hi) gives
+    core's hourly FlowSourceAddrTotals rows for buckets starting in [lo, hi)."""
+    L = log_from(opened)
+    if L is None:
+        raise ValueError('the NetFlow flow log holds no flows yet')
+    p = plan(frm, to, L)
+    (a_lo, a_hi), (i_lo, i_hi) = p['raw_all'], p['inet']
+    jobs = [(fd, a_lo, a_hi, i_lo, i_hi, net) for fd, _, _ in files_for(opened, min(a_lo, i_lo))]
+    acc = merge_totals(run_parallel(scan_totals, jobs, workers))
+    if p['hourly']:
+        h_lo, h_hi = p['hourly']
+        for ip, (down, up) in hourly_fill(hourly_rows(h_lo, h_hi), h_lo, h_hi, now, net).items():
+            t = acc.setdefault(ip, [0.0, 0.0, 0.0, 0.0])
+            t[0] += down
+            t[1] += up
+    return {'now': now, 'log_from': L,
+            'all': {'from': frm, 'to': to, 'hourly_until': p['hourly'][1] if p['hourly'] else None},
+            'inet': {'from': i_lo, 'to': to},
+            'wan': net.upstream_names,
+            'devices': {_ip_str(ip): [int(round(x)) for x in v] for ip, v in sorted(acc.items())},
+            'files': len(jobs), 'workers': max(1, min(workers, len(jobs)))}

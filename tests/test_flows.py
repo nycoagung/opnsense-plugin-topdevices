@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 
 HERE = pathlib.Path(__file__).resolve().parent
 SRC = HERE.parent / 'src/opnsense/scripts/topdevices'
@@ -213,6 +214,248 @@ class Hourly(unittest.TestCase):
         got = flows.hourly_fill(rows, b + 900, b + 3600 + 1800, now=b + 7 * 3600, net=NET)
         # a totals row holds one address: 'out' is bytes delivered to it, 'in' bytes it sent
         self.assertEqual(got, {IP('192.168.1.10'): [4000 * 0.75 + 800 * 0.5, 1000 * 0.75]})
+
+
+IFNAME = {1: 'em0', 2: 'ue0', 3: 'vlan01'}      # the interface numbers the synthetic logs use
+
+
+def write_log(dirpath, files):
+    """Write flow log files [(name, bytes, mtime)] into dirpath; the log's path."""
+    for name, data, mtime in files:
+        p = os.path.join(dirpath, name)
+        with open(p, 'wb') as f:
+            f.write(data)
+        os.utime(p, (mtime, mtime))
+    return os.path.join(dirpath, 'flowd.log')
+
+
+def synthetic_log(n, t0, rnd):
+    """n records of the kinds core meets: downloads, uploads, local traffic across
+    networks, broadcasts, IPv6, missing fields, zero, negative and impossible durations."""
+    lan = ['192.168.1.%d' % i for i in range(10, 30)] + ['192.168.1.255', '192.168.1.254']
+    iot = ['192.168.20.%d' % i for i in range(100, 110)]
+    out = []
+    for i in range(n):
+        recv = t0 + i // 25                               # 25 records a second
+        kind = rnd.random()
+        if kind < 0.45:
+            src, dst, ifs = '8.%d.1.1' % rnd.randrange(256), rnd.choice(lan + iot), (1, 2)
+        elif kind < 0.8:
+            src, dst, ifs = rnd.choice(lan + iot), '1.%d.1.1' % rnd.randrange(256), (2, 1)
+        else:
+            src, dst, ifs = rnd.choice(lan), rnd.choice(iot), (2, 3)
+        end = recv - rnd.randrange(0, 5)
+        r = rnd.random()
+        dur = 0 if r < 0.1 else (-0.003 if r < 0.11 else rnd.randrange(1, 1800))
+        v, kw = rnd.random(), {}
+        if v < 0.03:
+            kw['v6'] = True
+        elif v < 0.08:
+            kw['omit'] = ('if_indices',)
+        elif v < 0.12:
+            kw['omit'] = ('flow_times',)
+        elif v < 0.13:
+            kw['omit'] = ('packets',)
+        elif v < 0.14:
+            end = recv + 3                                # finished after its export: core skips
+        out.append(flow(src, dst, rnd.randrange(40, 10_000_000), recv=recv, start=end - dur, end=end,
+                        if_in=ifs[0], if_out=ifs[1], ports=(rnd.randrange(1024, 65535), rnd.choice((443, 53, 0))), **kw))
+    return b''.join(out)
+
+
+# one of each kind of flow, all inside [T0, T0 + 100)
+KINDS = [flow('8.8.8.8', '192.168.1.10', 1000, recv=T0 + 100, start=T0 + 10, end=T0 + 90, if_in=1, if_out=2),   # download
+         flow('192.168.1.10', '1.1.1.1', 300, recv=T0 + 100, start=T0 + 10, end=T0 + 90, if_in=2, if_out=1),    # upload
+         flow('192.168.1.10', '192.168.20.5', 50, recv=T0 + 100, start=T0 + 10, end=T0 + 90, if_in=2, if_out=3),  # local
+         flow('192.168.1.10', '192.168.1.255', 7, recv=T0 + 100, start=T0 + 10, end=T0 + 90, if_in=2, if_out=2)]  # broadcast
+# a first record received at T0, so a log holding it is complete from T0 (flows.log_from)
+EARLY = flow('8.8.8.8', '192.168.1.11', 1, recv=T0, start=T0, end=T0, if_in=1, if_out=2)
+
+
+class Reading(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def opened(self, files):
+        opened = flows.open_log(write_log(self.tmp.name, files))
+        self.addCleanup(flows.close_log, opened)
+        return opened
+
+    def test_files_are_taken_in_the_order_they_were_written(self):
+        opened = self.opened([('flowd.log', b'c', T0 + 300), ('flowd.log.000002', b'a', T0 + 100),
+                              ('flowd.log.000001', b'bb', T0 + 200)])
+        self.assertEqual([flows._read(fd) for fd, _, _ in opened], [b'a', b'bb', b'c'])
+
+    def test_the_log_is_complete_from_its_oldest_ipv4_record(self):
+        oldest = flow('8.8.8.8', '192.168.1.10', 1, recv=T0, start=T0, end=T0, v6=True) + \
+                 flow('8.8.8.8', '192.168.1.10', 1, recv=T0 + 5, start=T0, end=T0 + 5)
+        opened = self.opened([('flowd.log.000001', oldest, T0 + 60),
+                              ('flowd.log', flow('8.8.8.8', '192.168.1.10', 1, recv=T0 + 70, start=T0, end=T0), T0 + 90)])
+        self.assertEqual(flows.log_from(opened), T0 + 5)
+
+    def test_an_empty_log_has_no_start(self):
+        self.assertIsNone(flows.log_from(self.opened([('flowd.log', b'', T0)])))
+
+    def test_only_files_written_since_the_span_began_are_read_biggest_first(self):
+        opened = self.opened([('flowd.log.000002', b'aa', T0 + 100), ('flowd.log.000001', b'b', T0 + 200),
+                              ('flowd.log', b'ccc', T0 + 300)])
+        self.assertEqual([size for _, _, size in flows.files_for(opened, T0 + 150)], [3, 1])
+
+    def test_a_rotation_while_reading_mixes_nothing_up(self):
+        log = write_log(self.tmp.name, [('flowd.log.000001', EARLY + KINDS[0] + KINDS[1], T0 + 100),
+                                        ('flowd.log', KINDS[2], T0 + 200)])
+        before = flows.open_log(log)
+        self.addCleanup(flows.close_log, before)
+        expected = flows.answer_totals(T0, T0 + 100, T0 + 300, before, NET, lambda lo, hi: [], 1)['devices']
+        self.assertEqual(set(expected), {'192.168.1.10', '192.168.1.11', '192.168.20.5'})
+        # core rotates: every file moves one number up, a new flowd.log begins
+        os.rename(log + '.000001', log + '.000002')
+        os.rename(log, log + '.000001')
+        write_log(self.tmp.name, [('flowd.log', KINDS[3], T0 + 250)])
+        self.assertEqual(flows.answer_totals(T0, T0 + 100, T0 + 300, before, NET, lambda lo, hi: [], 1)['devices'],
+                         expected)
+
+
+class Attribution(unittest.TestCase):
+    def scan(self, data, a, i):
+        with tempfile.TemporaryDirectory() as d:
+            opened = flows.open_log(write_log(d, [('flowd.log', data, T0 + 100)]))
+            try:
+                return flows.scan_totals((opened[0][0], a[0], a[1], i[0], i[1], NET))
+            finally:
+                flows.close_log(opened)
+
+    def test_downloads_uploads_local_traffic_and_broadcasts(self):
+        got = self.scan(b''.join(KINDS), (T0, T0 + 100), (T0, T0 + 100))
+        self.assertEqual(got, {IP('192.168.1.10'): [1000.0, 357.0, 1000.0, 300.0],
+                               IP('192.168.20.5'): [50.0, 0.0, 0.0, 0.0]})
+
+    def test_the_two_scopes_count_over_their_own_spans(self):
+        got = self.scan(KINDS[0], (T0, T0 + 50), (T0 + 50, T0 + 100))   # the flow runs T0+10 .. T0+90
+        self.assertEqual(got, {IP('192.168.1.10'): [500.0, 0.0, 500.0, 0.0]})
+
+    def test_a_record_received_before_the_span_is_skipped_and_one_straddling_it_is_split(self):
+        early = flow('8.8.8.8', '192.168.1.10', 9999, recv=T0 + 40, start=T0, end=T0 + 40, if_in=1)
+        across = flow('8.8.8.8', '192.168.1.10', 1000, recv=T0 + 60, start=T0 + 40, end=T0 + 60, if_in=1)
+        self.assertEqual(self.scan(early + across, (T0 + 50, T0 + 100), (T0 + 50, T0 + 100)),
+                         {IP('192.168.1.10'): [500.0, 0.0, 500.0, 0.0]})
+
+
+class Totals(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        rnd = random.Random(3)
+        files = [('flowd.log.%06d' % (4 - i) if i < 4 else 'flowd.log',
+                  synthetic_log(4000, T0 + i * 200, rnd), T0 + i * 200 + 200) for i in range(5)]
+        self.opened = flows.open_log(write_log(self.tmp.name, files))
+        self.addCleanup(flows.close_log, self.opened)
+
+    def test_three_workers_give_exactly_what_one_gives(self):
+        jobs = [(fd, T0, T0 + 1000, T0, T0 + 1000, NET) for fd, _, _ in flows.files_for(self.opened, T0)]
+        one = flows.merge_totals(flows.run_parallel(flows.scan_totals, jobs, 1))
+        three = flows.merge_totals(flows.run_parallel(flows.scan_totals, jobs, 3))
+        self.assertEqual(set(one), set(three))
+        for ip in one:
+            for k in range(4):
+                self.assertAlmostEqual(one[ip][k], three[ip][k], delta=1e-6 * max(1.0, one[ip][k]))
+
+    def test_the_answer_inside_the_log(self):
+        L = flows.log_from(self.opened)
+        a = flows.answer_totals(L + 100, L + 700, L + 900, self.opened, NET, lambda lo, hi: self.fail('no fill-in'), 2)
+        self.assertEqual((a['all'], a['inet'], a['wan'], a['log_from']),
+                         ({'from': L + 100, 'to': L + 700, 'hourly_until': None}, {'from': L + 100, 'to': L + 700},
+                          ['em0'], L))
+        self.assertTrue(a['devices'])
+        for ip, v in a['devices'].items():
+            ipaddress.IPv4Address(ip)
+            self.assertTrue(all(isinstance(x, int) and x >= 0 for x in v), v)
+
+    def test_before_the_log_all_traffic_adds_the_hourly_records_and_internet_only_starts_at_the_log(self):
+        L = flows.log_from(self.opened)
+        seam = -(-L // 3600) * 3600
+        frm, to, now = L - 7200, seam + 600, seam + 900
+        asked = []
+        rows = [{'start_time': utc(seam - 3600), 'src_addr': '192.168.1.200', 'direction': 'out', 'octets': 3600.0}]
+        a = flows.answer_totals(frm, to, now, self.opened, NET, lambda lo, hi: asked.append((lo, hi)) or rows, 1)
+        self.assertEqual(asked, [(frm, seam)])
+        self.assertEqual(a['all']['hourly_until'], seam)
+        self.assertEqual(a['inet'], {'from': L, 'to': to})
+        self.assertEqual(a['devices']['192.168.1.200'], [3600, 0, 0, 0])   # a device only the hourly records have
+
+
+CORE_NETFLOW = next((p for p in (os.environ.get('CORE_NETFLOW'),
+                                 os.path.join(os.environ.get('OPNSENSE_CORE', '/nonexistent'), 'src/opnsense/scripts/netflow'),
+                                 flows.NETFLOW_LIB)
+                     if p and os.path.isfile(os.path.join(p, 'lib', 'flowparser.py'))), None)
+
+
+@unittest.skipUnless(CORE_NETFLOW, 'set CORE_NETFLOW or OPNSENSE_CORE (see the module docstring), or run on the firewall')
+class CoreParity(unittest.TestCase):
+    """Against core's own parser and aggregators (lib/flowparser.py, lib/aggregates)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.enterClassContext(warnings.catch_warnings())
+        warnings.filterwarnings('ignore', category=DeprecationWarning, module=r'lib\.')   # core's own code, Python >= 3.12
+        sys.path.insert(0, CORE_NETFLOW)
+        from lib.flowparser import FlowParser
+        from lib.aggregates.source import FlowSourceAddrDetails, FlowSourceAddrTotals
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.log = write_log(cls.tmp.name, [('flowd.log', synthetic_log(60_000, T0, random.Random(7)), T0 + 2500)])
+        cls.core = [r for r in FlowParser(cls.log)]
+        details = FlowSourceAddrDetails(300, cls.tmp.name)
+        totals = FlowSourceAddrTotals(3600, cls.tmp.name)
+        for r in cls.core:
+            if 'src_addr4' in r and 'dst_addr4' in r:
+                r['if_in'] = IFNAME.get(r['if_ndx_in'], str(r['if_ndx_in']))
+                r['if_out'] = IFNAME.get(r['if_ndx_out'], str(r['if_ndx_out']))
+                details.add(dict(r))
+                totals.add(dict(r))
+        details.commit()
+        totals.commit()
+        cls.details, cls.totals = details, totals
+        cls.opened = flows.open_log(cls.log)
+
+    @classmethod
+    def tearDownClass(cls):
+        flows.close_log(cls.opened)
+        cls.tmp.cleanup()
+
+    def test_records_match_cores_parser(self):
+        core = [(r['recv_sec'], IP(r['src_addr']), IP(r['dst_addr']), r['octets'], r['if_ndx_in'],
+                 r['if_ndx_out'], r['flow_start'], r['flow_end']) for r in self.core if 'src_addr4' in r]
+        ours = [r[:3] + r[5:10] for r in flows.records(flows._read(self.opened[0][0]))]
+        self.assertEqual(ours, core)
+
+    def test_totals_match_cores_aggregator(self):
+        a0 = -(-T0 // 300) * 300                  # core's buckets start on 5-minute boundaries
+        for lo, hi in ((a0 + 600, a0 + 1800), (a0 + 300, a0 + 2100), (a0 - 3600, a0 + 7200)):
+            core = {}
+            for row in self.details.get_data(lo, hi):
+                ip = IP(row['dst_addr'])
+                if not NET.is_device(ip):
+                    continue
+                t = core.setdefault(ip, [0.0, 0.0, 0.0, 0.0])
+                k = 1 if row['direction'] == 'out' else 0
+                t[k] += row['octets']
+                if row['if'] == 'em0':
+                    t[2 + k] += row['octets']
+            ours = flows.scan_totals((self.opened[0][0], lo, hi, lo, hi, NET))
+            self.assertEqual(set(ours), set(core))
+            for ip in core:
+                for k in range(4):
+                    self.assertAlmostEqual(ours[ip][k], core[ip][k], delta=1e-3, msg=(lo, hi, ip, k))
+
+    def test_hourly_fill_reads_cores_totals_the_right_way_round(self):
+        h = (T0 // 3600) * 3600
+        fill = flows.hourly_fill(list(self.totals.get_data(h, h + 3600)), h, h + 3600, h + 7200, NET)
+        raw = flows.scan_totals((self.opened[0][0], h, h + 3600, h, h + 3600, NET))
+        self.assertEqual(set(fill), {ip for ip, v in raw.items() if v[0] or v[1]})
+        for ip, (down, up) in fill.items():
+            self.assertAlmostEqual(down, raw[ip][0], delta=1e-3)
+            self.assertAlmostEqual(up, raw[ip][1], delta=1e-3)
 
 
 if __name__ == '__main__':
