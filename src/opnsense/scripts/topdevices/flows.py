@@ -430,3 +430,99 @@ def answer_device(ip, frm, to, now, opened, net, workers):
             'peers': {'all': top(peers, 0, _ip_str), 'inet': top(peers, 1, _ip_str)},
             'ports': {'all': top(ports, 0, _port_str), 'inet': top(ports, 1, _port_str)},
             'files': len(jobs), 'workers': max(1, min(workers, len(jobs)))}
+
+
+# ---------------------------------------------------------------- command line
+
+
+def parse_args(args, now):
+    """The request {'mode', 'from', 'to'[, 'ip']} from the command line, checked as
+    spec §5.1 says. Raises ValueError with the reason."""
+    if len(args) == 3 and args[0] == 'totals':
+        mode, ip, frm, to = 'totals', None, args[1], args[2]
+    elif len(args) == 4 and args[0] == 'device':
+        mode, ip, frm, to = 'device', args[1], args[2], args[3]
+    else:
+        raise ValueError('usage: flows.py totals FROM TO | flows.py device IP FROM TO')
+    if not (DIGITS.fullmatch(frm) and DIGITS.fullmatch(to)):
+        raise ValueError('FROM and TO must be whole epoch seconds')
+    frm, to = int(frm), int(to)
+    if frm >= to:
+        raise ValueError('FROM must be before TO')
+    if frm < now - DAY - SLACK:
+        raise ValueError("FROM is more than a day ago: that range is read from NetFlow's records")
+    if to > now + SLACK:
+        raise ValueError('TO is in the future')
+    to = min(to, now)
+    if frm >= to:
+        raise ValueError('the range has not begun yet')
+    req = {'mode': mode, 'from': frm, 'to': to}
+    if mode == 'device':
+        req['ip'] = _ip4(ip)
+        if req['ip'] is None:
+            raise ValueError('IP must be an IPv4 address')
+    return req
+
+
+def _core():
+    """Core's NetFlow library (lib.flowparser, lib.parse, lib.aggregates) on the path."""
+    if NETFLOW_LIB not in sys.path:
+        sys.path.insert(0, NETFLOW_LIB)
+
+
+def core_interfaces():
+    """{ifindex: device}: core's own map (lib/parse.py Interfaces, from ifinfo)."""
+    _core()
+    from lib.parse import Interfaces
+    index = getattr(Interfaces(), '_if_index', None)
+    if not isinstance(index, dict):
+        raise RuntimeError("core's interface map has changed (lib/parse.py)")
+    return {int(k): v for k, v in index.items()}
+
+
+def core_hourly(lo, hi):
+    """Core's hourly FlowSourceAddrTotals rows for buckets starting in [lo, hi)."""
+    _core()
+    from lib.aggregates.source import FlowSourceAddrTotals
+    return list(FlowSourceAddrTotals(HOUR).get_data(lo, hi))
+
+
+def system_net():
+    """This firewall's devices and upstream interfaces, by the Live sampler's rules
+    (live.py Topology), with upstream numbered as core's aggregator numbers it."""
+    import live                                   # the sampler, beside this script
+    topo = live.Topology(live.parse_ifconfig(live._run(live.IFCONFIG)),
+                         live.parse_default_devs(live._run(live.ROUTES)))
+    index = core_interfaces()
+    upstream = sorted(i for i, name in index.items() if name in topo.upstream_devs)
+    return Net(topo.local_nets, upstream, list(topo.upstream_devs))
+
+
+def main(argv, now=None, log=LOG, system=None, hourly=None):
+    """Answer the command line with one JSON line on stdout. Always returns 0."""
+    t0 = time.monotonic()
+    opened = []
+    try:
+        now = int(time.time()) if now is None else int(now)
+        req = parse_args(argv[1:], now)
+        net = (system or system_net)()
+        opened = open_log(log)
+        if not opened:
+            raise ValueError('no NetFlow flow log: is NetFlow capture enabled?')
+        workers = max(1, (os.cpu_count() or 2) // 2)
+        if req['mode'] == 'totals':
+            out = answer_totals(req['from'], req['to'], now, opened, net, hourly or core_hourly, workers)
+        else:
+            out = answer_device(req['ip'], req['from'], req['to'], now, opened, net, workers)
+        out['cost_ms'] = int(round((time.monotonic() - t0) * 1000))
+    except Exception as exc:          # never a traceback: configd returns stdout as the answer
+        out = {'error': str(exc) or exc.__class__.__name__}
+    finally:
+        close_log(opened)
+    out['v'] = VERSION
+    sys.stdout.write(json.dumps(out, separators=(',', ':')) + '\n')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

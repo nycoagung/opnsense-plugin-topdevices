@@ -10,6 +10,7 @@ import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LIVE = ROOT / 'src/opnsense/scripts/topdevices/live.py'
+FLOWS = ROOT / 'src/opnsense/scripts/topdevices/flows.py'
 
 MUTANTS = [
     ('port-forward direction not swapped',
@@ -43,25 +44,82 @@ MUTANTS = [
      "arrow = len(parts) - 3 if len(parts) >= 6 and parts[-3] in ('->', '<-') else None"),
 ]
 
+FLOW_MUTANTS = [
+    ("core's order of operations not kept",
+     '        return ov / (dur_ms / 1000.0) * octets if ov > 0 else 0.0',
+     '        return octets * ov / (dur_ms / 1000.0) if ov > 0 else 0.0'),
+    ('negative duration counted like a zero one',
+     '    if dur_ms < 0:\n        return (flow_end - flow_start) / (dur_ms / 1000.0) * octets\n', ''),
+    ('a record finished after its export kept',
+     '        if finish > uptime:\n            continue', '        if False:\n            continue'),
+    ('records without packets kept',
+     "REQUIRED = ('recv_time', 'agent_info', 'packets', 'octets', 'src_addr4', 'dst_addr4')",
+     "REQUIRED = ('recv_time', 'agent_info', 'octets', 'src_addr4', 'dst_addr4')"),
+    ('a record still being written read anyway', '        if off > n:\n            break', '        pass'),
+    ('ingress and egress confused for internet downloads',
+     '            if if_in in net.upstream:\n                t[2] += i', '            if if_out in net.upstream:\n                t[2] += i'),
+    ('broadcasts counted as devices',
+     '            d = self._dev[ip] = ip not in self.bcast and any(', '            d = self._dev[ip] = any('),
+    ('the seam on the hour before the log began',
+     '    seam = min(math.ceil(L / HOUR) * HOUR, to)', '    seam = min(math.floor(L / HOUR) * HOUR, to)'),
+    ('internet only from the range start, not the log start',
+     "    return {'raw_all': (seam, to), 'hourly': (frm, seam), 'inet': (L, to)}",
+     "    return {'raw_all': (seam, to), 'hourly': (frm, seam), 'inet': (frm, to)}"),
+    ('a bucket in progress weighed as a full hour', '    end = min(bucket + HOUR, now)', '    end = bucket + HOUR'),
+    ('hourly rows read with the details convention',
+     "            t[0 if row['direction'] == 'out' else 1] += w * float(row['octets'] or 0)",
+     "            t[1 if row['direction'] == 'out' else 0] += w * float(row['octets'] or 0)"),
+    ('files taken in the wrong order', '    opened.sort(key=lambda f: f[1])', '    opened.sort(key=lambda f: f[2])'),
+    ('a file written since the span began left unread',
+     '    return sorted((f for f in opened if f[1] >= lo), key=lambda f: -f[2])',
+     '    return sorted((f for f in opened if f[1] >= lo + 60), key=lambda f: -f[2])'),
+    ('a record received just after the span began skipped', '        if recv < lo:\n', '        if recv < lo + 20:\n'),
+    ("the device's port taken as the higher one", '        port = min(sp, dp)', '        port = max(sp, dp)'),
+    ("a device's upload judged by where it came in",
+     '            peer, inet = dst, if_out in net.upstream', '            peer, inet = dst, if_in in net.upstream'),
+    ("lists not capped at the panel's 100 rows", 'TOP = 100 ', 'TOP = 1000 '),
+    ('the clock slack dropped', '    if frm < now - DAY - SLACK:', '    if frm < now - DAY:'),
+    ('non-ASCII digits accepted', '    if not (DIGITS.fullmatch(frm) and DIGITS.fullmatch(to)):',
+     '    if not (frm.isdigit() and to.isdigit()):'),
+    ('a non-device given a panel', '    if not net.is_device(ip):\n        raise', '    if False:\n        raise'),
+    ('the two scopes swapped in the jobs',
+     '    jobs = [(fd, a_lo, a_hi, i_lo, i_hi, net) for fd, _, _ in files_for(opened, min(a_lo, i_lo))]',
+     '    jobs = [(fd, i_lo, i_hi, a_lo, a_hi, net) for fd, _, _ in files_for(opened, min(a_lo, i_lo))]'),
+    ("hourly records replacing the log's figures",
+     '            t = acc.setdefault(ip, [0.0, 0.0, 0.0, 0.0])\n            t[0] += down\n            t[1] += up\n',
+     '            acc[ip] = [down, up, 0.0, 0.0]\n'),
+    ('a rotation while the files are opened accepted', '        if _files_now(log) == ids:', '        if True:'),
+    ('any open error taken for a rotation',
+     '                except FileNotFoundError:\n                    continue                      # rotated away since the listing',
+     '                except OSError:\n                    continue                      # rotated away since the listing'),
+]
 
-def main():
-    source = LIVE.read_text()
-    survivors = []
-    for name, old, new in MUTANTS:
+
+def run(target, env_name, pattern, mutants, survivors):
+    source = target.read_text()
+    for name, old, new in mutants:
         count = source.count(old)
         if count != 1:
             print('BROKEN MUTANT %r: anchor found %d times' % (name, count))
-            return 2
+            return False
         with tempfile.TemporaryDirectory() as tmp:
-            mutant = pathlib.Path(tmp) / 'live.py'
+            mutant = pathlib.Path(tmp) / target.name
             mutant.write_text(source.replace(old, new))
-            env = dict(os.environ, LIVE_PY=str(mutant))
+            env = dict(os.environ, **{env_name: str(mutant)})
             proc = subprocess.run([sys.executable, '-m', 'unittest', 'discover', '-s', str(ROOT / 'tests'),
-                                   '-p', 'test_live.py'], env=env, capture_output=True, text=True)
+                                   '-p', pattern], env=env, capture_output=True, text=True)
         killed = proc.returncode != 0
         print('%-8s %s' % ('killed' if killed else 'SURVIVED', name))
         if not killed:
             survivors.append(name)
+    return True
+
+
+def main():
+    survivors = []
+    for args in ((LIVE, 'LIVE_PY', 'test_live.py', MUTANTS), (FLOWS, 'FLOWS_PY', 'test_flows.py', FLOW_MUTANTS)):
+        if not run(*args, survivors):
+            return 2
     return 1 if survivors else 0
 
 
