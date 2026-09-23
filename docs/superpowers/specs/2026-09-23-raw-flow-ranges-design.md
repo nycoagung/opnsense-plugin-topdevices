@@ -149,7 +149,8 @@ integer epoch seconds. The script prints one JSON line and exits 0.
 Validation, repeated here after the controller has checked the same things:
 
 - FROM < TO.
-- FROM ≥ now − 86400 − 300.
+- FROM ≥ now − 86400 − 300, for totals. A device panel asks for its table's window,
+  which ages while the table is on screen; its lists cover what the log holds (§4).
 - TO ≤ now + 300. TO is then capped at the firewall's now.
 - IP is a dotted IPv4 address and a device (§5.3).
 
@@ -377,10 +378,15 @@ during the test.
   verifies it. It merges to `main`, and is tagged and released as 0.2.0, only with the
   user's approval.
 - **The Sunday job.** The weekly 05:00 job installs `main`, which is 0.1.1 until the
-  merge. If the merge is not done by Sun 27 Sep 05:00, pause the job under System →
-  Settings → Cron, or the firewall goes back to 0.1.1.
-- **Rollback.** Install an earlier ref. The installer rewrites the actions file
-  without the `flows` actions and restarts configd. `flows.py` and
+  merge. Once 0.2.0's installer is in place it refuses `main`'s older tree ("missing
+  from source: …/flows.py") and changes nothing, so the firewall stays on 0.2.0 and
+  the job fails each week until the merge. A firewall that ran only the 0.1.x
+  installer once is half-installed and stays so, the widget falling back to
+  NetFlow's records with its note. Pausing the job under System → Settings → Cron
+  avoids both.
+- **Rollback.** Install an earlier ref with its own bootstrap command: 0.2.0's
+  installer refuses a tree without `flows.py`. The installer rewrites the actions
+  file without the `flows` actions and restarts configd. `flows.py` and
   `FlowsController.php` are left behind, harmless and unreferenced, and README
   *Removing* lists them.
 
