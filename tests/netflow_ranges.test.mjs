@@ -13,17 +13,33 @@ globalThis.BaseWidget = class {
     constructor(config) { this.config = config; }
     async getWidgetConfig() { return {}; }
 };
+// jQuery: chainable no-ops, except what the tests read back - the last .html()
+// or .text() written to a selector - and $.ajax, answered by `reply`.
 const requests = [];
 let reply = () => '';
-globalThis.$ = Object.assign(() => ({}), {
-    ajax(opts) {
-        requests.push(opts.url);
-        const text = reply(opts.url);              // null: the request fails
-        const p = { done(fn) { if (text !== null) Promise.resolve().then(() => fn(text)); return p; },
-                    fail(fn) { if (text === null) Promise.resolve().then(fn); return p; } };
-        return p;
-    }
+const dom = {};
+const chain = new Proxy(function () {}, {
+    get: (t, p) => (p === Symbol.toPrimitive ? () => '' : p === 'length' ? 0 : chain),
+    apply: () => chain
 });
+const element = (sel) => new Proxy(function () {}, {
+    get: (t, p) => (p === 'html' || p === 'text'
+        ? (v) => { if (v !== undefined) dom[sel] = String(v); return chain; }
+        : p === Symbol.toPrimitive ? () => '' : p === 'length' ? 0 : chain),
+    apply: () => chain
+});
+function ajax(opts) {
+    requests.push(opts.url);
+    const text = Promise.resolve(reply(opts.url));   // a string, null (the request fails), or a promise of one
+    const p = { done(fn) { text.then(t => { if (t !== null) fn(t); }); return p; },
+                fail(fn) { text.then(t => { if (t === null) fn(); }); return p; } };
+    return p;
+}
+globalThis.$ = new Proxy(function () {}, {
+    apply: (t, self, [arg]) => (typeof arg === 'string' ? element(arg) : chain),
+    get: (t, p) => (p === 'ajax' ? ajax : chain)
+});
+const tick = () => new Promise(r => setTimeout(r, 0));
 const m = await import('../src/opnsense/www/js/widgets/TopDevices.js');
 const TopDevices = m.default;
 
@@ -51,6 +67,7 @@ const FLOWS = [
     { src: '192.168.1.10', dst: '192.168.20.5', in: 'ue0', out: 'vlan01', port: 445, bytes: 50 },    // local, across networks
     { src: '192.168.1.10', dst: '192.168.1.255', in: 'ue0', out: 'ue0', port: 137, bytes: 7 }        // broadcast chatter
 ];
+const DAY = FLOWS.map(f => ({ ...f, bytes: f.bytes * 10 }));      // the day since 10:00 holds more
 const serve = (url) => (url.includes('/FlowSourceAddrTotals/') ? csv(totalsRows(FLOWS), TOTALS_HEAD)
                                                               : csv(detailsRows(FLOWS), DETAILS_HEAD));
 
@@ -63,6 +80,7 @@ function widget(range, scope = 'all') {
     const w = new TopDevices({});
     w.state.range = range;
     w.state.scope = scope;
+    w.state.chart = 'none';
     // built as _loadNetworks builds them: signed 32-bit, like the `v & mask` they meet
     const net = (a, key) => ({ key, label: key, net: w._ip2int(a) & (0xffffff00 | 0), mask: 0xffffff00 | 0,
                                bcast: w._ip2int(a) | 0xff });
@@ -71,10 +89,10 @@ function widget(range, scope = 'all') {
     return w;
 }
 const byIp = (w) => Object.fromEntries(w.state.rows.map(r => [r.ip, [r.down, r.up]]));
-async function load(range, scope = 'all') {
+async function load(range, scope = 'all', now = NOW) {
     const w = widget(range, scope);
     reply = serve;
-    await w._load(NOW * 1000);
+    await w._load(now * 1000);
     return { w, url: requests[requests.length - 1] };
 }
 
@@ -86,10 +104,10 @@ test('Last hour reads 5-minute totals for the last hour, not the whole day', asy
     assert.deepEqual(w.state.window, [S(8, 10), NOW]);
 });
 
-test('Last 24 hours reads hourly totals', async () => {
+test('Last 24 hours reads the hourly totals within the last 24 hours', async () => {
     const { w, url } = await load('24h');
-    assert.equal(url, `${EXPORT}/FlowSourceAddrTotals/${S(9, 0, 22)}/${NOW}/3600`);
-    assert.deepEqual(w.state.window, [S(9, 0, 22), NOW]);
+    assert.equal(url, `${EXPORT}/FlowSourceAddrTotals/${S(10, 0, 22)}/${NOW}/3600`);
+    assert.deepEqual(w.state.window, [S(10, 0, 22), NOW]);
 });
 
 test('Today reads hourly totals from local midnight, not from yesterday 10:00', async () => {
@@ -119,20 +137,113 @@ test('Internet only reads the daily details, the only aggregate with the interfa
 test('the plan: a short window far back takes the day it falls in', () => {
     const from = S(3, 0, 20);
     assert.deepEqual(m.nfPlan(from, from + 600, NOW, 'all'),
-        { provider: 'FlowSourceAddrTotals', res: 86400, start: S(0, 0, 20), end: S(0, 0, 21) });
+        { provider: 'FlowSourceAddrTotals', res: 86400, start: S(0, 0, 20), end: S(0, 0, 21), clipped: false });
 });
 
 test('the plan: a day bucket still in progress ends now', () => {
     const now = S(23, 0, 22);                          // 23 Sep 09:00 AEST: today's UTC day has not begun
     assert.deepEqual(m.nfPlan(S(14, 0, 21), S(14, 0, 22), now, 'all'),
-        { provider: 'FlowSourceAddrTotals', res: 86400, start: S(0, 0, 22), end: now });
+        { provider: 'FlowSourceAddrTotals', res: 86400, start: S(0, 0, 22), end: now, clipped: false });
 });
 
-test('the plan: 5-minute buckets whenever the hour is still kept', () => {
-    const now = S(9, 7) + 29;                          // the start rounds down to 08:05, the oldest bucket kept
-    assert.equal(m.nfPlan(now - 3600, now, now, 'all').res, 300);
+test('the plan: 5-minute buckets while the hour is kept, none core may have dropped', () => {
+    // 19:07:29. Core drops 5-minute buckets older than its newest one less an
+    // hour - or than now less an hour, while it holds rows stamped in the future:
+    // 18:05 may be gone, 18:10 is kept either way
+    const now = S(9, 7) + 29;
+    assert.deepEqual(m.nfPlan(now - 3600, now, now, 'all'),
+        { provider: 'FlowSourceAddrTotals', res: 300, start: S(8, 10), end: now, clipped: true });
     assert.equal(m.nfPlan(now - 3600 - 300, now, now, 'all').res, 3600);
 });
+
+// --- what core no longer keeps, or has not recorded yet ------------------------
+
+// local wall time in the test's zone -> the custom range's datetime-local value
+const local = (y, mo, d, h = 0) => `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}T${String(h).padStart(2, '0')}:00`;
+const U = (mo, d, h = 0) => Date.UTC(2026, mo - 1, d, h) / 1000;
+
+async function loadCustom(from, to, scope) {
+    const w = widget('custom', scope);
+    w.state.customFrom = from;
+    w.state.customTo = to;
+    reply = serve;
+    const before = requests.length;
+    await w._load(NOW * 1000);
+    return { w, made: requests.slice(before) };
+}
+
+test('Internet only further back than the 62 days kept reads nothing, and says why', async () => {
+    const { w, made } = await loadCustom(local(2026, 6, 1), local(2026, 6, 30), 'wan');
+    assert.deepEqual(made, []);
+    assert.deepEqual(w.state.rows, []);
+    const c = w._windowCaption();
+    assert.match(c.text, /^Mon Jun 01 00:00:00 AEST 2026 {2}→ {2}Tue Jun 30 00:00:00 AEST 2026 · internet only/);
+    assert.equal(c.note, 'No NetFlow data: only the last 62 days are kept');
+});
+
+test('a range reaching past the 62 days is cut to what is kept, and says so', async () => {
+    const { w, made } = await loadCustom(local(2026, 7, 15), local(2026, 8, 1), 'wan');
+    assert.deepEqual(made, [`${EXPORT}/FlowSourceAddrDetails/${U(7, 24)}/${U(8, 1)}/86400`]);
+    assert.equal(w._windowCaption().note,
+        'Internet only is kept per day (days start at 10:00), for 62 days: these cover Fri 24 Jul 10:00 → Sat 1 Aug 10:00');
+});
+
+test('a custom range in the future reads nothing, and says so', async () => {
+    const { w, made } = await loadCustom(local(2026, 9, 23, 20), local(2026, 9, 23, 21), 'all');
+    assert.deepEqual(made, []);
+    const c = w._windowCaption();
+    assert.match(c.text, /^Wed Sep 23 20:00:00 AEST 2026 {2}→ {2}Wed Sep 23 21:00:00 AEST 2026 · all traffic$/);
+    assert.equal(c.note, 'No NetFlow data for this range');
+});
+
+test('the device panel says when no peers are kept for the range', async () => {
+    const { w } = await loadCustom(local(2026, 6, 1), local(2026, 6, 30), 'all');   // daily totals keep a year
+    const before = requests.length;
+    const d = await w._detailsData('192.168.1.10');
+    assert.equal(requests.length, before);
+    assert.deepEqual(d.peers, {});
+    assert.equal(d.note, 'Peers and ports are only kept for 62 days');
+});
+
+// --- other time zones -----------------------------------------------------------
+
+function inZone(zone, fn) {
+    return async () => {
+        process.env.TZ = zone;
+        try { await fn(); } finally { process.env.TZ = 'Australia/Brisbane'; }
+    };
+}
+
+test('Yesterday is the calendar day, 23 hours the day after clocks go forward', inZone('Australia/Sydney', () => {
+    const w = widget('yesterday');
+    // Mon 5 Oct 2026 12:00 AEDT; Sun 4 Oct ran from 00:00 AEST to 00:00 AEDT
+    assert.deepEqual(w._window('yesterday', U(10, 5, 1) * 1000), [U(10, 3, 14), U(10, 4, 13)]);
+}));
+
+test('Yesterday is the calendar day, 25 hours the day after clocks go back', inZone('Australia/Sydney', () => {
+    const w = widget('yesterday');
+    // Mon 6 Apr 2026 12:00 AEST; Sun 5 Apr ran from 00:00 AEDT to 00:00 AEST
+    assert.deepEqual(w._window('yesterday', U(4, 6, 2) * 1000), [U(4, 4, 13), U(4, 5, 14)]);
+}));
+
+test('a week across a clock change says when its days start, before and after', inZone('Australia/Sydney', async () => {
+    const { w } = await load('7d', 'wan', U(10, 7, 3));                // Wed 7 Oct 14:00 AEDT
+    assert.equal(w._windowCaption().note,
+        'Internet only is kept per day (days start at 10:00, then 11:00): these cover Wed 30 Sep 10:00 → Wed 7 Oct 14:00');
+}));
+
+test('Today in a half-hour time zone starts at the nearest UTC hour', inZone('Asia/Kolkata', async () => {
+    const { w } = await load('today', 'all', S(6, 30));                // 12:00 IST
+    assert.deepEqual(w.state.window, [S(19, 0, 22), S(6, 30)]);        // 00:30 IST
+    assert.match(w._windowCaption().text, /^Wed Sep 23 00:30:00 IST 2026/);
+    assert.equal(w._windowCaption().note, null);
+}));
+
+test('in UTC, Internet only · Last hour just after midnight still says it is kept per day', inZone('UTC', async () => {
+    const { w } = await load('1h', 'wan', S(0, 20));
+    assert.equal(w._windowCaption().note,
+        'Internet only is kept per day (days start at 00:00): these cover 00:00 → 00:20');
+}));
 
 // --- rows to download and upload ---------------------------------------------
 
@@ -143,6 +254,16 @@ test('both aggregates give every device the same download and upload', () => {
                        '192.168.20.5': { ip: '192.168.20.5', down: 50, up: 0 } };
     assert.deepEqual(m.deviceTotals(parse(detailsRows(FLOWS)), 'FlowSourceAddrDetails', keep), expected);
     assert.deepEqual(m.deviceTotals(parse(totalsRows(FLOWS)), 'FlowSourceAddrTotals', keep), expected);
+});
+
+test("core's extra column on a 0-byte row changes nothing", async () => {
+    // export_details.py writes '' before a falsy value: octets and packets 0
+    const quirk = ['2026/09/23 19:20:00,em0,142.250.183.37,out,,0,,0,2026/09/23 19:20:00',
+                   '2026/09/23 19:20:00,ue0,192.168.1.10,out,,0,,0,2026/09/23 19:20:00'].join('\n') + '\n';
+    const w = widget('24h');
+    reply = (url) => (url.includes('/FlowSourceAddrTotals/') ? csv(totalsRows(FLOWS), TOTALS_HEAD) + quirk : '');
+    await w._load(NOW * 1000);
+    assert.deepEqual(byIp(w), { '192.168.1.10': [1000, 357], '192.168.20.5': [50, 0] });
 });
 
 test('all traffic from the totals: downloads, uploads and local traffic, broadcasts dropped', async () => {
@@ -170,6 +291,21 @@ test('a day range older than the hourly data says why its days start at 10:00', 
     assert.match(w._windowCaption().note, /kept per day \(days start at 10:00\)/);
 });
 
+test('Internet only · Last hour right after 10:00 still says it is kept per day', async () => {
+    for (const [h, min, shown] of [[0, 5, '10:05'], [0, 30, '10:30'], [1, 30, '11:30']]) {
+        const { w } = await load('1h', 'wan', S(h, min));
+        assert.equal(w._windowCaption().note,
+            `Internet only is kept per day (days start at 10:00): these cover 10:00 → ${shown}`, shown);
+    }
+    const { w } = await load('1h', 'all', S(0, 5));
+    assert.equal(w._windowCaption().note, null);
+});
+
+test('a span inside one minute is told in seconds', async () => {
+    const { w } = await load('today', 'wan', S(0, 0) + 30);        // 10:00:30
+    assert.match(w._windowCaption().note, /these cover 10:00:00 → 10:00:30$/);
+});
+
 test('no note when the buckets fit the range', async () => {
     for (const range of ['1h', '24h', 'today']) {
         const { w } = await load(range);
@@ -189,9 +325,7 @@ test('a scope change whose export fails keeps the caption true to the rows shown
 
 test('the device panel reads the daily details and labels their span when it differs', async () => {
     const { w } = await load('1h');
-    // the day since 10:00 holds more than the last hour does
-    const day = FLOWS.map(f => ({ ...f, bytes: f.bytes * 10 }));
-    reply = (url) => (url.includes('/FlowSourceAddrDetails/') ? csv(detailsRows(day), DETAILS_HEAD) : '');
+    reply = (url) => (url.includes('/FlowSourceAddrDetails/') ? csv(detailsRows(DAY), DETAILS_HEAD) : '');
     const d = await w._detailsData('192.168.1.10');
     assert.equal(requests[requests.length - 1], `${EXPORT}/FlowSourceAddrDetails/${S(0, 0, 23)}/${NOW}/86400`);
     assert.deepEqual(d.peers, { '8.8.8.8': 10000, '1.1.1.1': 3000, '192.168.20.5': 500, '192.168.1.255': 70 });
@@ -204,4 +338,103 @@ test('the device panel needs no note when its span is the table span', async () 
     const d = await w._detailsData('192.168.1.10');
     assert.equal(d.note, null);
     assert.deepEqual(d.peers, { '8.8.8.8': 1000, '1.1.1.1': 300 });  // internet peers only
+});
+
+test('the device panel needs no note when its lists cover the same day as the table', async () => {
+    const { w } = await load('yesterday');              // all traffic: daily totals, the same day
+    const d = await w._detailsData('192.168.1.10');
+    assert.equal(d.note, null);
+});
+
+// --- scope changes, concurrent loads and the cache ------------------------------
+
+test('switching to internet only while the table loads ends on internet only', async () => {
+    const w = widget('1h');
+    let release;
+    reply = (url) => (url.includes('/FlowSourceAddrTotals/')
+        ? new Promise(r => { release = () => r(csv(totalsRows(FLOWS), TOTALS_HEAD)); })
+        : csv(detailsRows(FLOWS), DETAILS_HEAD));
+    const loading = w.refresh();                       // all traffic, and its export is slow
+    await tick();
+    w.state.scope = 'wan';                             // the user switches meanwhile
+    await w.render();                                  // what the scope control runs
+    release();
+    await loading;
+    assert.equal(w.state.request.scope, 'wan');
+    assert.deepEqual(byIp(w), { '192.168.1.10': [1000, 300] });
+    assert.match(dom['.td-window small'], / · internet only \(via em0\)$/);
+});
+
+test('a late internet-only export does not overwrite all traffic', async () => {
+    const { w } = await load('1h');
+    let release;
+    reply = (url) => (url.includes('/FlowSourceAddrDetails/')
+        ? new Promise(r => { release = () => r(csv(detailsRows(DAY), DETAILS_HEAD)); })
+        : csv(totalsRows(FLOWS), TOTALS_HEAD));
+    w.state.scope = 'wan';
+    const toWan = w.render();                          // the details export is slow
+    await tick();
+    w.state.scope = 'all';
+    await w.render();                                  // back before it arrives
+    release();
+    await toWan;
+    assert.equal(w.state.request.scope, 'all');
+    assert.equal(w.state.plan.provider, 'FlowSourceAddrTotals');
+    assert.deepEqual(byIp(w), { '192.168.1.10': [1000, 357], '192.168.20.5': [50, 0] });
+    assert.match(dom['.td-window small'], / · all traffic$/);
+});
+
+test('switching scope and back reads each export once, for the window on screen', async () => {
+    const { w } = await load('1h');
+    const before = requests.length;
+    w.state.scope = 'wan';
+    await w.render();
+    w.state.scope = 'all';
+    await w.render();
+    assert.deepEqual(requests.slice(before), [`${EXPORT}/FlowSourceAddrDetails/${S(0, 0, 23)}/${NOW}/86400`]);
+    assert.deepEqual(w.state.window, [S(8, 10), NOW]);
+    assert.deepEqual(byIp(w), { '192.168.1.10': [1000, 357], '192.168.20.5': [50, 0] });
+});
+
+test('a refresh that lands after a scope change is dropped, not shown and then corrected', async () => {
+    const { w } = await load('1h');
+    let release;
+    reply = (url) => (url.includes('/FlowSourceAddrTotals/')
+        ? new Promise(r => { release = () => r(csv(totalsRows(DAY), TOTALS_HEAD)); })
+        : csv(detailsRows(FLOWS), DETAILS_HEAD));
+    const refreshing = w.refresh();                    // the periodic refresh: all traffic, slow
+    await tick();
+    w.state.scope = 'wan';
+    await w.render();                                  // internet only, at the moment on screen
+    const before = requests.length;
+    release();
+    await refreshing;
+    assert.equal(requests.length, before);             // nothing reloaded to undo it
+    assert.deepEqual([w.state.request.scope, w.state.request.now], ['wan', NOW]);
+    assert.deepEqual(byIp(w), { '192.168.1.10': [1000, 300] });
+});
+
+test('the cache keeps only the exports of the window on screen', async () => {
+    const { w } = await load('1h');
+    await w._detailsData('192.168.1.10');               // the drill-down's export
+    await w._load((NOW + 900) * 1000);                  // the next refresh, 15 minutes on
+    assert.deepEqual(Object.keys(w.cache), [`FlowSourceAddrTotals/${S(8, 25)}/${NOW + 900}/300`]);
+});
+
+test('the device panel follows the rows on screen, not the scope control', async () => {
+    const { w } = await load('1h', 'wan');
+    w.state.scope = 'all';                              // changed, not reloaded yet
+    const d = await w._detailsData('192.168.1.10');
+    assert.deepEqual(d.peers, { '8.8.8.8': 1000, '1.1.1.1': 300 });
+});
+
+test('a failed scope change says so and closes the device panel', async () => {
+    const { w } = await load('1h');
+    w.state.selected = '192.168.1.10';
+    reply = () => null;                                 // the firewall stops answering
+    w.state.scope = 'wan';
+    await w.render();
+    assert.match(dom['.td-body'], /Unable to read NetFlow data/);
+    assert.equal(dom['.td-window small'], '');
+    assert.equal(w.state.selected, null);
 });

@@ -179,22 +179,34 @@ Both were measured against a live firewall, not assumed:
    asked for, so *Last hour* really showed everything since 10:00, *Last 24
    hours* and *Today* both everything since 10:00 the day before, and
    *Yesterday* two days. Since 0.1.2 it reads the finest buckets still kept for
-   the window, snapped to the nearest bucket boundaries:
+   the window, snapped to the nearest bucket boundaries, and never a bucket core
+   may already have dropped:
 
    | Range | All traffic | Internet only |
    |---|---|---|
-   | Last hour | 5-minute buckets | daily |
-   | Last 24 hours | hourly | daily |
-   | Today | hourly, from local midnight | daily |
-   | Yesterday, Last 7 days | daily | daily |
-   | Custom | the finest still kept for its start | daily |
+   | Last hour | the 5-minute buckets within it (55–60 min) | daily |
+   | Last 24 hours | the hourly buckets within it (23–24 h) | daily |
+   | Today | from local midnight: 5-minute buckets in its first hour, then hourly | daily |
+   | Yesterday | the calendar day: hourly just after midnight (from 01:00), then daily | daily |
+   | Last 7 days | daily | daily |
+   | Custom | the finest buckets still kept for its start | daily |
+
+   Hourly buckets are UTC hours. In a time zone with a half-hour offset, Today
+   starts at the nearest one — 00:30 in India. A day with a clock change is 23
+   or 25 hours long, and Yesterday follows it.
 
    The caption shows the span the figures cover. When daily buckets stand in
    for a shorter range, a note under it says so — for internet only, for
    example, *"Internet only is kept per day (days start at 10:00): these cover
-   10:00 → 19:08"*. The drill-down's peers and ports come from the daily
-   details. When those cover more than the table's window, the panel says so,
-   and its download and upload stay the table's.
+   10:00 → 19:08"*. Core keeps the details for 62 days and the daily totals for
+   a year. A range reaching further back is cut to what is kept, and the note
+   says so, or says there is no data at all. The drill-down's peers and ports
+   come from the daily details. When those cover more than the table's window,
+   the panel says so, and its download and upload stay the table's.
+
+   Each scope reads its own export. Switching scope reloads at the moment already
+   on screen, so both scopes describe the same span, and switching back is served
+   from the cache.
 
 ## Install without building
 
