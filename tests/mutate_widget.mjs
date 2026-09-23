@@ -166,6 +166,8 @@ const mutants = [
     ['the panel reads the daily details on a raw range', '        if (this.state.request && this.state.request.raw) return this._rawDetails(ip);\n', ''],
     ["the framework's reply taken for a raw answer", ' && keys.every(k => r[k]) ? resolve(r)', ' ? resolve(r)'],
     ['a device answer without its lists kept', "path.startsWith('device/') ? ['peers', 'ports'] :", "path.startsWith('device/') ? [] :"],
+    ['a custom range ending later asks the raw log for the future', '            const end = Math.min(to, now);', '            const end = to;'],
+    ["the raw read given ajaxCall's 5 s", 'timeout: 60000', 'timeout: 5000'],
 ];
 
 let survivors = 0;

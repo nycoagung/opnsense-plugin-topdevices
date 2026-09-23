@@ -211,6 +211,11 @@ class Devices(unittest.TestCase):
             with self.subTest(index=index), self.assertRaisesRegex(RuntimeError, 'em0'):
                 flows.upstream_ifindex(index, ['em0'])
 
+    def test_no_upstream_interface_is_an_error(self):
+        # no default route and no public address (a WAN down): internet only would silently read nothing
+        with self.assertRaisesRegex(RuntimeError, 'no upstream interface'):
+            flows.upstream_ifindex({1: 'em0'}, [])
+
 
 class Hourly(unittest.TestCase):
     def test_hourly_rows_become_device_download_and_upload(self):
@@ -467,6 +472,16 @@ class Device(unittest.TestCase):
                                       'inet': [['8.8.8.8', 1500], ['1.1.1.1', 300]]})
         self.assertEqual(a['ports'], {'all': [['443', 1357], ['53', 500]], 'inet': [['443', 1300], ['53', 500]]})
 
+    def test_each_list_is_sorted_by_its_own_scope(self):
+        # 1.1.1.1 moves more in all traffic (most of it not via upstream), 8.8.8.8 more on the internet
+        data = b''.join([
+            flow('8.8.8.8', '192.168.1.10', 3000, recv=T0 + 100, start=T0 + 10, end=T0 + 90, if_in=1),
+            flow('1.1.1.1', '192.168.1.10', 1000, recv=T0 + 100, start=T0 + 10, end=T0 + 90, if_in=1),
+            flow('1.1.1.1', '192.168.1.10', 5000, recv=T0 + 100, start=T0 + 10, end=T0 + 90, if_in=2)])
+        a = self.answer(data, T0, T0 + 100)
+        self.assertEqual(a['peers']['all'], [['1.1.1.1', 6000], ['8.8.8.8', 3000]])
+        self.assertEqual(a['peers']['inet'], [['8.8.8.8', 3000], ['1.1.1.1', 1000]])
+
     def test_port_zero_is_other(self):
         a = self.answer(flow('8.8.8.8', '192.168.1.10', 5, recv=T0 + 100, start=T0, end=T0 + 90, ports=(0, 0)),
                         T0, T0 + 100)
@@ -520,6 +535,10 @@ class CommandLine(unittest.TestCase):
     def test_the_clocks_may_differ_by_minutes(self):
         req = flows.parse_args(['totals', str(self.NOW - 86400 - 299), str(self.NOW + 299)], self.NOW)
         self.assertEqual((req['from'], req['to']), (self.NOW - 86400 - 299, self.NOW))
+
+    def test_the_clock_slack_includes_its_edges(self):
+        req = flows.parse_args(['totals', str(self.NOW - 86400 - 300), str(self.NOW + 300)], self.NOW)
+        self.assertEqual((req['from'], req['to']), (self.NOW - 86400 - 300, self.NOW))
 
     def test_a_range_that_has_not_begun_is_refused(self):
         self.assertIn('not begun', self.reject(['totals', str(self.NOW + 10), str(self.NOW + 200)]))
