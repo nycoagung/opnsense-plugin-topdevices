@@ -195,8 +195,10 @@ Two things worth being clear about:
   that every subsequent refresh does not.
 
 The installer is idempotent and safe to run repeatedly. It rewrites the configd
-action only when the content actually changes, because restarting configd from a
-script that configd itself launched would kill that script mid-run.
+action file only when its content changes, so the weekly run normally restarts
+nothing. When the file does change, configd restarts detached, a second after the
+installer finishes: `configctl` and cron run the installer through configd, and a
+synchronous restart would cut off configd's reply to them.
 
 ## Build as a real package
 
@@ -238,7 +240,7 @@ Verified by measurement against a live firewall, not by reading the code:
 limit locked the sibling `os-parentalcontrol` plugin out entirely. No GitHub API
 request is made at all now, and no hop goes through raw's per-edge cache — both
 of which silently served stale files here before. The codeload path was dry-run
-against the live repo and installs all three files byte-identically.
+against the live repo and installs all six files byte-identically.
 
 ## Tests
 
