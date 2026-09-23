@@ -32,6 +32,7 @@ HOUR = 3600
 DAY = 86400
 SLACK = 300              # the browser's clock may be a few minutes off the firewall's
 TOP = 100                # the device panel lists at most 100 rows
+MAX_FILE = 40 * 1024 * 1024  # core rotates the log at 10 MB (flowd_aggregate.py): far past that, nothing rotates it
 DIGITS = re.compile(r'[0-9]+')
 
 # core's lib/flowparser.py: the fields a record may carry, in order of appearance
@@ -449,7 +450,9 @@ def parse_args(args, now):
     frm, to = int(frm), int(to)
     if frm >= to:
         raise ValueError('FROM must be before TO')
-    if frm < now - DAY - SLACK:
+    # Totals only: a device panel asks for its table's window, which ages while
+    # the table is on screen, and its lists cover what the log holds (answer_device)
+    if mode == 'totals' and frm < now - DAY - SLACK:
         raise ValueError("FROM is more than a day ago: that range is read from NetFlow's records")
     if to > now + SLACK:
         raise ValueError('TO is in the future')
@@ -509,6 +512,7 @@ def system_net():
 
 def main(argv, now=None, log=LOG, system=None, hourly=None):
     """Answer the command line with one JSON line on stdout. Always returns 0."""
+    sys.dont_write_bytecode = True        # nothing written on the firewall: no __pycache__ for live.py or core's library
     t0 = time.monotonic()
     opened = []
     try:
@@ -518,6 +522,10 @@ def main(argv, now=None, log=LOG, system=None, hourly=None):
         opened = open_log(log)
         if not opened:
             raise ValueError('no NetFlow flow log: is NetFlow capture enabled?')
+        biggest = max(size for _, _, size in opened)
+        if biggest > MAX_FILE:            # only core's aggregator rotates the log
+            raise ValueError("the NetFlow flow log has a %d MB file, far past the 10 MB core rotates at: "
+                             "is NetFlow's aggregator running?" % (biggest // (1024 * 1024)))
         workers = max(1, (os.cpu_count() or 2) // 2)
         if req['mode'] == 'totals':
             out = answer_totals(req['from'], req['to'], now, opened, net, hourly or core_hourly, workers)

@@ -695,12 +695,16 @@ export default class TopDevices extends BaseWidget {
 
     // A flows/ answer from the plugin's own endpoint. $.ajax, not ajaxCall: that
     // gives up after 5 s and retries, and every retry reads the whole log again.
-    // Only a JSON object without an error is an answer.
+    // Only an answer of the shape asked for is one: an error, or the framework's
+    // own HTTP 200 reply while the endpoints are not installed yet
+    // ({"errorMessage": "Endpoint not found"}, as after a first 0.1.x install run),
+    // falls back.
     _flows(path) {
+        const keys = path.startsWith('device/') ? ['peers', 'ports'] : ['all', 'inet', 'devices'];
         return new Promise((resolve, reject) => {
             $.ajax({ url: `/api/topdevices/flows/${path}`, dataType: 'json', timeout: 60000 })
-                .done((r) => (r && typeof r === 'object' && !r.error ? resolve(r)
-                    : reject(new Error((r && r.error) || 'no answer'))))
+                .done((r) => (r && typeof r === 'object' && !r.error && keys.every(k => r[k]) ? resolve(r)
+                    : reject(new Error((r && (r.error || r.errorMessage)) || 'no answer'))))
                 .fail(() => reject(new Error('flows request failed')));
         });
     }

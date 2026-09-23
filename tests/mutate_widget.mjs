@@ -145,7 +145,7 @@ const mutants = [
     ['internet only read from the all-traffic columns', "    const k = scope === 'wan' ? 2 : 0;", '    const k = 0;'],
     ['devices without traffic in the scope listed', '        .filter(r => r.down + r.up > 0);', ';'],
     ['spans rounded to the nearest minute', '    const m = Math.floor(Math.max(0, seconds) / 60);', '    const m = Math.round(Math.max(0, seconds) / 60);'],
-    ['a string taken for a raw answer', "                .done((r) => (r && typeof r === 'object' && !r.error ? resolve(r)",
+    ['a string taken for a raw answer', "                .done((r) => (r && typeof r === 'object' && !r.error && keys.every(k => r[k]) ? resolve(r)",
      '                .done((r) => (r ? resolve(r)'],
     ['a stale raw answer lands', '            if (token !== this._loadToken) return false;\n            if (resp) {', '            if (resp) {'],
     ['a failed raw read shows nothing', '            fallback = true;                     // say so', '            return false;                        // say so'],
@@ -164,6 +164,8 @@ const mutants = [
     ["the raw panel's internet lists taken from all traffic", "        const k = q.scope === 'wan' ? 'inet' : 'all';", "        const k = 'all';"],
     ['no note when the raw panel covers less', '            note: d.from > q.from ? ', '            note: false ? '],
     ['the panel reads the daily details on a raw range', '        if (this.state.request && this.state.request.raw) return this._rawDetails(ip);\n', ''],
+    ["the framework's reply taken for a raw answer", ' && keys.every(k => r[k]) ? resolve(r)', ' ? resolve(r)'],
+    ['a device answer without its lists kept', "path.startsWith('device/') ? ['peers', 'ports'] :", "path.startsWith('device/') ? [] :"],
 ];
 
 let survivors = 0;

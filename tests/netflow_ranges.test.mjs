@@ -651,3 +651,21 @@ test('a refused panel read is an error, which the panel shows as unavailable', a
         : totalsAnswer(NOW - 3600, NOW)));
     await assert.rejects(w._detailsData('192.168.1.99'));
 });
+
+test('the framework\'s own reply, while the flows endpoints are not installed yet, falls back too', async () => {
+    const w = widget('1h');
+    reply = (url) => (url.startsWith(`${FLOWS_API}/`) ? { errorMessage: 'Endpoint not found', errorTitle: 'Error' } : serve(url));
+    await w._load(NOW * 1000);
+    assert.equal(requests[requests.length - 1], `${EXPORT}/FlowSourceAddrTotals/${S(8, 10)}/${NOW}/300`);
+    assert.deepEqual(byIp(w), { '192.168.1.10': [1000, 357], '192.168.20.5': [50, 0] });
+    assert.equal(w._windowCaption().note, FALLBACK);
+});
+
+test('a device answer without its lists is not kept: the next panel read asks again', async () => {
+    const { w } = await loadRaw('1h', (url) => (url.includes('/device/') ? { errorMessage: 'Endpoint not found' }
+        : totalsAnswer(NOW - 3600, NOW)));
+    await assert.rejects(w._detailsData('192.168.1.10'));
+    const before = requests.length;
+    await assert.rejects(w._detailsData('192.168.1.10'));
+    assert.equal(requests.length, before + 1);
+});

@@ -319,9 +319,10 @@ class Reading(unittest.TestCase):
         self.addCleanup(flows.close_log, before)
         expected = flows.answer_totals(T0, T0 + 100, T0 + 300, before, NET, lambda lo, hi: [], 1)['devices']
         self.assertEqual(set(expected), {'192.168.1.10', '192.168.1.11', '192.168.20.5'})
-        # core rotates: every file moves one number up, a new flowd.log begins
+        # core rotates: every file moves one number up, the oldest goes, a new flowd.log begins
         os.rename(log + '.000001', log + '.000002')
         os.rename(log, log + '.000001')
+        os.remove(log + '.000002')
         write_log(self.tmp.name, [('flowd.log', KINDS[3], T0 + 250)])
         self.assertEqual(flows.answer_totals(T0, T0 + 100, T0 + 300, before, NET, lambda lo, hi: [], 1)['devices'],
                          expected)
@@ -523,6 +524,11 @@ class CommandLine(unittest.TestCase):
     def test_a_range_that_has_not_begun_is_refused(self):
         self.assertIn('not begun', self.reject(['totals', str(self.NOW + 10), str(self.NOW + 200)]))
 
+    def test_a_device_panel_may_ask_for_a_window_that_began_over_a_day_ago(self):
+        # the panel asks for its table's window, which ages while the table is on screen
+        req = flows.parse_args(['device', '192.168.1.10', str(self.NOW - 86400 - 900), str(self.NOW - 900)], self.NOW)
+        self.assertEqual((req['from'], req['to']), (self.NOW - 86400 - 900, self.NOW - 900))
+
     def run_main(self, argv, log, now=None, system=lambda: NET):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
@@ -540,6 +546,13 @@ class CommandLine(unittest.TestCase):
         self.assertIn('cost_ms', a)
         self.assertNotIn('error', a)
 
+    def test_a_device_answer_is_one_json_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = write_log(d, [('flowd.log', EARLY + b''.join(KINDS), T0 + 100)])
+            a = self.run_main(['flows.py', 'device', '192.168.1.10', str(T0), str(T0 + 100)], log, now=T0 + 300)
+        self.assertEqual((a['ip'], a['from'], a['to'], a['v']), ('192.168.1.10', T0, T0 + 100, flows.VERSION))
+        self.assertEqual(a['peers']['all'][0], ['8.8.8.8', 1000])
+
     def test_no_flow_log_is_an_error_answer(self):
         with tempfile.TemporaryDirectory() as d:
             a = self.run_main(['flows.py', 'totals', str(T0 + 100), str(T0 + 200)], os.path.join(d, 'flowd.log'),
@@ -553,6 +566,13 @@ class CommandLine(unittest.TestCase):
             log = write_log(d, [('flowd.log', b''.join(KINDS), T0 + 100)])
             a = self.run_main(['flows.py', 'totals', str(T0 + 100), str(T0 + 200)], log, now=T0 + 300, system=no_core)
         self.assertIn("No module named 'lib'", a['error'])
+
+    def test_a_log_nobody_rotates_is_an_error_answer(self):
+        # only core's aggregator rotates the log: if it stops, one file grows without bound
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.object(flows, 'MAX_FILE', 100):
+            log = write_log(d, [('flowd.log', b''.join(KINDS), T0 + 100)])
+            a = self.run_main(['flows.py', 'totals', str(T0 + 100), str(T0 + 200)], log, now=T0 + 300)
+        self.assertIn("aggregator running", a['error'])
 
     def test_the_script_never_prints_a_traceback(self):
         proc = subprocess.run([sys.executable, FLOWS_PY, 'totals', 'x', 'y'], capture_output=True, text=True)
