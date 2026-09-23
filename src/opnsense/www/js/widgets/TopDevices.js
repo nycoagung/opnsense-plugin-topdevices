@@ -10,19 +10,26 @@
  * default chart and refresh interval are widget options. View selections are
  * remembered in localStorage.
  *
- * WHY THE DETAIL EXPORT RATHER THAN THE `top` ENDPOINT:
+ * WHY THE EXPORTS RATHER THAN THE `top` ENDPOINT:
  * `top` returns one scalar per address and has no notion of direction, so it
  * cannot produce a download/upload split. It also ignores filter arguments
- * entirely (eight syntaxes tested, all byte-identical). The detail export is
- * the only source that carries direction, so it backs the table, the chart and
- * the drill-down alike - fetched once per range and cached, which is why the
- * default refresh is deliberately slow.
+ * entirely (eight syntaxes tested, all byte-identical). Two exports carry
+ * direction, and nfPlan() picks between them per range:
+ * - FlowSourceAddrTotals keeps 5-minute buckets for an hour, hourly ones for a
+ *   day and daily ones for a year - the table and chart for all traffic.
+ * - FlowSourceAddrDetails adds the peer, port and interface, in daily buckets
+ *   only - internet only, and the drill-down.
+ * Buckets count from the Unix epoch, so a daily one starts at 00:00 UTC, which
+ * is 10:00 in UTC+10. A window is snapped to whole buckets and the caption shows
+ * the span the figures cover. Exports are cached per window.
  *
- * ATTRIBUTION: totals are keyed on dst_addr. NetFlow records each flow once per
- * interface it crosses, with src/dst swapped between observations, so matching
- * "device is src OR dst" double-counts every byte and makes the direction split
- * meaningless (both halves come out identical). Keying on destination counts
- * each flow once; verified to within 0.1% against the `top` leaderboard.
+ * ATTRIBUTION: details rows are keyed on dst_addr. NetFlow records each flow once
+ * per interface it crosses, with src/dst swapped between observations, so
+ * matching "device is src OR dst" double-counts every byte and makes the
+ * direction split meaningless (both halves come out identical). Keying on
+ * destination counts each flow once; verified to within 0.1% against the `top`
+ * leaderboard. Totals rows hold one address and are read the other way round;
+ * deviceTotals() has both, and they agree to the byte.
  *
  * Figures are TOTAL traffic - internal plus internet. An NVR pulling camera
  * streams will dominate with traffic that never reaches the WAN.
@@ -206,6 +213,61 @@ export function liveRowsKey(rows) {
     return rows.map(r => `${r.ip}|${r.name}|${r.net}`).join('\n');
 }
 
+/* ---------- NetFlow ranges: pure helpers (tests/netflow_ranges.test.mjs) ---------- */
+
+// What core's aggregator keeps (26.7.4, scripts/netflow/lib/aggregates/source.py).
+const TOTALS = 'FlowSourceAddrTotals', DETAILS = 'FlowSourceAddrDetails';
+const TOTALS_KEPT = [[300, 3600], [3600, 86400], [86400, Infinity]];     // [bucket, seconds kept]
+
+// The export returns every bucket that starts in [floor(from), to). Snapping the
+// window to the nearest bucket boundaries first gives a range the buckets that
+// mostly cover it - Yesterday one day, not two - and an exact span to show.
+function snapWindow(from, to, now, res) {
+    const near = (t) => Math.round(t / res) * res;
+    let start = near(from);
+    let end = to >= now ? now : Math.min(near(to), now);
+    if (end <= start) {                  // shorter than a bucket: the bucket it starts in
+        start = Math.floor(from / res) * res;
+        end = Math.min(start + res, now);
+    }
+    return [start, end];
+}
+
+export function detailsPlan(from, to, now) {
+    const [start, end] = snapWindow(from, to, now, 86400);
+    return { provider: DETAILS, res: 86400, start, end };
+}
+
+// Which export, bucket size and span answer [from, to] at `now`: the finest
+// totals still kept for the window. Internet only needs the interface a flow
+// crossed, which only the daily details record.
+export function nfPlan(from, to, now, scope) {
+    if (scope === 'wan') return detailsPlan(from, to, now);
+    for (const [res, kept] of TOTALS_KEPT) {
+        const [start, end] = snapWindow(from, to, now, res);
+        if (start >= Math.floor(now / res) * res - kept) return { provider: TOTALS, res, start, end };
+    }
+}
+
+// Per-device download and upload from either export. A flow is recorded once
+// per interface it crosses. Details rows are keyed on dst_addr: 'in' rows are
+// bytes delivered to it, 'out' rows bytes it sent (core swaps the addresses for
+// 'out'). Totals rows hold one address with the opposite convention: 'out' rows
+// are bytes delivered to it, 'in' rows bytes it sent. Over the same buckets the
+// two agree to the byte (checked against every device on the reference install).
+export function deviceTotals(rows, provider, keep) {
+    const totals = provider === TOTALS;
+    const acc = {};
+    rows.forEach((r) => {
+        const ip = totals ? r.src : r.dst;
+        if (!ip || !keep(ip, r)) return;
+        const a = acc[ip] || (acc[ip] = { ip: ip, down: 0, up: 0 });
+        const sent = totals ? r.dir !== 'out' : r.dir === 'out';
+        if (sent) a.up += r.octets; else a.down += r.octets;
+    });
+    return acc;
+}
+
 export function fmtRate(bps) {
     if (!bps || bps < 1) return '0 b/s';
     const units = ['b/s', 'kb/s', 'Mb/s', 'Gb/s'];
@@ -328,8 +390,8 @@ export default class TopDevices extends BaseWidget {
         ];
     }
 
-    _window(key) {
-        const now = new Date();
+    _window(key, nowMs = Date.now()) {
+        const now = new Date(nowMs);
         const mid = Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() / 1000);
         const s = Math.floor(now.getTime() / 1000);
         const DAY = 86400;
@@ -499,10 +561,11 @@ export default class TopDevices extends BaseWidget {
         this.names = map;
     }
 
-    async _export(from, to) {
-        const key = `${from}-${to}`;
+    // plan: an nfPlan() / detailsPlan() result
+    async _export(plan) {
+        const key = `${plan.provider}/${plan.start}/${plan.end}/${plan.res}`;
         if (this.cache[key]) return this.cache[key];
-        const url = `/api/diagnostics/networkinsight/export/FlowSourceAddrDetails/${from}/${to}/86400/src_addr/octets`;
+        const url = `/api/diagnostics/networkinsight/export/${key}`;
         const text = await new Promise((resolve, reject) => {
             $.ajax({ url: url, dataType: 'text', timeout: 180000 })
                 .done(resolve).fail(() => reject(new Error('export failed')));
@@ -522,28 +585,64 @@ export default class TopDevices extends BaseWidget {
                 octets: parseFloat(c[ix.octets]) || 0
             });
         });
-        this.cache = {};                 // keep only the current range
+        // the table's export, the drill-down's, and the one a scope change left
+        const keys = Object.keys(this.cache);
+        if (keys.length >= 3) delete this.cache[keys[0]];
         this.cache[key] = rows;
         return rows;
     }
 
-    async _load() {
-        const [from, to] = this._window(this.state.range);
-        const flows = await this._export(from, to);
-        const acc = {};
-        flows.forEach((r) => {
-            const ip = r.dst;            // dst-keyed: see ATTRIBUTION above
-            if (!ip || !this._isLocal(ip) || this._isBroadcast(ip)) return;
-            if (!this._inScope(r)) return;
-            if (!acc[ip]) acc[ip] = { ip: ip, down: 0, up: 0 };
-            if (r.dir === 'out') acc[ip].up += r.octets; else acc[ip].down += r.octets;
-        });
-        this.state.rows = Object.values(acc).map(d => ({
+    async _load(nowMs = Date.now()) {
+        const now = Math.floor(nowMs / 1000);
+        const [from, to] = this._window(this.state.range, nowMs);
+        const plan = nfPlan(from, to, now, this.state.scope);
+        const flows = await this._export(plan);
+        const keep = (ip, r) => this._isLocal(ip) && !this._isBroadcast(ip) && this._inScope(r);
+        this.state.rows = Object.values(deviceTotals(flows, plan.provider, keep)).map(d => ({
             ip: d.ip, name: this.names[d.ip] || (this.ifaceNames || {})[d.ip] || '', net: this._netOf(d.ip),
             down: d.down, up: d.up, total: d.down + d.up
         }));
-        this.state.window = [from, to];
+        this.state.window = [plan.start, plan.end];          // what the figures cover
+        this.state.plan = plan;
+        this.state.request = { from, to, now, scope: this.state.scope };   // what the range asked for
         this._scopeShown = this.state.scope;
+    }
+
+    // The span the figures cover, and a note when the buckets are coarser than
+    // the range asked for (see nfPlan). Everything comes from the loaded request,
+    // not the controls: a scope change whose export failed leaves the old rows.
+    _windowCaption() {
+        const p = this.state.plan, q = this.state.request;
+        const scopeTxt = q.scope === 'wan'
+            ? ` · internet only (via ${this.wanDevs.join(', ') || 'WAN'})`
+            : ' · all traffic';
+        const text = `${this._dateStr(p.start)}  →  ${this._dateStr(p.end)}${scopeTxt}`;
+        let note = null;
+        if (p.res === 86400 && (Math.abs(p.start - q.from) >= 3600 || Math.abs(p.end - q.to) >= 3600)) {
+            const perDay = `kept per day (days start at ${this._hm(p.start)})`;
+            note = q.scope === 'wan'
+                ? `Internet only is ${perDay}: these cover ${this._span(p.start, p.end, q.now)}`
+                : `History older than a day is ${perDay}`;
+        }
+        return { text, note };
+    }
+
+    _hm(ts) {
+        const d = new Date(ts * 1000);
+        const p = (x) => String(x).padStart(2, '0');
+        return `${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+
+    // "10:00 → 19:08" within today, otherwise with the dates
+    _span(a, b, now) {
+        const day = (t) => new Date(t * 1000).toDateString();
+        if (day(a) === day(now) && day(b) === day(now)) return `${this._hm(a)} → ${this._hm(b)}`;
+        const full = (t) => {
+            const d = new Date(t * 1000);
+            const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
+            return `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${d.getDate()} ${mon} ${this._hm(t)}`;
+        };
+        return `${full(a)} → ${full(b)}`;
     }
 
     // Reverse DNS for a peer address. The endpoint echoes the address back when
@@ -871,8 +970,8 @@ export default class TopDevices extends BaseWidget {
 
     async _render() {
         if (this.state.range === 'live') { this._renderLive(); return; }
-        // _load() applies the scope filter while aggregating, so a scope change
-        // needs a re-aggregate. The export itself is cached, so this is cheap.
+        // Each scope reads its own export (see nfPlan), so a scope change reloads;
+        // the exports stay cached, so switching back costs nothing.
         if (this._scopeShown !== this.state.scope && this.state.window) {
             this._scopeShown = this.state.scope;
             try { await this._load(); } catch (e) { /* keep previous rows */ }
@@ -892,19 +991,17 @@ export default class TopDevices extends BaseWidget {
         // top 10 regardless of table length - labelled, never a silent truncation.
         const CHART_MAX = 10;
 
-        if (this.state.window) {
-            const scopeTxt = this.state.scope === 'wan'
-                ? ` · internet only (via ${this.wanDevs.join(', ') || 'WAN'})`
-                : ' · all traffic';
-            $('.td-window small').text(
-                `${this._dateStr(this.state.window[0])}  →  ${this._dateStr(this.state.window[1])}${scopeTxt}`);
-        }
+        const caption = this.state.window && this.state.plan ? this._windowCaption() : null;
+        if (caption) $('.td-window small').text(caption.text);
         this._renderChrome();
         $('.td-body').html(this._rowsHtml(rows, (v) => this._fmt(v), 'No matching devices'));
         this._renderChart(rows.slice(0, CHART_MAX));
         if (rows.length > CHART_MAX && this._chartKind() !== 'none') {
             $('.td-window small').append(
                 `<span class="text-muted"> \u00b7 chart: top ${CHART_MAX} of ${rows.length}</span>`);
+        }
+        if (caption && caption.note) {
+            $('.td-window small').append('<br>').append($('<span class="text-warning"></span>').text(caption.note));
         }
         if (!this.state.selected) $('.td-details').empty();
         this._applyLayout();
@@ -1466,24 +1563,18 @@ export default class TopDevices extends BaseWidget {
         try { await this._renderDetails(ip); } finally { this._busy(false); }
     }
 
-    async _renderDetails(ip) {
-        if (this.state.range === 'live') { this._renderLiveDetails(ip); return; }
-        const $d = $('.td-details');
-        // clicking a device must acknowledge immediately: the aggregate is cheap
-        // but resolving peer names can take a second or more
-        $d.html('<div style="padding:12px 0;text-align:center;">'
-              + '<i class="fa fa-spinner fa-spin" style="opacity:0.6;"></i></div>');
-        this._applyLayout();
-        const [from, to] = this.state.window || this._window(this.state.range);
-        let flows;
-        try { flows = await this._export(from, to); }
-        catch (e) { $d.html('<small class="text-danger">Detail unavailable for this range</small>'); return; }
-        if (this.state.selected !== ip) return;
-
+    // Peers and ports exist only in the daily details, which can cover more than
+    // the table's window (see nfPlan): the lists then say what they cover, while
+    // the panel's download and upload stay the table's.
+    async _detailsData(ip) {
+        const q = this.state.request, table = this.state.plan;
+        if (!q || !table) throw new Error('no range loaded');
+        const plan = detailsPlan(q.from, q.to, q.now);
+        const flows = await this._export(plan);
         const peers = {}, ports = {};
         let down = 0, up = 0;
         flows.forEach((r) => {
-            if (r.dst !== ip) return;                 // dst-keyed, as above
+            if (r.dst !== ip) return;                 // dst-keyed, see deviceTotals
             if (!this._inScope(r)) return;
             const peer = r.src;
             if (!peer) return;
@@ -1492,6 +1583,27 @@ export default class TopDevices extends BaseWidget {
             ports[p] = (ports[p] || 0) + r.octets;
             if (r.dir === 'out') up += r.octets; else down += r.octets;
         });
+        const row = this.state.rows.find(x => x.ip === ip);
+        if (row) { down = row.down; up = row.up; }
+        const same = plan.provider === table.provider && plan.start === table.start && plan.end === table.end;
+        const note = same ? null : `Peers and ports cover ${this._span(plan.start, plan.end, q.now)} (kept per day)`;
+        return { peers, ports, down, up, note };
+    }
+
+    async _renderDetails(ip) {
+        if (this.state.range === 'live') { this._renderLiveDetails(ip); return; }
+        const $d = $('.td-details');
+        // clicking a device must acknowledge immediately: the aggregate is cheap
+        // but resolving peer names can take a second or more
+        $d.html('<div style="padding:12px 0;text-align:center;">'
+              + '<i class="fa fa-spinner fa-spin" style="opacity:0.6;"></i></div>');
+        this._applyLayout();
+        let d;
+        try { d = await this._detailsData(ip); }
+        catch (e) { $d.html('<small class="text-danger">Detail unavailable for this range</small>'); return; }
+        if (this.state.selected !== ip) return;
+
+        const { peers, ports, down, up } = d;
         const dn = this.state.detailN || 10;
         const topOf = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, dn);
         const topPeers = topOf(peers);
@@ -1526,6 +1638,7 @@ export default class TopDevices extends BaseWidget {
                         <option value="100">100</option>
                     </select>
                 </div>
+                ${d.note ? `<small class="text-warning" style="display:block;margin-top:3px;">${this._esc(d.note)}</small>` : ''}
                 <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;">
                     <div style="flex:1 1 260px;min-width:0;">
                         <small class="text-muted">Top peers</small>

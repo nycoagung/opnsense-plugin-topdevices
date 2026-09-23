@@ -8,7 +8,8 @@ NetFlow/Insight aggregator. No extra collector required.
 - **Live** — each device's current download and upload, updated every second,
   from the firewall's connection table (see *Live traffic*)
 - **Date range** — last hour, 24 hours, today, yesterday, 7 days, or a custom
-  from/to range picked to the second
+  from/to range; each snaps to the buckets NetFlow keeps, and the caption shows
+  the exact span (see *Upstream API limitations*)
 - **Download / upload split** per device, plus the combined total
 - **All traffic or internet only** — the latter counts flows at the WAN,
   so purely local traffic is excluded
@@ -151,24 +152,49 @@ way core's own Traffic Graph streams interface counters.
   endpoint it declares, so from 0.1.0 a non-root user needs this privilege to
   see the widget at all.
 
-## Two upstream API limitations
+## Upstream API limitations
 
 Both were measured against a live firewall, not assumed:
 
 1. **`top` ignores filter arguments, and has no notion of direction.** Eight
    filter syntaxes (path segment, query string, `if=`, `direction=`,
    `dst_addr=`, …) all returned byte-identical results, and the endpoint returns
-   one scalar per address, so it cannot produce a download/upload split. The
-   detail export is therefore the source for the table, chart and drill-down
-   alike (~6 MB per day, ~3 s), fetched once per range and cached. That is why
-   the default refresh interval is deliberately slow — changing filters, sorting
-   or charts costs nothing, only changing the range refetches.
+   one scalar per address, so it cannot produce a download/upload split. Two
+   exports can:
+   - **`FlowSourceAddrTotals`**: download and upload per address, in 5-minute
+     buckets for the last hour, hourly ones for the last 24 hours and daily ones
+     for a year. It backs the table and chart for *all traffic*.
+   - **`FlowSourceAddrDetails`**: adds the peer, the port and the interface a flow
+     crossed, in daily buckets only (kept 62 days, ~6 MB per day, ~3 s). It backs
+     *internet only* and the drill-down.
 
-2. **Wide windows snap to day buckets aligned to UTC midnight.** A 6-hour and a
-   24-hour query return identical totals; only windows of roughly an hour return
-   finer data. **"Today" and "Yesterday" are therefore approximate.** The widget
-   always displays the window it actually requested, so the figure is never
-   silently wrong.
+   Each export is fetched once per window and cached. That is why the default
+   refresh interval is deliberately slow — changing filters, sorting or charts
+   costs nothing.
+
+2. **Buckets are aligned to UTC, and the export rounds a window's start down to
+   a bucket.** A daily bucket starts at 00:00 UTC: 10:00 in AEST, 11:00 in AEDT.
+   The firewall's time zone changes only how buckets are printed. Up to 0.1.1 the
+   widget read the daily details for every range and showed the window it had
+   asked for, so *Last hour* really showed everything since 10:00, *Last 24
+   hours* and *Today* both everything since 10:00 the day before, and
+   *Yesterday* two days. Since 0.1.2 it reads the finest buckets still kept for
+   the window, snapped to the nearest bucket boundaries:
+
+   | Range | All traffic | Internet only |
+   |---|---|---|
+   | Last hour | 5-minute buckets | daily |
+   | Last 24 hours | hourly | daily |
+   | Today | hourly, from local midnight | daily |
+   | Yesterday, Last 7 days | daily | daily |
+   | Custom | the finest still kept for its start | daily |
+
+   The caption shows the span the figures cover. When daily buckets stand in
+   for a shorter range, a note under it says so — for internet only, for
+   example, *"Internet only is kept per day (days start at 10:00): these cover
+   10:00 → 19:08"*. The drill-down's peers and ports come from the daily
+   details. When those cover more than the table's window, the panel says so,
+   and its download and upload stay the table's.
 
 ## Install without building
 
@@ -232,7 +258,7 @@ Requires a FreeBSD host matching the target ABI (26.7 / amd64 / FreeBSD 15.1):
     cp -R opnsense-plugin-topdevices plugins/net-mgmt/topdevices
     cd plugins/net-mgmt/topdevices && make package
 
-That builds `os-topdevices-0.1.0.pkg`; `pkg add` it on the firewall, or run
+That builds `os-topdevices-0.1.2.pkg`; `pkg add` it on the firewall, or run
 `make upgrade` instead of `make package` to build and install in one step.
 GitHub releases carry source only - no prebuilt package is published.
 
@@ -281,14 +307,32 @@ on 2026-09-23:
   2.2 s later; its memory stayed at 18-22 MB, following the size of the state
   table rather than time.
 - **The NetFlow ranges** behave as in 0.0.1, checked by hand through every range
-  and control.
+  and control. (0.0.1's ranges were wrong; see below.)
 
 Not verified: non-root users (only root exists on the reference install), IPv6
 attribution (not attempted: no routable IPv6 there), multiple WANs, and a device
 behind a traffic-shaper pipe.
 
-**Automated tests** cover the live sampler and the widget's live logic (see
-*Tests*). The NetFlow views still have none.
+**NetFlow ranges (0.1.2)**, measured on the reference install on 2026-09-23 (AEST):
+
+- **The bug**: at 19:08, *Last hour* showed 98.4 GB, everything since 10:00; the
+  last hour held 6.1 GB. *Last 24 hours* showed 253.0 GB against 187.6 GB.
+  *Today* returned the same export as *Last 24 hours*: 253.0 GB against 154.0 GB.
+  *Yesterday* covered 48 hours.
+- **The two exports agree to the byte**: over the same UTC day,
+  `FlowSourceAddrTotals` gave every device the same download and upload as the
+  `dst_addr`-keyed details (98.359 GB both). Over the current hour, the 5-minute
+  buckets summed to the hourly one exactly.
+- **End to end**: the widget's own code was run against the firewall for four
+  ranges in both scopes. It matched an independent recomputation from the raw
+  exports to 0 bytes per device.
+- **In a browser**, with the dashboard's own jQuery and Bootstrap, the captions,
+  the per-day notice and the drill-down note render as described.
+- Core's export writes an extra empty column before any field that is zero. It
+  only ever hit 0-byte rows, which the widget reads as 0.
+
+**Automated tests** cover the live sampler, the widget's live logic and, since
+0.1.2, the NetFlow ranges (see *Tests*).
 
 **The installer was ported to codeload** after the GitHub API's per-file rate
 limit locked the sibling `os-parentalcontrol` plugin out entirely. No GitHub API
@@ -300,6 +344,7 @@ against the live repo and installs all six files byte-identically.
 
     python3 -m unittest discover -s tests -v    # sampler: parser, crediting rules, loop
     node --test tests/live_view.test.mjs         # widget: averaging, lifecycle, watchdog
+    node --test tests/netflow_ranges.test.mjs    # widget: NetFlow exports, buckets, windows, captions
     sh tests/test_install.sh                     # installer dry run into a scratch root
     python3 tests/mutate.py                      # each planted sampler bug must fail the suite
     node tests/mutate_widget.mjs                 # the same for the widget
