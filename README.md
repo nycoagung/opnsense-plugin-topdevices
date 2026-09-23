@@ -105,9 +105,18 @@ way core's own Traffic Graph streams interface counters.
   counted. Core's iftop-based *Top talkers* read 32-68% of the same steady load,
   which is why it is not used.
 - **What the numbers are.** Rows and chart show a 3-second average, refreshed each
-  interval; the WAN figure beside the range is the last interval alone. A device
-  that goes quiet stays listed at 0 for 10 seconds. Row order holds still while
-  the pointer is over the table.
+  interval; the WAN figure beside the range is the last interval alone.
+- **Which devices.** With nothing picked, Live lists the busiest devices, busiest
+  first; a device that goes quiet stays listed at 0 for 10 seconds, and the order
+  holds still while the pointer is over the table. To watch particular devices,
+  tick them in the *Devices* picker beside the network filter: it lists every
+  known device (DHCP leases, host records and anything Live has seen), with a
+  search box and select all / none. The table then shows exactly those devices,
+  idle ones at 0 b/s, A to Z, so it keeps its size. Picks are remembered in the
+  browser. The network filter and search still apply.
+- **No column sorting in Live.** A header click changes nothing there; the NetFlow
+  ranges sort as before. The figures update in place, so a click on a row always
+  lands.
 - **What it cannot see.** A connection that opens and closes between two samples;
   traffic between two devices on the same network, which never reaches the
   firewall; and IPv6, which is counted but not attributed - the summary line says

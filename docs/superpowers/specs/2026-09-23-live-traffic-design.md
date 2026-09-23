@@ -318,9 +318,17 @@ at 365-day retention.
 - **Range dropdown.** **Live** is the first entry and can be chosen as the default
   range. The new widget option *Live update interval* offers 1 s (default), 2 s and
   5 s.
-- **Table.** Down, Up and Total show bits per second (e.g. `5.6 Mb/s`). Sort, network
+- **Table.** Down, Up and Total show bits per second (e.g. `5.6 Mb/s`). Network
   filter, search, row count and the All / Internet only scope all apply. Changing scope
-  is instant, because every event carries both scopes.
+  is instant, because every event carries both scopes. *(Changed at the user's
+  request, after the first install:)* column sorting does not apply in Live, and a
+  *Devices* picker (bootstrap-select, listing leases, host records and every device
+  seen) chooses what the table shows. With devices picked it shows exactly those,
+  idle ones at 0, A to Z, and ignores the row count, so the table keeps its size;
+  with none picked it shows the busiest devices, busiest first. Picks are kept with
+  the rest of the view in localStorage. While the rows stay the same, their figures
+  are updated in place instead of the table being rebuilt, so a click on a row is
+  never lost to a redraw.
 - **Summary line.** It reads
   `Live · WAN ↓ 6.1 Mb/s ↑ 0.2 Mb/s (via em0) · internet only · 1 s`. It adds
   `throttled to N s` when the sampler has slowed down, and a warning when `coverage.ok`

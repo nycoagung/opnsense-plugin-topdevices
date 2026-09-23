@@ -18,6 +18,19 @@ const mutants = [
     ['no automatic retry once unavailable', '            if (now - this.live.retryAt >= LIVE_RETRY_MS) this._startLive();\n', ''],
     ['a stale connect timer may reopen the stream outside Live', "        if (this.live.closed || this.state.range !== 'live') return;\n", ''],
     ['baseline events averaged in', '    if (!event || !(event.dt > 0)) return v;', '    if (!event) return v;'],
+    ['picked devices vanish while idle', '        this.state.rows = (pick.length ? pick : Object.keys(rates)).map((ip) => {',
+     '        this.state.rows = Object.keys(rates).map((ip) => {'],
+    ['with nothing picked, Live is not busiest first', '    rows.sort((a, b) => (b.total - a.total) || byLabel(a, b));',
+     '    rows.sort(byLabel);'],
+    ['filters ignored for picked devices', '    if (picked) return rows.sort(byLabel);',
+     '    if (picked) return candidates.slice().sort(byLabel);'],
+    ['a header click still sorts Live', "        if (this.state.range === 'live') return false;\n", ''],
+    ['saved picks restored uncleaned', '        this.state.livePick = cleanPick(this.state.livePick);\n', ''],
+    ['the picker offers the firewall itself', '            if (gateways[ip] || this._isBroadcast(ip)) continue;',
+     '            if (this._isBroadcast(ip)) continue;'],
+    ['a pick not seen today drops out of the picker', '...this.live.known, ...pick])) {', '...this.live.known])) {'],
+    ['a renamed device is patched, not rebuilt', "    return rows.map(r => `${r.ip}|${r.name}|${r.net}`).join('\\n');",
+     "    return rows.map(r => `${r.ip}|${r.net}`).join('\\n');"],
 ];
 
 let survivors = 0;

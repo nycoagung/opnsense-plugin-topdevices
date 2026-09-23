@@ -59,6 +59,12 @@ const chain = new Proxy(function () {}, {
 });
 globalThis.$ = chain;
 globalThis.document = { hidden: false };
+const store = new Map();                     // localStorage, for the remembered view
+globalThis.localStorage = {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => { store.set(k, String(v)); },
+    removeItem: (k) => { store.delete(k); }
+};
 globalThis.Chart = class {
     constructor(el, cfg) { this.config = { type: cfg.type }; this.data = cfg.data; }
     update() {}
@@ -310,4 +316,100 @@ test('the summary says what Live could not count, and stays quiet when nothing w
     assert.match(missed, /\b2\b/);
     send({ dt: 1, effective: 1, wan, v6_skipped: 0, unparsed: 0, devices: {} });
     assert.doesNotMatch(w._liveSummary(), /IPv6|unreadable/);
+});
+
+/* ---------- picking devices, fixed order (Live only) ---------- */
+
+// Two local networks as _loadNetworks() derives them, and their gateways.
+function networks(w) {
+    const net = (addr, bits, key, label) => {
+        const mask = (0xffffffff << (32 - bits)) | 0, n = (w._ip2int(addr) & mask) | 0;
+        return { key, label, net: n, mask, bcast: (n | ~mask) | 0 };
+    };
+    w.networks = [net('192.168.1.0', 24, 'lan', 'LAN'), net('192.168.20.0', 24, 'opt1', 'IOT')];
+    w.ifaceNames = { '192.168.1.254': 'LAN gateway', '192.168.20.1': 'IOT gateway' };
+}
+
+test('picked devices are always listed, idle ones at 0, in A to Z order', async (t) => {
+    const { w, send } = await running(t);
+    w.names = { '192.168.1.10': 'nas', '192.168.1.9': 'Camera', '192.168.1.30': 'tv' };
+    w.state.livePick = ['192.168.1.30', '192.168.1.10', '192.168.1.9'];
+    send({ dt: 1, effective: 1, wan, devices: {
+        '192.168.1.10': dev([8000, 800], [8000, 800]), '192.168.1.77': dev([90000, 9]) } });
+    assert.deepEqual(w._liveTableRows().map(r => [r.ip, r.down, r.up]),
+                     [['192.168.1.9', 0, 0], ['192.168.1.10', 8000, 800], ['192.168.1.30', 0, 0]]);
+});
+
+test('with nothing picked, Live lists the busiest first whatever the column sort', async (t) => {
+    const { w, send } = await running(t);
+    w.names = { '192.168.1.10': 'alpha', '192.168.1.11': 'bravo', '192.168.1.12': 'charlie' };
+    w.state.sortKey = 'name';
+    w.state.sortDir = 'asc';
+    w.state.rowsN = 2;
+    send({ dt: 1, effective: 1, wan, devices: {
+        '192.168.1.10': dev([100, 0]), '192.168.1.11': dev([900, 0]), '192.168.1.12': dev([500, 0]) } });
+    assert.deepEqual(w._liveTableRows().map(r => r.ip), ['192.168.1.11', '192.168.1.12']);
+});
+
+test('the network filter and search still narrow a picked table', async (t) => {
+    const { w, send } = await running(t);
+    networks(w);
+    w.names = { '192.168.20.5': 'camera-1' };
+    w.state.livePick = ['192.168.1.10', '192.168.20.5'];
+    send({ dt: 1, effective: 1, wan, devices: {} });
+    w.state.network = 'opt1';
+    assert.deepEqual(w._liveTableRows().map(r => r.ip), ['192.168.20.5']);
+    w.state.network = '';
+    w.state.search = '1.10';
+    assert.deepEqual(w._liveTableRows().map(r => r.ip), ['192.168.1.10']);
+});
+
+test('a header click sorts the NetFlow ranges but changes nothing in Live', () => {
+    const w = widget();
+    w.state.sortKey = 'total';
+    w.state.sortDir = 'desc';
+    assert.equal(w._sortBy('name'), false);
+    assert.deepEqual([w.state.sortKey, w.state.sortDir], ['total', 'desc']);
+    w.state.range = '24h';
+    assert.equal(w._sortBy('name'), true);
+    assert.deepEqual([w.state.sortKey, w.state.sortDir], ['name', 'asc']);
+    w._sortBy('name');
+    assert.deepEqual([w.state.sortKey, w.state.sortDir], ['name', 'desc']);
+});
+
+test('picks are remembered across a reload, without anything that is not a device address', async (t) => {
+    store.clear();
+    store.set('opnsense.topdevices.view', JSON.stringify(
+        { range: 'live', livePick: ['192.168.1.20', 'x', 5, '192.168.1.20', '192.168.1.3', '<b>'] }));
+    const w = new TopDevices({ widget: {} });
+    t.after(() => { w._stopLive(); store.clear(); });
+    await w.onMarkupRendered();
+    assert.deepEqual(w.state.livePick, ['192.168.1.20', '192.168.1.3']);
+    w.state.livePick = ['192.168.1.7'];
+    w._saveView();
+    assert.deepEqual(JSON.parse(store.get('opnsense.topdevices.view')).livePick, ['192.168.1.7']);
+});
+
+test('the picker offers named devices and anything Live saw, never the firewall or a broadcast address', async (t) => {
+    const { w, send } = await running(t);
+    networks(w);
+    w.names = { '192.168.1.10': 'nas', '192.168.20.5': 'camera', '192.168.1.254': 'opnsense', '8.8.8.8': 'dns.google' };
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.77': dev([5, 5]), '192.168.20.255': dev([1, 1]) } });
+    send({ dt: 1, effective: 1, wan, devices: {} });
+    w.state.livePick = ['192.168.1.99', '10.9.9.9'];     // picked on another day; 10.9.9.9 is on no network now
+    assert.deepEqual(w._pickChoices(), [
+        { label: 'LAN', devices: [{ ip: '192.168.1.77', name: '' }, { ip: '192.168.1.99', name: '' },
+                                  { ip: '192.168.1.10', name: 'nas' }] },
+        { label: 'IOT', devices: [{ ip: '192.168.20.5', name: 'camera' }] },
+        { label: 'Other', devices: [{ ip: '10.9.9.9', name: '' }] }
+    ]);
+});
+
+test('the table is rebuilt when its rows change, and only patched when their rates do', () => {
+    const nas = { ip: '192.168.1.10', name: 'nas', net: 'lan', down: 1, up: 2, total: 3 };
+    const tv = { ip: '192.168.1.11', name: 'tv', net: 'lan', down: 0, up: 0, total: 0 };
+    assert.equal(m.liveRowsKey([nas, tv]), m.liveRowsKey([{ ...nas, down: 9, up: 9, total: 18 }, tv]));
+    assert.notEqual(m.liveRowsKey([nas, tv]), m.liveRowsKey([tv, nas]));
+    assert.notEqual(m.liveRowsKey([nas, tv]), m.liveRowsKey([{ ...nas, name: 'nas-2' }, tv]));
+    assert.notEqual(m.liveRowsKey([nas]), m.liveRowsKey([nas, tv]));
 });

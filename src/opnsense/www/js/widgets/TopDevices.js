@@ -40,6 +40,12 @@ export const LIVE_WINDOW_S = 3;       // rows and chart average this many second
 export const LIVE_LINGER_MS = 10000;  // a device that goes quiet stays listed this long
 export const LIVE_RETRY_MS = 30000;   // an unavailable stream retries by itself this often
 
+// The Devices picker. bootstrap-select copies the <select>'s classes onto the
+// wrapper <div> it builds around it, so '.td-livepick' alone matches both: an
+// empty() then deletes the dropdown, and a delegated change handler also runs
+// for the wrapper, whose val() is empty. Always address the <select> itself.
+const PICKER = 'select.td-livepick';
+
 // Fold one sampler event into the view: the events covering the last
 // LIVE_WINDOW_S seconds, and when each device last moved traffic, per scope.
 // A baseline event (dt 0) carries no rates and changes nothing.
@@ -132,6 +138,40 @@ export function holdOrder(rows, previousOrder) {
     return rows.map((r, i) => ({ r, i })).sort((a, b) => (at(a.r) - at(b.r)) || (a.i - b.i)).map(x => x.r);
 }
 
+// Picks, from the picker or back from localStorage: keep IPv4 addresses only,
+// each once, in the order given. The live stream reports nothing else.
+export function cleanPick(value) {
+    if (!Array.isArray(value)) return [];
+    const out = [];
+    for (const v of value) {
+        if (typeof v === 'string' && /^\d{1,3}(\.\d{1,3}){3}$/.test(v) && !out.includes(v)) out.push(v);
+    }
+    return out;
+}
+
+// A to Z by what the table shows (the name, else the IP), numbers compared as numbers.
+const byLabel = (a, b) => String(a.name || a.ip).localeCompare(String(b.name || b.ip), undefined,
+                                                               { numeric: true, sensitivity: 'base' });
+
+// Which rows the Live table lists, in order. With devices picked: exactly those,
+// idle ones included, A to Z - a fixed set, so the table keeps its size. With
+// none: the active devices, busiest first. Live never uses the column sort; the
+// network filter and search apply either way. `held` keeps the order still
+// under the pointer (see holdOrder).
+export function liveRows(candidates, { picked = false, network = '', search = '', held = null } = {}) {
+    const rows = candidates.filter(r => (!network || r.net === network) && (!search
+        || r.ip.toLowerCase().includes(search) || (r.name && r.name.toLowerCase().includes(search))));
+    if (picked) return rows.sort(byLabel);
+    rows.sort((a, b) => (b.total - a.total) || byLabel(a, b));
+    return held ? holdOrder(rows, held) : rows;
+}
+
+// Rows with the same key render the same cells, so the table can be updated in
+// place; any other change rebuilds it.
+export function liveRowsKey(rows) {
+    return rows.map(r => `${r.ip}|${r.name}|${r.net}`).join('\n');
+}
+
 export function fmtRate(bps) {
     if (!bps || bps < 1) return '0 b/s';
     const units = ['b/s', 'kb/s', 'Mb/s', 'Gb/s'];
@@ -150,7 +190,7 @@ export default class TopDevices extends BaseWidget {
         this.state = {
             range: '24h', chart: 'pie', network: '', search: '',
             sortKey: 'total', sortDir: 'desc', rowsN: 0, detailN: 10, scope: 'all',
-            customFrom: '', customTo: '',
+            customFrom: '', customTo: '', livePick: [],
             rows: [], window: null, selected: null
         };
 
@@ -164,7 +204,10 @@ export default class TopDevices extends BaseWidget {
         this.loading = false;
         this.live = {
             interval: 1, view: null, last: null, lastAt: 0, retryAt: 0, status: 'off', token: 0,
-            watchdog: null, hover: false, order: [], rowsShown: -1, ptrPending: new Set(), closed: false
+            watchdog: null, hover: false, order: [], rowsShown: -1, ptrPending: new Set(), closed: false,
+            known: new Set(),      // every device address this Live session has seen, for the picker
+            picker: false,         // the Devices picker is up (bootstrap-select was available)
+            rowsKey: null          // liveRowsKey() of the rows on screen; null forces a rebuild
         };
     }
 
@@ -217,7 +260,7 @@ export default class TopDevices extends BaseWidget {
             localStorage.setItem(this.STORE, JSON.stringify({
                 range: s.range, chart: s.chart, network: s.network, search: s.search,
                 sortKey: s.sortKey, sortDir: s.sortDir, rowsN: s.rowsN, detailN: s.detailN, scope: s.scope,
-                customFrom: s.customFrom, customTo: s.customTo
+                customFrom: s.customFrom, customTo: s.customTo, livePick: s.livePick
             }));
         } catch (e) { /* private mode / storage disabled - not fatal */ }
     }
@@ -554,6 +597,12 @@ export default class TopDevices extends BaseWidget {
             <div class="td-controls" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:center;margin-bottom:6px;">
                 <select class="td-range"   style="${selCss}width:140px;">${ranges}</select>
                 <select class="td-network" style="${selCss}width:140px;"></select>
+                <span class="td-pickwrap" style="display:none;flex:0 0 auto;" title="Devices to show in Live">
+                    <select class="td-livepick" multiple title="Busiest devices" data-width="170px"
+                            data-style="btn-default btn-sm" data-container="body" data-live-search="true"
+                            data-actions-box="true" data-size="12" data-selected-text-format="count > 1"
+                            data-count-selected-text="{0} devices"></select>
+                </span>
                 <select class="td-scope" style="${selCss}width:130px;" title="Traffic scope">
                     <option value="all">All traffic</option>
                     <option value="wan">Internet only</option>
@@ -608,6 +657,7 @@ export default class TopDevices extends BaseWidget {
 
         const saved = this._loadView();
         if (saved) Object.assign(this.state, saved);
+        this.state.livePick = cleanPick(this.state.livePick);
 
         await this._loadNetworks();
         this._fillNetworkSelect();
@@ -624,6 +674,7 @@ export default class TopDevices extends BaseWidget {
         $('.td-custom').css('display', this.state.range === 'custom' ? 'flex' : 'none');
 
         this._bind();
+        this._initPicker();
         this._applyLayout();
         this._installRefreshButton();
         await this.refresh();
@@ -646,6 +697,8 @@ export default class TopDevices extends BaseWidget {
             self.state.selected = null;
             $('.td-custom').css('display', self.state.range === 'custom' ? 'flex' : 'none');
             self._saveView();
+            // the toolbar follows the range at once, not only once its data has loaded
+            self._renderChrome();
             if (self.state.range === 'live') { self._startLive(); return; }
             if (was === 'live') {
                 // leave nothing of the live view behind for the NetFlow render
@@ -701,11 +754,16 @@ export default class TopDevices extends BaseWidget {
             self.state.chart = $(this).data('chart'); self._saveView(); self.render();
         });
         $(document).on('click.topdevices', '.td-sort', function () {
-            const k = $(this).data('key');
-            if (self.state.sortKey === k) self.state.sortDir = self.state.sortDir === 'asc' ? 'desc' : 'asc';
-            else { self.state.sortKey = k; self.state.sortDir = (k === 'name' || k === 'net') ? 'asc' : 'desc'; }
-            self._saveView(); self.render();
+            if (self._sortBy($(this).data('key'))) self.render();
         });
+        // bootstrap-select fires change for ticks and for select all / none alike
+        $(document).on('change.topdevices', PICKER, function () {
+            self.state.livePick = cleanPick($(this).val() || []);
+            self._saveView();
+            self.render();
+        });
+        // list what is known right now, just before the menu opens - never under the pointer
+        $(document).on('show.bs.select.topdevices', PICKER, function () { self._fillPicker(); });
         $(document).on('click.topdevices', '.td-body tr', async function () {
             const ip = $(this).data('ip');
             self.state.selected = (self.state.selected === ip) ? null : ip;
@@ -806,14 +864,31 @@ export default class TopDevices extends BaseWidget {
     }
 
     _renderChrome() {
+        const live = this.state.range === 'live';
+        const picked = live && (this.state.livePick || []).length > 0;
         $('.td-chartbtns button').removeClass('btn-primary').addClass('btn-default');
         $(`.td-chartbtns button[data-chart="${this.state.chart}"]`).removeClass('btn-default').addClass('btn-primary');
         $('.td-sort').each((i, el) => {
             $(el).find('.td-arrow').remove();
-            if ($(el).data('key') === this.state.sortKey) {
+            $(el).css('cursor', live ? 'default' : 'pointer');
+            if (!live && $(el).data('key') === this.state.sortKey) {
                 $(el).append(`<span class="td-arrow"> ${this.state.sortDir === 'asc' ? '▲' : '▼'}</span>`);
             }
         });
+        $('.td-pickwrap').css('display', live && this.live.picker ? '' : 'none');
+        // every picked device is listed, so a row limit would only hide some of them
+        $('.td-rows').css('display', picked ? 'none' : '');
+    }
+
+    // Column sorting belongs to the NetFlow ranges. Live keeps its own order (see
+    // liveRows), so there a header click changes nothing. True when it sorted.
+    _sortBy(key) {
+        if (this.state.range === 'live') return false;
+        const s = this.state;
+        if (s.sortKey === key) s.sortDir = s.sortDir === 'asc' ? 'desc' : 'asc';
+        else { s.sortKey = key; s.sortDir = (key === 'name' || key === 'net') ? 'asc' : 'desc'; }
+        this._saveView();
+        return true;
     }
 
     // One row per device; fmt formats the three figures (bytes for NetFlow
@@ -893,6 +968,7 @@ export default class TopDevices extends BaseWidget {
         try { await this._loadNames(); } catch (e) { /* names are cosmetic */ }
         // the range may have changed while we waited
         if (token !== this.live.token || this.state.range !== 'live') return;
+        this._fillPicker();                  // the names have just loaded
         Object.assign(this.live, { view: null, last: null, lastAt: Date.now(), status: 'connecting', rowsShown: -1 });
         this.eventSourceRetryCount = 0;
         this.openEventSource(`/api/topdevices/live/stream/${this.live.interval}`, (ev) => this._onLiveEvent(ev));
@@ -921,6 +997,7 @@ export default class TopDevices extends BaseWidget {
         this.eventSourceOnData = null;
         this.live.status = 'off';
         this.live.view = null;
+        this.live.rowsKey = null;            // whatever renders next owns the table body
     }
 
     _onLiveEvent(ev) {
@@ -930,6 +1007,7 @@ export default class TopDevices extends BaseWidget {
         this.live.last = e;
         this.live.lastAt = now;
         this.live.view = mergeLive(this.live.view, e, now);
+        Object.keys(e.devices || {}).forEach(ip => this.live.known.add(ip));
         this.live.status = e.dt > 0 ? 'live' : 'measuring';
         this._renderLive();
     }
@@ -985,34 +1063,118 @@ export default class TopDevices extends BaseWidget {
         return parts.join(' \u00b7 ');
     }
 
+    // What the Devices picker offers, grouped by network in the interfaces' order:
+    // every named device on a local network (DHCP leases and host records), every
+    // device this Live session has seen, and whatever is already picked - never the
+    // firewall's own addresses or a broadcast address. A pick that is on no network
+    // any more stays listed under Other, so it can still be unticked.
+    _pickChoices() {
+        const pick = this.state.livePick || [];
+        const gateways = this.ifaceNames || {};
+        const groups = this.networks.map(n => ({ key: n.key, label: n.label, devices: [] }));
+        const other = { key: '', label: 'Other', devices: [] };
+        for (const ip of new Set([...Object.keys(this.names), ...this.live.known, ...pick])) {
+            if (gateways[ip] || this._isBroadcast(ip)) continue;
+            const d = { ip: ip, name: this.names[ip] || '' };
+            const g = groups.find(x => x.key === this._netOf(ip));
+            if (g) g.devices.push(d);
+            else if (pick.includes(ip)) other.devices.push(d);
+        }
+        return groups.concat(other).filter(g => g.devices.length)
+                     .map(g => ({ label: g.label, devices: g.devices.sort(byLabel) }));
+    }
+
+    // (Re)build the picker's options, ticking the picks. Built as elements, not
+    // markup, so a hostname can never inject HTML.
+    _fillPicker() {
+        const $s = $(PICKER);
+        if (!$s.length) return;
+        const pick = new Set(this.state.livePick || []);
+        $s.empty();
+        for (const g of this._pickChoices()) {
+            const $g = $('<optgroup>').attr('label', g.label);
+            for (const d of g.devices) {
+                $g.append($('<option>').val(d.ip).text(d.name || d.ip)
+                    .attr({ 'data-subtext': d.name ? d.ip : '', 'data-tokens': `${d.ip} ${d.name}` })
+                    .prop('selected', pick.has(d.ip)));
+            }
+            $s.append($g);
+        }
+        if (this.live.picker) $s.selectpicker('refresh');
+    }
+
+    // The Devices picker is bootstrap-select, which the dashboard loads for its own
+    // dialogs. Without it the picker stays hidden and Live shows the busiest devices.
+    _initPicker() {
+        const $s = $(PICKER);
+        if (!$s.length || typeof $s.selectpicker !== 'function') return;
+        this._fillPicker();
+        $s.selectpicker();
+        this.live.picker = true;
+    }
+
+    // The rows the Live table shows, in order (see liveRows): the picked devices,
+    // or with none picked the busiest active ones, up to the row limit.
+    _liveTableRows() {
+        const l = this.live;
+        const scope = this.state.scope === 'wan' ? 'inet' : 'all';
+        const rates = l.view ? liveRates(l.view, scope) : {};
+        const pick = this.state.livePick || [];
+        this.state.rows = (pick.length ? pick : Object.keys(rates)).map((ip) => {
+            const r = rates[ip] || { down: 0, up: 0 };
+            return { ip: ip, name: this.names[ip] || (this.ifaceNames || {})[ip] || '', net: this._netOf(ip),
+                     down: r.down, up: r.up, total: r.down + r.up };
+        });
+        const all = liveRows(this.state.rows, { picked: pick.length > 0, network: this.state.network,
+                                                search: this.state.search, held: l.hover ? l.order : null });
+        // the selected device keeps its panel while it is listed, and loses it once gone
+        if (this.state.selected && !all.some(r => r.ip === this.state.selected)) this.state.selected = null;
+        return pick.length ? all : all.slice(0, this.state.rowsN || 20);
+    }
+
+    // Rebuild the table only when its rows change; otherwise update the figures
+    // in place. Rebuilding every interval replaced the row under the pointer, so
+    // a click that straddled a redraw was lost.
+    _paintLiveRows(rows, empty) {
+        const l = this.live;
+        const key = liveRowsKey(rows);
+        const $trs = $('.td-body').children('tr[data-ip]');
+        const onScreen = $trs.map((i, tr) => $(tr).attr('data-ip')).get().join('\n');
+        if (rows.length && key === l.rowsKey && onScreen === rows.map(r => r.ip).join('\n')) {
+            $trs.each((i, tr) => {
+                const r = rows[i], $td = $(tr).children('td');
+                $td.eq(2).text(fmtRate(r.down));
+                $td.eq(3).text(fmtRate(r.up));
+                $td.eq(4).children('strong').text(fmtRate(r.total));
+                $(tr).toggleClass('info', this.state.selected === r.ip);
+            });
+            return;
+        }
+        $('.td-body').html(this._rowsHtml(rows, fmtRate, empty));
+        l.rowsKey = rows.length ? key : null;
+    }
+
     _renderLive() {
         const l = this.live;
         const CHART_MAX = 10;
-        const scope = this.state.scope === 'wan' ? 'inet' : 'all';
-        const rates = l.view ? liveRates(l.view, scope) : {};
-        this.state.rows = Object.entries(rates).map(([ip, r]) => ({
-            ip: ip, name: this.names[ip] || (this.ifaceNames || {})[ip] || '', net: this._netOf(ip),
-            down: r.down, up: r.up, total: r.down + r.up
-        }));
-        let all = this._visibleRows();
-        // the selected device keeps its panel while it lingers, and loses it once gone
-        if (this.state.selected && !all.some(r => r.ip === this.state.selected)) this.state.selected = null;
-        if (l.hover) all = holdOrder(all, l.order);
-        const rows = all.slice(0, this.state.rowsN || 20);
+        const picked = (this.state.livePick || []).length > 0;
+        const rows = this._liveTableRows();
         l.order = rows.map(r => r.ip);
 
         $('.td-window small').text(this._liveSummary());
         this._renderChrome();
         if (l.status === 'unavailable') {
+            l.rowsKey = null;
             $('.td-body').html('<tr><td colspan="5" class="text-muted">Live data unavailable. '
                              + '<a href="#" class="td-live-retry">Retry</a></td></tr>');
         } else {
-            $('.td-body').html(this._rowsHtml(rows, fmtRate, l.view ? 'No active devices' : 'Measuring\u2026'));
+            this._paintLiveRows(rows, picked ? 'No picked device matches the filter'
+                                             : (l.view ? 'No active devices' : 'Measuring\u2026'));
         }
         this._renderChart(rows.slice(0, CHART_MAX), fmtRate, true);
         if (rows.length > CHART_MAX && this.state.chart !== 'none') {
-            $('.td-window small').append(
-                `<span class="text-muted"> \u00b7 chart: top ${CHART_MAX} of ${rows.length}</span>`);
+            $('.td-window small').append(`<span class="text-muted"> \u00b7 chart: ${picked ? 'first' : 'top'} `
+                                         + `${CHART_MAX} of ${rows.length}</span>`);
         }
         if (this.state.selected) this._renderLiveDetails(this.state.selected);
         else $('.td-details').empty();
@@ -1189,6 +1351,8 @@ export default class TopDevices extends BaseWidget {
         this.live.closed = true;            // before _stopLive, so no late timer can reopen
         this._stopLive();
         super.onWidgetClose();              // BaseWidget closes the EventSource here
+        // its menu lives under <body> (data-container), outside the widget being removed
+        if (this.live.picker) { try { $(PICKER).selectpicker('destroy'); } catch (e) { /* gone already */ } }
         $(document).off('.topdevices');
         $('.td-refresh').remove();
         if (this.chartObj) { this.chartObj.destroy(); this.chartObj = null; }
