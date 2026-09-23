@@ -202,6 +202,15 @@ class Devices(unittest.TestCase):
         self.assertFalse(NET.is_device(IP('8.8.8.8')))
         self.assertEqual((NET.upstream, NET.upstream_names), (frozenset({1}), ['em0']))
 
+    def test_upstream_devices_are_numbered_as_cores_map_numbers_them(self):
+        self.assertEqual(flows.upstream_ifindex({7: 'pppoe0', 1: 'em0', 2: 'ue0'}, ['em0', 'pppoe0']), [1, 7])
+
+    def test_an_upstream_device_missing_from_cores_map_is_an_error(self):
+        # ifinfo failed, or its output changed: internet only would silently read nothing
+        for index in ({}, {2: 'ue0'}):
+            with self.subTest(index=index), self.assertRaisesRegex(RuntimeError, 'em0'):
+                flows.upstream_ifindex(index, ['em0'])
+
 
 class Hourly(unittest.TestCase):
     def test_hourly_rows_become_device_download_and_upload(self):
@@ -514,10 +523,10 @@ class CommandLine(unittest.TestCase):
     def test_a_range_that_has_not_begun_is_refused(self):
         self.assertIn('not begun', self.reject(['totals', str(self.NOW + 10), str(self.NOW + 200)]))
 
-    def run_main(self, argv, log, now=None):
+    def run_main(self, argv, log, now=None, system=lambda: NET):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = flows.main(argv, now=now, log=log, system=lambda: NET, hourly=lambda lo, hi: [])
+            rc = flows.main(argv, now=now, log=log, system=system, hourly=lambda lo, hi: [])
         self.assertEqual(rc, 0)
         line = out.getvalue()
         self.assertTrue(line.endswith('\n') and line.count('\n') == 1, line)
@@ -536,6 +545,14 @@ class CommandLine(unittest.TestCase):
             a = self.run_main(['flows.py', 'totals', str(T0 + 100), str(T0 + 200)], os.path.join(d, 'flowd.log'),
                               now=T0 + 300)
         self.assertIn('NetFlow', a['error'])
+
+    def test_cores_library_missing_is_an_error_answer(self):
+        def no_core():
+            raise ModuleNotFoundError("No module named 'lib'")
+        with tempfile.TemporaryDirectory() as d:
+            log = write_log(d, [('flowd.log', b''.join(KINDS), T0 + 100)])
+            a = self.run_main(['flows.py', 'totals', str(T0 + 100), str(T0 + 200)], log, now=T0 + 300, system=no_core)
+        self.assertIn("No module named 'lib'", a['error'])
 
     def test_the_script_never_prints_a_traceback(self):
         proc = subprocess.run([sys.executable, FLOWS_PY, 'totals', 'x', 'y'], capture_output=True, text=True)

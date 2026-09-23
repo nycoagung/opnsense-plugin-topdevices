@@ -487,14 +487,23 @@ def core_hourly(lo, hi):
     return list(FlowSourceAddrTotals(HOUR).get_data(lo, hi))
 
 
+def upstream_ifindex(index, upstream_devs):
+    """The interface numbers core's aggregator gives the upstream devices, from
+    its map {number: device}. A device missing from the map - ifinfo failed, or
+    its output changed - would silently leave internet only empty: an error."""
+    missing = [d for d in upstream_devs if d not in index.values()]
+    if missing:
+        raise RuntimeError("core's interface map has no number for %s (ifinfo)" % ', '.join(missing))
+    return sorted(i for i, name in index.items() if name in upstream_devs)
+
+
 def system_net():
     """This firewall's devices and upstream interfaces, by the Live sampler's rules
     (live.py Topology), with upstream numbered as core's aggregator numbers it."""
     import live                                   # the sampler, beside this script
     topo = live.Topology(live.parse_ifconfig(live._run(live.IFCONFIG)),
                          live.parse_default_devs(live._run(live.ROUTES)))
-    index = core_interfaces()
-    upstream = sorted(i for i, name in index.items() if name in topo.upstream_devs)
+    upstream = upstream_ifindex(core_interfaces(), topo.upstream_devs)
     return Net(topo.local_nets, upstream, list(topo.upstream_devs))
 
 

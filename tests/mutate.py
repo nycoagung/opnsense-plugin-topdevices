@@ -92,6 +92,8 @@ FLOW_MUTANTS = [
     ('any open error taken for a rotation',
      '                except FileNotFoundError:\n                    continue                      # rotated away since the listing',
      '                except OSError:\n                    continue                      # rotated away since the listing'),
+    ('an upstream device missing from the map ignored', '    if missing:\n        raise', '    if False:\n        raise'),
+    ('only ValueError answered', '    except Exception as exc:', '    except ValueError as exc:'),
 ]
 
 
