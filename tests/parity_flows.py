@@ -48,10 +48,12 @@ def main():
     print('log: %d files, complete from %s (%.1f h); upstream %s' % (len(opened), time.ctime(L), (now - L) / 3600,
                                                                    net.upstream_names))
 
-    # windows inside the log, ended 45 min ago: no record still to come can touch them
-    hour = -(-L // 3600) * 3600
-    if hour + 3600 > now - 2700:
-        print('the log is too short for the comparison (needs an hour ending 45 min ago)')
+    # the last whole hour that ended 45 min ago: no record still to come can touch
+    # it, and it lies in the newest files, so core reads little of the log and a
+    # rotation meanwhile drops nothing it needs
+    hour = (now - 2700) // 3600 * 3600 - 3600
+    if hour < L:
+        print('the log is too short for the comparison (needs a whole hour ending 45 min ago)')
         return 1
     five = hour + 900, hour + 2700
 
@@ -59,7 +61,7 @@ def main():
     try:
         totals, details = FlowSourceAddrTotals(3600, tmp), FlowSourceAddrDetails(300, tmp)
         n = 0
-        for r in parse_flow(hour - 3600, flows.LOG):       # every record received since an hour before
+        for r in parse_flow(hour - 3600, flows.LOG):       # received after an hour before it: the rest ended before it
             if r is None:
                 continue
             totals.add(copy.copy(r))
@@ -94,7 +96,9 @@ def main():
     print('internet only, %s-%s: %3d devices, largest per-device gap %.3f B'
           % (time.strftime('%H:%M', time.localtime(five[0])), time.strftime('%H:%M', time.localtime(five[1])), dev_i, gap_i))
 
-    # as configd runs it, through the installed action when there is one
+    # as configd runs it, through the installed action when there is one, for ranges
+    # ending now: core's comparison above took its time
+    now = int(time.time())
     lt = time.localtime(now)
     midnight = int(time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1)))
     for label, frm in (('Last hour', now - 3600), ('Today', midnight), ('Last 24 hours', now - 86400)):
