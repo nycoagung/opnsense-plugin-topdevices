@@ -221,18 +221,41 @@ def hourly_fill(rows, lo, hi, now, net):
 
 def open_log(log=LOG):
     """Every flow log file, opened now, oldest first: [(fd, last write, size)].
-    Reading through descriptors opened at once keeps a rotation meanwhile - which
-    renames every file and deletes the oldest - from mixing up which is which."""
-    opened = []
+    Reading through descriptors keeps a rotation - which renames every file and
+    deletes the oldest - from mixing up which is which once they are open. One
+    that lands while they are being opened is caught by listing them again: if
+    any name now leads to another file, they are all opened afresh."""
+    for _ in range(5):                            # a rotation takes milliseconds
+        opened, ids = [], {}
+        try:
+            for path in glob.glob(glob.escape(log) + '*'):
+                try:
+                    fd = os.open(path, os.O_RDONLY)
+                except FileNotFoundError:
+                    continue                      # rotated away since the listing
+                st = os.fstat(fd)
+                opened.append((fd, st.st_mtime, st.st_size))
+                ids[path] = (st.st_dev, st.st_ino)
+        except BaseException:
+            close_log(opened)
+            raise
+        if _files_now(log) == ids:
+            opened.sort(key=lambda f: f[1])
+            return opened
+        close_log(opened)
+    raise RuntimeError('the NetFlow flow log kept rotating while it was opened')
+
+
+def _files_now(log):
+    """{path: (device, inode)} of every flow log file at this moment."""
+    now = {}
     for path in glob.glob(glob.escape(log) + '*'):
         try:
-            fd = os.open(path, os.O_RDONLY)
-        except OSError:
-            continue                              # rotated away since the listing
-        st = os.fstat(fd)
-        opened.append((fd, st.st_mtime, st.st_size))
-    opened.sort(key=lambda f: f[1])
-    return opened
+            st = os.stat(path)
+        except FileNotFoundError:
+            continue
+        now[path] = (st.st_dev, st.st_ino)
+    return now
 
 
 def close_log(opened):
