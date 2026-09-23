@@ -1,0 +1,8 @@
+<acl>
+    <page-dashboard-topdevices-live>
+        <name>Dashboard: Top Devices live traffic</name>
+        <patterns>
+            <pattern>api/topdevices/live/*</pattern>
+        </patterns>
+    </page-dashboard-topdevices-live>
+</acl>
