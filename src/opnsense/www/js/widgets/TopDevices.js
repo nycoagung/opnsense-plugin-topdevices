@@ -164,7 +164,7 @@ export default class TopDevices extends BaseWidget {
         this.loading = false;
         this.live = {
             interval: 1, view: null, last: null, lastAt: 0, retryAt: 0, status: 'off', token: 0,
-            watchdog: null, hover: false, order: [], rowsShown: -1, ptrPending: new Set()
+            watchdog: null, hover: false, order: [], rowsShown: -1, ptrPending: new Set(), closed: false
         };
     }
 
@@ -900,6 +900,16 @@ export default class TopDevices extends BaseWidget {
         this._renderLive();
     }
 
+    // BaseWidget.openEventSource arms a reconnect timer that only a successful
+    // open clears, and it reopens with the URL it captured. So a stream left
+    // before it connected - or one of a widget already removed - would come back
+    // by itself and paint Live over a NetFlow range. Refuse any (re)open outside
+    // Live; inside Live the timer still does its job.
+    openEventSource(url, onMessage) {
+        if (this.live.closed || this.state.range !== 'live') return;
+        super.openEventSource(url, onMessage);
+    }
+
     _stopLive() {
         this.live.token++;
         if (this.live.watchdog) { clearInterval(this.live.watchdog); this.live.watchdog = null; }
@@ -1173,6 +1183,7 @@ export default class TopDevices extends BaseWidget {
     }
 
     onWidgetClose() {
+        this.live.closed = true;            // before _stopLive, so no late timer can reopen
         this._stopLive();
         super.onWidgetClose();              // BaseWidget closes the EventSource here
         $(document).off('.topdevices');

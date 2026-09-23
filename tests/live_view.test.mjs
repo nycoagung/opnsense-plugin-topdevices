@@ -21,6 +21,7 @@ globalThis.BaseWidget = class {
         this.eventSourceOnData = null;
         this.eventSourceRetryCount = 0;
         this.retryLimit = 3;
+        this.timeoutPeriod = 5000;
     }
     async getWidgetConfig() { return (this.config && this.config.widget) || {}; }
     openEventSource(url, onMessage) {
@@ -29,6 +30,15 @@ globalThis.BaseWidget = class {
         this.eventSourceUrl = url;
         this.eventSourceOnData = onMessage;
         this.eventSource = new EventSource(url);
+        // upstream: reconnect with the captured url if onopen has not fired in
+        // time. Only onopen clears it - closeEventSource does not.
+        const timer = setTimeout(() => {
+            this.closeEventSource();
+            this.eventSourceRetryCount++;
+            this.openEventSource(url, onMessage);
+        }, this.timeoutPeriod);
+        if (timer.unref) timer.unref();          // node only: never hold the test process open
+        this.eventSource.onopen = () => { clearTimeout(timer); this.eventSourceRetryCount = 0; };
         this.eventSource.onmessage = onMessage;
     }
     closeEventSource() {
@@ -253,4 +263,40 @@ test('an unavailable stream retries by itself', async (t) => {
     await new Promise((r) => setTimeout(r, 0));             // _startLive awaits config and names
     assert.equal(FakeEventSource.opened.length, 2);
     assert.equal(w.live.status, 'connecting');
+});
+
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('a connect timer that fires after leaving Live does not reopen the stream', async () => {
+    FakeEventSource.opened.length = 0;
+    const w = widget();
+    w.timeoutPeriod = 5;                    // the stream is still connecting: onopen never fires here
+    await w._startLive();
+    w.state.range = '24h';
+    w._stopLive();
+    await pause(30);
+    assert.deepEqual(FakeEventSource.opened, ['/api/topdevices/live/stream/1']);
+    assert.equal(w.eventSource, null);
+    assert.equal(w.eventSourceUrl, null);
+});
+
+test('a connect timer that fires after the widget is removed does not reopen the stream', async () => {
+    FakeEventSource.opened.length = 0;
+    const w = widget();
+    w.timeoutPeriod = 5;
+    await w._startLive();
+    w.onWidgetClose();
+    await pause(30);
+    assert.equal(FakeEventSource.opened.length, 1);
+    assert.equal(w.eventSource, null);
+});
+
+test('within Live, the connect timer still reconnects a stream that never opened', async (t) => {
+    FakeEventSource.opened.length = 0;
+    const w = widget();
+    t.after(() => w.onWidgetClose());
+    w.timeoutPeriod = 5;
+    await w._startLive();
+    await pause(12);
+    assert.ok(FakeEventSource.opened.length >= 2, FakeEventSource.opened.length);
 });
