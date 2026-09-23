@@ -118,7 +118,7 @@ const mutants = [
      '        const secs = false;'],
     ['Yesterday taken as 24 hours back', "            case 'yesterday': return [midnight(1), mid];",
      "            case 'yesterday': return [mid - DAY, mid];"],
-    ['a scope change reloads nothing', '        while (this.state.window && q && !q.raw && q.scope !== this.state.scope) {',
+    ['a scope change reloads nothing', '        while (this.state.window && q && q.scope !== this.state.scope) {',
      '        while (false) {'],
     ['a scope change reloads once, not until the rows match', '            q = this.state.request;\n        }',
      '            q = this.state.scope;\n        }'],
@@ -150,12 +150,16 @@ const mutants = [
     ['a stale raw answer lands', '            if (token !== this._loadToken) return false;\n            if (resp) {', '            if (resp) {'],
     ['a failed raw read shows nothing', '            fallback = true;                     // say so', '            return false;                        // say so'],
     ["no fallback note", '        if (this.state.fallback) c.note = c.note ? `${FALLBACK_NOTE} · ${c.note}` : FALLBACK_NOTE;\n', ''],
-    ['a scope switch leaves the other scope\'s rows', '        if (q && q.raw && q.scope !== this.state.scope) this._applyRaw(this.state.scope);', ''],
+    ['a scope switch leaves the other scope\'s rows', '            if (q.raw) { this._applyRaw(this.state.scope); break; }', '            if (q.raw) break;'],
     ['the raw caption shows the range asked for', '        return { text: `${this._dateStr(a)}  →  ${this._dateStr(b)}${tail}`, note };',
      '        return { text: `${this._dateStr(q.from)}  →  ${this._dateStr(q.to)}${tail}`, note };'],
     ['no note when internet only reaches past the log', '        const note = wan && a > q.from', '        const note = false && a > q.from'],
     ['no word when internet only has nothing in the log', '        if (wan && a >= b) {', '        if (false) {'],
     ['a raw load keeps the exports of earlier windows', '                this._applyRaw(scope);\n                this._pruneCache(this.state.request);\n', '                this._applyRaw(scope);\n'],
+    ['a raw table reloaded on a scope switch', '            if (q.raw) { this._applyRaw(this.state.scope); break; }', '            if (false) { this._applyRaw(this.state.scope); break; }'],
+    ['a raw answer landing mid-switch ends the loop', '        while (this.state.window && q && q.scope !== this.state.scope) {', '        while (this.state.window && q && !q.raw && q.scope !== this.state.scope) {'],
+    ['a raw answer applied with no table on screen', '        while (this.state.window && q && q.scope !== this.state.scope) {', '        while ((this.state.window || (q && q.raw)) && q && q.scope !== this.state.scope) {'],
+    ["the caption names the widget's own WAN, not the answer's", '(r.wan || []).join', '(this.wanDevs || []).join'],
 ];
 
 let survivors = 0;

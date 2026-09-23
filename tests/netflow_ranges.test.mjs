@@ -498,13 +498,13 @@ test('Yesterday and Last 7 days still read NetFlow\'s records', async () => {
 });
 
 test('both scopes come from one answer: switching scope sends no request', async () => {
-    const { w } = await loadRaw('1h', () => totalsAnswer(NOW - 3600, NOW));
+    const { w } = await loadRaw('1h', () => ({ ...totalsAnswer(NOW - 3600, NOW), wan: ['pppoe0'] }));   // the upstream the answer counted
     const before = requests.length;
     w.state.scope = 'wan';
     await w.render();
     assert.equal(requests.length, before);
     assert.deepEqual(byIp(w), { '192.168.1.10': [1000, 300] });            // devices with internet traffic only
-    assert.match(dom['.td-window small'], / · internet only \(via em0\)$/);
+    assert.match(dom['.td-window small'], / · internet only \(via pppoe0\)$/);
 });
 
 test('internet only reaching past the log says how much it covers', async () => {
@@ -565,4 +565,55 @@ test('a raw load drops the exports of earlier windows', async () => {
     reply = flowsOnly(() => totalsAnswer(NOW - 3600, NOW));
     await w._load(NOW * 1000);
     assert.deepEqual(Object.keys(w.cache), []);
+});
+
+test('on the fallback path, a raw answer landing after the scope was switched back shows the scope on screen', async () => {
+    const { w } = await load('1h');                     // the raw log refused: NetFlow's records, all traffic
+    let release;
+    reply = (url) => (url.startsWith(`${FLOWS_API}/`)
+        ? new Promise(r => { release = () => r(totalsAnswer(NOW - 3600, NOW)); })   // the raw log answers again, late
+        : serve(url));
+    w.state.scope = 'wan';
+    const toWan = w.render();                           // reloads for internet only: the raw retry is slow
+    await tick();
+    w.state.scope = 'all';
+    await w.render();                                   // back before it arrives
+    release();
+    await toWan;
+    assert.equal(w.state.request.scope, 'all');
+    assert.deepEqual(byIp(w), { '192.168.1.10': [1000, 357], '192.168.20.5': [50, 0] });
+    assert.match(dom['.td-window small'], / · all traffic$/);
+});
+
+test('a raw answer for a range just picked follows a scope switch and back', async () => {
+    const { w } = await load('7d');                     // Last 7 days on screen: NetFlow's records
+    const pending = [];
+    reply = (url) => (url.startsWith(`${FLOWS_API}/`)
+        ? new Promise(r => pending.push(() => r(totalsAnswer(NOW - 3600, NOW))))
+        : serve(url));
+    w.state.range = '1h';
+    const picked = w._load(NOW * 1000);                 // the range change's load: slow
+    await tick();
+    w.state.scope = 'wan';
+    const toWan = w.render();                           // reloads the table on screen for internet only: slow too
+    await tick();
+    w.state.scope = 'all';
+    await w.render();                                   // back before either arrives
+    pending.slice().reverse().forEach(f => f());        // the scope switch's answer lands first
+    await toWan;
+    assert.equal(await picked, false);                  // replaced by the scope switch's load
+    assert.equal(w.state.request.scope, 'all');
+    assert.deepEqual(byIp(w), { '192.168.1.10': [1000, 357], '192.168.20.5': [50, 0] });
+});
+
+test('leaving Live for a custom range brings back nothing from before Live', async () => {
+    const { w } = await loadRaw('1h', () => totalsAnswer(NOW - 3600, NOW));
+    w.state.range = 'live';
+    w.state.scope = 'wan';                              // the scope changed during Live
+    w.state.range = 'custom';                           // what the range control does on leaving Live
+    w.state.rows = [];
+    w.state.window = null;
+    await w.render();
+    assert.equal(w.state.window, null);
+    assert.deepEqual(byIp(w), {});
 });

@@ -650,9 +650,11 @@ export default class TopDevices extends BaseWidget {
         Object.keys(this.cache).forEach((k) => { if (!want.has(k)) delete this.cache[k]; });
     }
 
-    // Load the table for the range at `nowMs`. The scope is read once: each scope
-    // reads its own export. Resolves false when a newer load started meanwhile -
-    // its result stands, and its caller renders it.
+    // Load the table for the range at `nowMs`. A range starting within the last
+    // day reads the raw flow log, both scopes in one answer (see rawRange), and
+    // falls back to NetFlow's exports; an export holds one scope, read once here.
+    // Resolves false when a newer load started meanwhile - its result stands, and
+    // its caller renders it.
     async _load(nowMs = Date.now(), scope = this.state.scope) {
         const token = this._loadToken = (this._loadToken || 0) + 1;
         const now = Math.floor(nowMs / 1000);
@@ -1123,14 +1125,15 @@ export default class TopDevices extends BaseWidget {
 
     async _render() {
         if (this.state.range === 'live') { this._renderLive(); return; }
-        // Each scope reads its own export (see nfPlan). A scope change reloads at
-        // the moment already on screen, so both scopes describe the same window
-        // and switching back is served from the cache - until the rows match the
-        // control, since a load for a scope the user has already left can land last.
+        // A raw table holds both scopes: a scope change redraws it from the answer
+        // in hand. An export table reads one export per scope (see nfPlan): a scope
+        // change reloads at the moment already on screen, so both scopes describe
+        // the same window and switching back is served from the cache - until the
+        // rows match the control, since a load for a scope the user has already
+        // left can land last, and it may bring a raw answer.
         let q = this.state.request;
-        if (q && q.raw && q.scope !== this.state.scope) this._applyRaw(this.state.scope);   // both scopes in hand
-        q = this.state.request;
-        while (this.state.window && q && !q.raw && q.scope !== this.state.scope) {
+        while (this.state.window && q && q.scope !== this.state.scope) {
+            if (q.raw) { this._applyRaw(this.state.scope); break; }      // both scopes in hand
             let current;
             try { current = await this._load(q.now * 1000, this.state.scope); }
             catch (e) { this._loadFailed(); return; }
