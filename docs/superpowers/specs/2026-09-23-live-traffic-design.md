@@ -335,7 +335,17 @@ at 365-day retention.
   with none picked it shows the busiest devices, busiest first. Picks are kept with
   the rest of the view in localStorage. While the rows stay the same, their figures
   are updated in place instead of the table being rebuilt, so a click on a row is
-  never lost to a redraw.
+  never lost to a redraw. *(Then:)* with none picked the table shows exactly the
+  row count - seeded busiest first from the first measured interval, topped up
+  with recently seen and then other known devices at 0 - and after that only the
+  busiest device moves, to the top, entering if it was not listed while the
+  bottom row drops off. Live gains a **Line** chart, its default and remembered
+  apart from the NetFlow ranges' choice: each listed device's download over the
+  last 60 s on chartjs-plugin-streaming's realtime scale, like core's Traffic
+  Graph (a plain update when a line joins, as the plugin's quiet update needs
+  every dataset built; the listed devices never share a colour). The line and bar
+  y-axis only grows (to a round figure) until a view change: entering Live,
+  refresh, scope, network, search or picks.
 - **Summary line.** It reads
   `Live · WAN ↓ 6.1 Mb/s ↑ 0.2 Mb/s (via em0) · internet only · 1 s`. It adds
   `throttled to N s` when the sampler has slowed down, and a warning when `coverage.ok`

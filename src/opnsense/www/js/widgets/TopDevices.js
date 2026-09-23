@@ -39,6 +39,11 @@
 export const LIVE_WINDOW_S = 3;       // rows and chart average this many seconds
 export const LIVE_LINGER_MS = 10000;  // a device that goes quiet stays listed this long
 export const LIVE_RETRY_MS = 30000;   // an unavailable stream retries by itself this often
+export const LIVE_LINE_S = 60;        // the line graph shows this many seconds
+
+// Tableau Classic 10, the palette core's Traffic Graph draws its lines in.
+const LINE_COLOURS = ['#1F77B4', '#FF7F0E', '#2CA02C', '#D62728', '#9467BD',
+                      '#8C564B', '#E377C2', '#7F7F7F', '#BCBD22', '#17BECF'];
 
 // The Devices picker. bootstrap-select copies the <select>'s classes onto the
 // wrapper <div> it builds around it, so '.td-livepick' alone matches both: an
@@ -130,12 +135,35 @@ export function liveStatusFor(ageMs, effectiveS) {
     return 'live';
 }
 
-// Keep the row order steady while the pointer is over the table: rows already
-// shown keep their place, new ones follow in the order given.
-export function holdOrder(rows, previousOrder) {
-    const pos = new Map(previousOrder.map((ip, i) => [ip, i]));
-    const at = (r) => (pos.has(r.ip) ? pos.get(r.ip) : previousOrder.length);
-    return rows.map((r, i) => ({ r, i })).sort((a, b) => (at(a.r) - at(b.r)) || (a.i - b.i)).map(x => x.r);
+// With nothing picked, the Live table keeps its rows where they are: each update
+// only the busiest device moves, to the top - entering if it was not listed, the
+// bottom row then dropping off - and a short list is topped up in `ranked` order.
+// `ranked` holds every candidate, busiest first; `prev` is null to seed afresh.
+// `hold` (the pointer is over the table) keeps every row still.
+export function dynamicOrder(prev, ranked, n, hold = false) {
+    const ips = ranked.map(r => r.ip);
+    if (!prev) return ips.slice(0, n);
+    let order = prev.filter(ip => ips.includes(ip));
+    const top = ranked[0];
+    if (!hold && top && top.total > 0 && order[0] !== top.ip) {
+        order = [top.ip].concat(order.filter(ip => ip !== top.ip));
+    }
+    for (const ip of ips) {
+        if (order.length >= n) break;
+        if (!order.includes(ip)) order.push(ip);
+    }
+    return order.slice(0, n);
+}
+
+// The top of a chart axis: v rounded up to a round figure - 1, 1.2, 1.5, 2, 2.5,
+// 3, 4, 5, 6 or 8 times a power of ten.
+export function niceCeil(v) {
+    if (!(v > 0)) return 0;
+    const p = Math.pow(10, Math.floor(Math.log10(v)));
+    for (const s of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8]) {
+        if (v <= s * p * (1 + 1e-12)) return Math.round(s * p);
+    }
+    return Math.round(10 * p);
 }
 
 // Picks, from the picker or back from localStorage: keep IPv4 addresses only,
@@ -153,17 +181,16 @@ export function cleanPick(value) {
 const byLabel = (a, b) => String(a.name || a.ip).localeCompare(String(b.name || b.ip), undefined,
                                                                { numeric: true, sensitivity: 'base' });
 
-// Which rows the Live table lists, in order. With devices picked: exactly those,
-// idle ones included, A to Z - a fixed set, so the table keeps its size. With
-// none: the active devices, busiest first. Live never uses the column sort; the
-// network filter and search apply either way. `held` keeps the order still
-// under the pointer (see holdOrder).
-export function liveRows(candidates, { picked = false, network = '', search = '', held = null } = {}) {
+// Which rows the Live table can list, in order. With devices picked: exactly
+// those, idle ones included, A to Z - a fixed set, so the table keeps its size.
+// With none: every candidate, busiest first, then the most recently seen (`seen`:
+// ip -> ms), then A to Z; dynamicOrder() then decides what actually moves. Live
+// never uses the column sort; the network filter and search apply either way.
+export function liveRows(candidates, { picked = false, network = '', search = '', seen = {} } = {}) {
     const rows = candidates.filter(r => (!network || r.net === network) && (!search
         || r.ip.toLowerCase().includes(search) || (r.name && r.name.toLowerCase().includes(search))));
     if (picked) return rows.sort(byLabel);
-    rows.sort((a, b) => (b.total - a.total) || byLabel(a, b));
-    return held ? holdOrder(rows, held) : rows;
+    return rows.sort((a, b) => (b.total - a.total) || ((seen[b.ip] || 0) - (seen[a.ip] || 0)) || byLabel(a, b));
 }
 
 // Rows with the same key render the same cells, so the table can be updated in
@@ -188,7 +215,7 @@ export default class TopDevices extends BaseWidget {
         this.STORE = 'opnsense.topdevices.view';
 
         this.state = {
-            range: '24h', chart: 'pie', network: '', search: '',
+            range: '24h', chart: 'pie', liveChart: 'line', network: '', search: '',
             sortKey: 'total', sortDir: 'desc', rowsN: 0, detailN: 10, scope: 'all',
             customFrom: '', customTo: '', livePick: [],
             rows: [], window: null, selected: null
@@ -207,7 +234,13 @@ export default class TopDevices extends BaseWidget {
             watchdog: null, hover: false, order: [], rowsShown: -1, ptrPending: new Set(), closed: false,
             known: new Set(),      // every device address this Live session has seen, for the picker
             picker: false,         // the Devices picker is up (bootstrap-select was available)
-            rowsKey: null          // liveRowsKey() of the rows on screen; null forces a rebuild
+            rowsKey: null,         // liveRowsKey() of the rows on screen; null forces a rebuild
+            dynOrder: null,        // with nothing picked: the listed IPs, in order (dynamicOrder)
+            yMax: 0,               // the Live chart's axis top; only grows until a view change
+            lastSeen: { all: {}, inet: {} },     // ip -> ms of the last traffic, per scope
+            series: { all: {}, inet: {} },       // ip -> line graph points, per scope
+            lineSets: {},          // ip -> line graph dataset, reused between updates
+            colours: {}            // ip -> the line colour it last had
         };
     }
 
@@ -258,7 +291,7 @@ export default class TopDevices extends BaseWidget {
         try {
             const s = this.state;
             localStorage.setItem(this.STORE, JSON.stringify({
-                range: s.range, chart: s.chart, network: s.network, search: s.search,
+                range: s.range, chart: s.chart, liveChart: s.liveChart, network: s.network, search: s.search,
                 sortKey: s.sortKey, sortDir: s.sortDir, rowsN: s.rowsN, detailN: s.detailN, scope: s.scope,
                 customFrom: s.customFrom, customTo: s.customTo, livePick: s.livePick
             }));
@@ -447,7 +480,8 @@ export default class TopDevices extends BaseWidget {
         const map = {};
         try {
             const r = await this.ajaxCall('/api/dnsmasq/leases/search', JSON.stringify({ rowCount: 1000 }), 'POST');
-            ((r && r.rows) || []).forEach(l => { if (l.address && l.hostname) map[l.address] = l.hostname; });
+            // Dnsmasq writes '*' for a client that sent no hostname
+            ((r && r.rows) || []).forEach(l => { if (l.address && l.hostname && l.hostname !== '*') map[l.address] = l.hostname; });
         } catch (e) { /* leases unavailable - fall back to host records alone */ }
         try {
             const r = await this.ajaxCall('/api/dnsmasq/settings/searchHost', JSON.stringify({ rowCount: 1000 }), 'POST');
@@ -616,6 +650,7 @@ export default class TopDevices extends BaseWidget {
                     <option value="100">100 rows</option>
                 </select>
                 <div class="btn-group btn-group-sm td-chartbtns" style="flex:0 0 auto;">
+                    <button type="button" class="btn btn-default" data-chart="line" style="display:none;">Line</button>
                     <button type="button" class="btn btn-default" data-chart="pie">Pie</button>
                     <button type="button" class="btn btn-default" data-chart="bar">Bar</button>
                     <button type="button" class="btn btn-default" data-chart="none">Off</button>
@@ -658,6 +693,7 @@ export default class TopDevices extends BaseWidget {
         const saved = this._loadView();
         if (saved) Object.assign(this.state, saved);
         this.state.livePick = cleanPick(this.state.livePick);
+        if (!['line', 'bar', 'pie', 'none'].includes(this.state.liveChart)) this.state.liveChart = 'line';
 
         await this._loadNetworks();
         this._fillNetworkSelect();
@@ -730,16 +766,18 @@ export default class TopDevices extends BaseWidget {
         $(document).on('change.topdevices', '.td-scope', async function () {
             self.state.scope = $(this).val();
             self._saveView();
+            self._liveViewChanged();
             // must await: render() drops a selection the new scope excludes, and
             // reading state.selected before that lands re-renders the stale device
             await self.render();                 // export is cached; only the filter changed
             if (self.state.selected) await self.renderDetails(self.state.selected);
         });
         $(document).on('change.topdevices', '.td-network', function () {
-            self.state.network = $(this).val(); self._saveView(); self.render();
+            self.state.network = $(this).val(); self._saveView(); self._liveViewChanged(); self.render();
         });
         $(document).on('input.topdevices', '.td-search', function () {
-            self.state.search = $(this).val().toLowerCase().trim(); self._saveView(); self.render();
+            self.state.search = $(this).val().toLowerCase().trim(); self._saveView(); self._liveViewChanged();
+            self.render();
         });
         $(document).on('change.topdevices', '.td-detailrows', function () {
             self.state.detailN = parseInt($(this).val(), 10) || 10;
@@ -751,7 +789,7 @@ export default class TopDevices extends BaseWidget {
             self._saveView(); self.render();
         });
         $(document).on('click.topdevices', '.td-chartbtns button', function () {
-            self.state.chart = $(this).data('chart'); self._saveView(); self.render();
+            if (self._setChart($(this).data('chart'))) { self._saveView(); self.render(); }
         });
         $(document).on('click.topdevices', '.td-sort', function () {
             if (self._sortBy($(this).data('key'))) self.render();
@@ -760,6 +798,7 @@ export default class TopDevices extends BaseWidget {
         $(document).on('change.topdevices', PICKER, function () {
             self.state.livePick = cleanPick($(this).val() || []);
             self._saveView();
+            self._liveViewChanged();
             self.render();
         });
         // list what is known right now, just before the menu opens - never under the pointer
@@ -854,7 +893,7 @@ export default class TopDevices extends BaseWidget {
         this._renderChrome();
         $('.td-body').html(this._rowsHtml(rows, (v) => this._fmt(v), 'No matching devices'));
         this._renderChart(rows.slice(0, CHART_MAX));
-        if (rows.length > CHART_MAX && this.state.chart !== 'none') {
+        if (rows.length > CHART_MAX && this._chartKind() !== 'none') {
             $('.td-window small').append(
                 `<span class="text-muted"> \u00b7 chart: top ${CHART_MAX} of ${rows.length}</span>`);
         }
@@ -867,7 +906,8 @@ export default class TopDevices extends BaseWidget {
         const live = this.state.range === 'live';
         const picked = live && (this.state.livePick || []).length > 0;
         $('.td-chartbtns button').removeClass('btn-primary').addClass('btn-default');
-        $(`.td-chartbtns button[data-chart="${this.state.chart}"]`).removeClass('btn-default').addClass('btn-primary');
+        $(`.td-chartbtns button[data-chart="${this._chartKind()}"]`).removeClass('btn-default').addClass('btn-primary');
+        $('.td-chartbtns button[data-chart="line"]').css('display', live && this._streamingOk() ? '' : 'none');
         $('.td-sort').each((i, el) => {
             $(el).find('.td-arrow').remove();
             $(el).css('cursor', live ? 'default' : 'pointer');
@@ -914,9 +954,11 @@ export default class TopDevices extends BaseWidget {
     }
 
     _renderChart(rows, fmt = (v) => this._fmt(v), live = false) {
-        const isPie = this.state.chart === 'pie';
+        const kind = this._chartKind();
+        if (live && kind === 'line' && rows.length) { this._renderLineChart(rows); return; }
+        const isPie = kind === 'pie';
         const type = isPie ? 'doughnut' : 'bar';
-        if (this.state.chart === 'none' || rows.length === 0) {
+        if (kind === 'none' || rows.length === 0) {
             if (this.chartObj) { this.chartObj.destroy(); this.chartObj = null; }
             $('.td-chartbox').hide();
             return;
@@ -927,11 +969,18 @@ export default class TopDevices extends BaseWidget {
             ? [{ data: rows.map(r => r.total), borderWidth: 0 }]
             : [{ label: 'Down', data: rows.map(r => r.down) },
                { label: 'Up',   data: rows.map(r => r.up) }];
+        // Live's bar axis holds its highest top until the view changes (see _resetLiveView)
+        let yMax;
+        if (live && !isPie) {
+            this.live.yMax = Math.max(this.live.yMax, niceCeil(Math.max(0, ...rows.map(r => r.down + r.up))));
+            yMax = this.live.yMax || undefined;
+        }
         // Live redraws every interval: update the chart in place instead of
         // destroying and rebuilding it, which flickers.
         if (live && this.chartObj && this.chartObj.$live && this.chartObj.config.type === type) {
             this.chartObj.data.labels = labels;
             this.chartObj.data.datasets.forEach((ds, i) => { ds.data = datasets[i].data; });
+            if (!isPie) this.chartObj.options.scales.y.max = yMax;
             this.chartObj.update('none');
             return;
         }
@@ -950,11 +999,143 @@ export default class TopDevices extends BaseWidget {
                 },
                 scales: isPie ? {} : {
                     x: { stacked: true, ticks: { font: { size: 9 } } },
-                    y: { stacked: true, ticks: { callback: (v) => fmt(v) } }
+                    y: { stacked: true, max: yMax, ticks: { callback: (v) => fmt(v) } }
                 }
             }
         });
         this.chartObj.$live = live;
+    }
+
+    // The line graph scrolls on chartjs-plugin-streaming's 'realtime' scale, which
+    // the dashboard loads for core's Traffic Graph.
+    _streamingOk() {
+        try { return typeof Chart !== 'undefined' && !!Chart.registry.getScale('realtime'); } catch (e) { return false; }
+    }
+
+    // The chart this range draws. Live keeps its own choice, starting on the line
+    // graph (the bar chart stands in without the streaming plugin); the NetFlow
+    // ranges keep theirs and never draw a line graph.
+    _chartKind() {
+        if (this.state.range !== 'live') return this.state.chart === 'line' ? 'bar' : this.state.chart;
+        const kind = this.state.liveChart || 'line';
+        return kind === 'line' && !this._streamingOk() ? 'bar' : kind;
+    }
+
+    // A chart button: true when the choice was taken.
+    _setChart(kind) {
+        if (this.state.range === 'live') {
+            if (kind === 'line' && !this._streamingOk()) return false;
+            this.state.liveChart = kind;
+        } else {
+            if (kind === 'line') return false;
+            this.state.chart = kind;
+        }
+        return true;
+    }
+
+    // A view change starts the Live axis top and the busiest-first list afresh:
+    // entering Live or the refresh button (_startLive), another scope, network,
+    // search or pick (_liveViewChanged).
+    _resetLiveView() {
+        this.live.yMax = 0;
+        this.live.dynOrder = null;
+        this.live.lineSets = {};
+    }
+
+    _liveViewChanged() {
+        if (this.state.range === 'live') this._resetLiveView();
+    }
+
+    // One line graph point per device per interval, for both scopes: that
+    // interval's own download (0 while idle), with its upload for the tooltip.
+    // Kept for every device the table can list, a little longer than shown.
+    _recordLine(e, now) {
+        const l = this.live;
+        const devices = e.devices || {};
+        const keep = (LIVE_LINE_S + 10) * 1000;
+        const ips = new Set([...Object.keys(devices), ...l.known, ...(this.state.livePick || []), ...l.order]);
+        for (const scope of ['all', 'inet']) {
+            for (const ip of ips) {
+                const r = devices[ip] && devices[ip][scope];
+                const s = l.series[scope][ip] || (l.series[scope][ip] = []);
+                s.push({ x: now, y: r ? r[0] : 0, up: r ? r[1] : 0 });
+                while (s.length && now - s[0].x > keep) s.shift();
+            }
+        }
+    }
+
+    // A line colour for each listed device: the one it had before, unless an
+    // earlier listed device holds it, otherwise the first free one. At most ten
+    // lines and ten colours, so no two listed devices ever share.
+    _lineColours(ips) {
+        const l = this.live;
+        const taken = new Set(), out = {};
+        for (const ip of ips) {
+            const c = l.colours[ip];
+            if (c && !taken.has(c)) { out[ip] = c; taken.add(c); }
+        }
+        for (const ip of ips) {
+            if (out[ip]) continue;
+            out[ip] = l.colours[ip] = LINE_COLOURS.find(c => !taken.has(c)) || LINE_COLOURS[0];
+            taken.add(out[ip]);
+        }
+        return out;
+    }
+
+    // Live's line graph: each listed device's download over the last LIVE_LINE_S
+    // seconds, filled and smoothed like core's Traffic Graph. The points come from
+    // _recordLine(); the y axis only grows, like the bar chart's.
+    _renderLineChart(rows) {
+        const l = this.live;
+        const scope = this.state.scope === 'wan' ? 'inet' : 'all';
+        const colours = this._lineColours(rows.map(r => r.ip));
+        const datasets = rows.map((r) => {
+            const ds = l.lineSets[r.ip] || (l.lineSets[r.ip] = {
+                ip: r.ip, data: l.series[scope][r.ip] || (l.series[scope][r.ip] = []),
+                fill: true, cubicInterpolationMode: 'monotone', pointRadius: 0, borderWidth: 1.5
+            });
+            ds.label = r.name || r.ip;
+            ds.borderColor = colours[r.ip];
+            ds.backgroundColor = colours[r.ip] + '33';
+            return ds;
+        });
+        const peak = Math.max(0, ...datasets.map(ds => Math.max(0, ...ds.data.map(p => p.y))));
+        l.yMax = Math.max(l.yMax, niceCeil(peak));
+        const top = l.yMax || undefined;
+        $('.td-chartbox').show();
+        if (this.chartObj && this.chartObj.$live && this.chartObj.config.type === 'line') {
+            const joined = datasets.some(ds => !this.chartObj.data.datasets.includes(ds));
+            this.chartObj.data.datasets = datasets;
+            this.chartObj.options.scales.y.max = top;
+            // chartjs-plugin-streaming's 'quiet' update patches every dataset's
+            // controller first, and a line added since the last update has none
+            // yet: that update must be a plain one
+            this.chartObj.update(joined ? 'none' : 'quiet');
+            return;
+        }
+        if (this.chartObj) { this.chartObj.destroy(); this.chartObj = null; }
+        const el = $('.td-canvas')[0];
+        if (!el) return;
+        this.chartObj = new Chart(el.getContext('2d'), {
+            type: 'line',
+            data: { datasets: datasets },
+            options: {
+                responsive: true, maintainAspectRatio: false, normalized: true,
+                interaction: { mode: 'nearest', intersect: false },
+                scales: {
+                    x: { type: 'realtime', display: false,
+                         realtime: { duration: LIVE_LINE_S * 1000, delay: (l.interval + 1) * 1000 } },
+                    y: { beginAtZero: true, max: top, ticks: { callback: (v) => fmtRate(v) } }
+                },
+                plugins: {
+                    legend: { display: true, position: 'right', labels: { boxWidth: 10, font: { size: 10 } } },
+                    tooltip: { mode: 'nearest', intersect: false, callbacks: {
+                        label: (c) => `${c.dataset.label}: ↓ ${fmtRate(c.raw.y)} ↑ ${fmtRate(c.raw.up)}` } },
+                    streaming: { frameRate: 30, ttl: (LIVE_LINE_S + 10) * 1000 }
+                }
+            }
+        });
+        this.chartObj.$live = true;
     }
 
     /* ---------- live ---------- */
@@ -969,6 +1150,7 @@ export default class TopDevices extends BaseWidget {
         // the range may have changed while we waited
         if (token !== this.live.token || this.state.range !== 'live') return;
         this._fillPicker();                  // the names have just loaded
+        this._resetLiveView();
         Object.assign(this.live, { view: null, last: null, lastAt: Date.now(), status: 'connecting', rowsShown: -1 });
         this.eventSourceRetryCount = 0;
         this.openEventSource(`/api/topdevices/live/stream/${this.live.interval}`, (ev) => this._onLiveEvent(ev));
@@ -1008,6 +1190,14 @@ export default class TopDevices extends BaseWidget {
         this.live.lastAt = now;
         this.live.view = mergeLive(this.live.view, e, now);
         Object.keys(e.devices || {}).forEach(ip => this.live.known.add(ip));
+        if (e.dt > 0) {
+            for (const [ip, d] of Object.entries(e.devices || {})) {
+                for (const scope of ['all', 'inet']) {
+                    if (d[scope] && d[scope][0] + d[scope][1] > 0) this.live.lastSeen[scope][ip] = now;
+                }
+            }
+            this._recordLine(e, now);
+        }
         this.live.status = e.dt > 0 ? 'live' : 'measuring';
         this._renderLive();
     }
@@ -1113,23 +1303,37 @@ export default class TopDevices extends BaseWidget {
         this.live.picker = true;
     }
 
-    // The rows the Live table shows, in order (see liveRows): the picked devices,
-    // or with none picked the busiest active ones, up to the row limit.
+    // The rows the Live table shows, in order: the picked devices (see liveRows),
+    // or with none picked exactly the row limit's worth, where only the busiest
+    // device moves (see dynamicOrder), topped up with recently seen devices and
+    // then every other known one, at 0.
     _liveTableRows() {
         const l = this.live;
         const scope = this.state.scope === 'wan' ? 'inet' : 'all';
         const rates = l.view ? liveRates(l.view, scope) : {};
         const pick = this.state.livePick || [];
-        this.state.rows = (pick.length ? pick : Object.keys(rates)).map((ip) => {
+        const ips = pick.length ? pick
+            : [...new Set([...Object.keys(rates), ...this._pickChoices().flatMap(g => g.devices.map(d => d.ip))])];
+        this.state.rows = ips.map((ip) => {
             const r = rates[ip] || { down: 0, up: 0 };
             return { ip: ip, name: this.names[ip] || (this.ifaceNames || {})[ip] || '', net: this._netOf(ip),
                      down: r.down, up: r.up, total: r.down + r.up };
         });
-        const all = liveRows(this.state.rows, { picked: pick.length > 0, network: this.state.network,
-                                                search: this.state.search, held: l.hover ? l.order : null });
+        const ranked = liveRows(this.state.rows, { picked: pick.length > 0, network: this.state.network,
+                                                   search: this.state.search, seen: l.lastSeen[scope] });
+        let rows = ranked;
+        if (!pick.length) {
+            // seed only from a measured interval: before the first, every device
+            // is at 0 and the seed would come out A to Z instead of busiest first
+            const measured = !!(l.view && l.view.events.length);
+            const order = dynamicOrder(measured ? l.dynOrder : null, ranked, this.state.rowsN || 20, l.hover);
+            if (measured) l.dynOrder = order;
+            const byIp = new Map(ranked.map(r => [r.ip, r]));
+            rows = order.map(ip => byIp.get(ip));
+        }
         // the selected device keeps its panel while it is listed, and loses it once gone
-        if (this.state.selected && !all.some(r => r.ip === this.state.selected)) this.state.selected = null;
-        return pick.length ? all : all.slice(0, this.state.rowsN || 20);
+        if (this.state.selected && !rows.some(r => r.ip === this.state.selected)) this.state.selected = null;
+        return rows;
     }
 
     // Rebuild the table only when its rows change; otherwise update the figures
@@ -1172,7 +1376,7 @@ export default class TopDevices extends BaseWidget {
                                              : (l.view ? 'No active devices' : 'Measuring\u2026'));
         }
         this._renderChart(rows.slice(0, CHART_MAX), fmtRate, true);
-        if (rows.length > CHART_MAX && this.state.chart !== 'none') {
+        if (rows.length > CHART_MAX && this._chartKind() !== 'none') {
             $('.td-window small').append(`<span class="text-muted"> \u00b7 chart: ${picked ? 'first' : 'top'} `
                                          + `${CHART_MAX} of ${rows.length}</span>`);
         }

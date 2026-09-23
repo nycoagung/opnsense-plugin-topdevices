@@ -23,6 +23,9 @@ Plugin Changelog
   state table and updated every second
 * Live: pick which devices to watch, so the table keeps its size and order;
   no column sorting in Live
+* Live: a line graph of each device's download over the last minute; a y-axis
+  that holds its highest value; with nothing picked, a fixed row count where
+  only the busiest device moves
 * The live sampler throttles itself, checks its totals against the WAN
   counters and restarts hourly
 * The installer adds the live backend, clears the ACL cache and restarts

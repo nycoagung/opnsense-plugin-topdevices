@@ -18,7 +18,8 @@ NetFlow/Insight aggregator. No extra collector required.
 - **Detail column** beside the table, so the list stays visible while you click
   through devices; collapses to below the table when the widget is narrow
 - **Drill-down** — click a device for its top peers, top ports and direction split
-- **Charts** — pie of totals, or a stacked bar of download vs upload
+- **Charts** — pie of totals, or a stacked bar of download vs upload; in Live,
+  also a line graph of each device's download over the last minute
 - **Selections persist** across refreshes and reloads (localStorage)
 - **Refresh control** in the widget header, and a loading overlay while the
   export is being fetched
@@ -106,14 +107,22 @@ way core's own Traffic Graph streams interface counters.
   which is why it is not used.
 - **What the numbers are.** Rows and chart show a 3-second average, refreshed each
   interval; the WAN figure beside the range is the last interval alone.
-- **Which devices.** With nothing picked, Live lists the busiest devices, busiest
-  first; a device that goes quiet stays listed at 0 for 10 seconds, and the order
-  holds still while the pointer is over the table. To watch particular devices,
-  tick them in the *Devices* picker beside the network filter: it lists every
-  known device (DHCP leases, host records and anything Live has seen), with a
-  search box and select all / none. The table then shows exactly those devices,
-  idle ones at 0 b/s, A to Z, so it keeps its size. Picks are remembered in the
-  browser. The network filter and search still apply.
+- **Which devices.** With nothing picked, the table always shows exactly the row
+  count you chose. It starts busiest first, and after that only the busiest device
+  moves: to the top, entering if it was not listed, while the bottom row drops
+  off. The rest are topped up with recently seen devices, then other known ones,
+  at 0 b/s, and nothing moves while the pointer is over the table. To watch
+  particular devices, tick them in the *Devices* picker beside the network filter:
+  it lists every known device (DHCP leases, host records and anything Live has
+  seen), with a search box and select all / none. The table then shows exactly
+  those devices, idle ones at 0 b/s, A to Z. Picks are remembered in the browser.
+  The network filter and search still apply.
+- **Charts.** Live adds a **Line** graph, its default: each listed device's
+  download over the last 60 seconds, scrolling like core's Traffic Graph, with
+  upload in the tooltip. Live remembers its own chart choice; the NetFlow ranges
+  keep theirs. The line and bar charts' y-axis only grows - its top holds the
+  highest value seen, rounded up - and starts fresh when you enter Live, change
+  scope, network, search or picks, or press refresh.
 - **No column sorting in Live.** A header click changes nothing there; the NetFlow
   ranges sort as before. The figures update in place, so a click on a row always
   lands.
