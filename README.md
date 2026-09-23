@@ -8,8 +8,9 @@ NetFlow/Insight aggregator. No extra collector required.
 - **Live** — each device's current download and upload, updated every second,
   from the firewall's connection table (see *Live traffic*)
 - **Date range** — last hour, 24 hours, today, yesterday, 7 days, or a custom
-  from/to range; each snaps to the buckets NetFlow keeps, and the caption shows
-  the exact span (see *Upstream API limitations*)
+  from/to range. One starting within the last day is exact to the second, read from
+  NetFlow's raw flow log; older ones snap to the buckets NetFlow keeps. The caption
+  shows the exact span (see *Upstream API limitations*)
 - **Download / upload split** per device, plus the combined total
 - **All traffic or internet only** — the latter counts flows at the WAN,
   so purely local traffic is excluded
@@ -46,12 +47,13 @@ The **All traffic / Internet only** selector decides this.
 *All traffic* counts everything — internal plus internet — so an NVR pulling
 camera streams dominates the list with bytes that never reach the WAN.
 
-*Internet only* counts a flow just once, on the upstream interface, so purely
-local traffic disappears entirely. The upstream device is derived from the
-interface configuration (the one addressed outside RFC1918, excluding loopback
-and link-local), never hardcoded. On the reference install the difference is
-dramatic: an NVR showing 53.4 GB of total traffic is 16.1 MB of internet, and
-cameras showing 16.3 GB of upload are ~5 MB.
+*Internet only* counts a flow just once, on the upstream interface, so purely local
+traffic disappears entirely. The upstream device is derived from the interface
+configuration, never hardcoded: for Live and for ranges starting within the last
+day, every interface with a default route or a public address; for older ranges,
+the one addressed outside RFC1918, excluding loopback and link-local. On the
+reference install the difference is dramatic: an NVR showing 53.4 GB of total
+traffic is 16.1 MB of internet, and cameras showing 16.3 GB of upload are ~5 MB.
 
 The active scope is always printed beside the date range, so a figure is never
 ambiguous about which it is.
@@ -136,8 +138,9 @@ way core's own Traffic Graph streams interface counters.
   firewall; and IPv6, which is counted but not attributed - the summary line says
   how many connections that is.
 - **Behind an ISP router.** The WAN is found by its default route as well as by
-  its address, so a WAN with a private address (double NAT) works. The NetFlow
-  ranges still use the address-only rule.
+  its address, so a WAN with a private address (double NAT) works. Since 0.2.0
+  so do NetFlow ranges starting within the last day; older ranges still use the
+  address-only rule.
 - **Cost.** One sampler per open dashboard, only while Live is on screen and the
   tab is visible. It measures its own CPU and slows down rather than use more
   than 10% of one core, and says so (*throttled to N s*). It restarts itself every
@@ -298,7 +301,7 @@ Requires a FreeBSD host matching the target ABI (26.7 / amd64 / FreeBSD 15.1):
     cp -R opnsense-plugin-topdevices plugins/net-mgmt/topdevices
     cd plugins/net-mgmt/topdevices && make package
 
-That builds `os-topdevices-0.1.2.pkg`; `pkg add` it on the firewall, or run
+That builds `os-topdevices-0.2.0.pkg`; `pkg add` it on the firewall, or run
 `make upgrade` instead of `make package` to build and install in one step.
 GitHub releases carry source only - no prebuilt package is published.
 
