@@ -101,11 +101,12 @@ option). NetFlow is not involved: a small sampler on the firewall
 per interval and streams per-device rates to the widget through configd, the
 way core's own Traffic Graph streams interface counters.
 
-- **Accuracy.** Measured against the kernel's interface counters on the reference
-  install, this method accounts for 100.0% of WAN download and 100.3% of upload
-  once the firewall's own traffic and 14 bytes of Ethernet header per packet are
-  counted. Core's iftop-based *Top talkers* read 32-68% of the same steady load,
-  which is why it is not used.
+- **Accuracy.** Checked against the kernel's WAN counters, less 14 bytes of
+  Ethernet header per frame, on the reference install: over 380 sliding 60-second
+  windows above 1 Mb/s, attributed traffic came to 98.7-102.7% of WAN download and
+  98.5-101.8% of upload, and a cross-check against the IoT VLAN's own counters
+  agreed to 97.0-99.2%. Core's iftop-based *Top talkers* read 32-68% of the same
+  steady load, which is why it is not used.
 - **What the numbers are.** Rows and the pie and bar charts show a 3-second
   average, refreshed each interval; the line graph plots each interval's own rate,
   and the WAN figure beside the range is the last interval alone.
@@ -182,8 +183,10 @@ widget picker. Afterwards `configctl topdevices install` does the same thing.
 
 **Upgrading from 0.0.1:** run the bootstrap command above once. The 0.0.1
 installer only knows its own three files, so `configctl topdevices install` (or
-the weekly cron job) would install the new widget without the live backend
-until its next run.
+the weekly cron job) installs the new widget and installer but not the live
+backend; running it a second time completes the upgrade, still without SSH. From
+0.1.0 on, non-root users need the *Dashboard: Top Devices live traffic* privilege,
+or the widget disappears for them (see *Access* under *Live traffic*).
 
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
@@ -253,6 +256,36 @@ Verified by measurement against a live firewall, not by reading the code:
   character, including the timezone abbreviation.
 - **Cron self-heal works unattended** — observed pulling a new build and swapping
   the widget on schedule with no manual trigger.
+
+**Live (0.1.0)**, measured on the reference install (OPNsense 26.7.4, i5-8500)
+on 2026-09-23:
+
+- **The parser agrees with core's own** on all 841 states of the live table, with
+  none unreadable and no mismatch, and the test suite passes on the firewall's
+  Python 3.13.
+- **Accuracy**: the 60-second windows and the VLAN cross-check under *Live
+  traffic*. A speed test through an IPsec VPN reconciled with the test's own byte
+  count plus the tunnel's overhead, and named devices carried 99% of the WAN
+  download while it ran.
+- **WireGuard clients** appear under their tunnel addresses. A tunnel from the
+  LAN - a phone on home Wi-Fi - no longer upsets the self-check.
+- **Cost**: a median 24 ms of CPU per 1-second sample (95th percentile 52 ms) with
+  700-1,600 states; the sampler used about 1.6% of one core and never throttled.
+- **Lifecycle**: hiding the dashboard tab stops the sampler within about 2 s,
+  showing it starts a new stream at once, NetFlow ranges run none, and after
+  `service configd restart` the widget reconnects by itself within about 2 s.
+- **Upgrade under configd**: `configctl topdevices install` with a changed action
+  file rewrote it, restarted configd detached and returned - the weekly job's
+  path.
+- **Soak**: the sampler restarted after exactly one hour and the stream was back
+  2.2 s later; its memory stayed at 18-22 MB, following the size of the state
+  table rather than time.
+- **The NetFlow ranges** behave as in 0.0.1, checked by hand through every range
+  and control.
+
+Not verified: non-root users (only root exists on the reference install), IPv6
+attribution (not attempted: no routable IPv6 there), multiple WANs, and a device
+behind a traffic-shaper pipe.
 
 **Automated tests** cover the live sampler and the widget's live logic (see
 *Tests*). The NetFlow views still have none.
