@@ -17,6 +17,15 @@ WWW: https://github.com/nycoagung/opnsense-plugin-topdevices
 Plugin Changelog
 ----------------
 
+0.1.1
+
+* Live: a tab shown again reconnects at once, even after three failed
+  connects while it was hidden
+* Sampler: a failed WAN counter read no longer discards that sample's device
+  rates, and command output that is not UTF-8 no longer fails a read
+* Installer: a failed download no longer leaves /tmp/tdinst.* behind
+* Names are escaped inside quoted attributes as well
+
 0.1.0
 
 * Live view: per-device download and upload rates, streamed from the pf

@@ -26,7 +26,7 @@ import subprocess
 import sys
 import time
 
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 
 PFCTL = ('/sbin/pfctl', '-vvs', 'state')
 IFCONFIG = ('/sbin/ifconfig',)
@@ -525,10 +525,18 @@ def run_loop(interval, read_states, read_ifaddrs, read_routes, read_counters, wr
                  'coverage': drift.coverage(), 'devices': {}, 'error': topo_error}
         try:
             states, unparsed = parse_states(read_states())
-            counters = parse_ifinfo(read_counters(topo.upstream_devs)) if topo.upstream_devs else {}
         except Exception as exc:
             states = None
             event['error'] = safe_text(exc)
+        # the WAN counters feed only the WAN figure and the self-check: losing
+        # them for a sample must not lose the device rates as well
+        counters = {}
+        if states is not None and topo.upstream_devs:
+            try:
+                counters = parse_ifinfo(read_counters(topo.upstream_devs))
+            except Exception as exc:
+                counters = None
+                event['error'] = safe_text('WAN counters: %s' % exc)
         t = clock()
         if states is not None:
             event.update(states=len(states), unparsed=unparsed,
@@ -542,12 +550,13 @@ def run_loop(interval, read_states, read_ifaddrs, read_routes, read_counters, wr
                     else:
                         rows.extend(credits(s, b0, b1, topo))
                 devices, fw_bytes = aggregate(rows, dt, topo)
-                down, up, wan = wan_rates(prev_counters, counters, topo.upstream_devs, dt)
-                inet_down = sum(r[4] for r in rows if r[0] == INET)
-                inet_up = sum(r[5] for r in rows if r[0] == INET)
-                drift.add(dt, wan, inet_down + fw_bytes[0], inet_up + fw_bytes[1], v6_bytes)
+                if prev_counters is not None and counters is not None:
+                    down, up, wan = wan_rates(prev_counters, counters, topo.upstream_devs, dt)
+                    inet_down = sum(r[4] for r in rows if r[0] == INET)
+                    inet_up = sum(r[5] for r in rows if r[0] == INET)
+                    drift.add(dt, wan, inet_down + fw_bytes[0], inet_up + fw_bytes[1], v6_bytes)
+                    event['wan'].update(down=down, up=up)
                 event.update(dt=round(dt, 3), devices=devices, coverage=drift.coverage())
-                event['wan'].update(down=down, up=up)
             prev, prev_counters, prev_t = states, counters, t
         cost = max(0.0, cpu() - c0)
         cost_ema = ema(cost_ema, cost)
@@ -594,7 +603,7 @@ def _sleep_until(deadline, every, clock, sleep, write):
 
 
 def _run(cmd):
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+    proc = subprocess.run(cmd, capture_output=True, text=True, errors='replace', timeout=5)
     if proc.returncode != 0:
         raise RuntimeError('%s exited with %d' % (cmd[0], proc.returncode))
     return proc.stdout

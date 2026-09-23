@@ -451,6 +451,38 @@ class Loop(unittest.TestCase):
         self.assertEqual(calls['ifconfig'], 3)    # start, t+60, t+120
 
 
+    def test_failed_counter_read_keeps_the_device_rates(self):
+        # ifinfo failing (a WAN interface gone between topology refreshes) must
+        # not cost the sample its device rates, which do not depend on it
+        clock, chunks, calls = FakeClock(), [], {'pf': 0}
+        pf = [pf_text(1000, 100000), pf_text(2000, 225000)]
+
+        def read_states():
+            calls['pf'] += 1
+            return pf[min(calls['pf'], 2) - 1]
+
+        def broken(devs):
+            raise OSError('ifinfo <gone>')
+
+        live.run_loop(1, read_states, lambda: IFCONFIG_TEXT, lambda: ROUTES_TEXT, broken, chunks.append,
+                      clock=clock, wall=lambda: 0.0, cpu=lambda: 0.0, sleep=clock.sleep, max_samples=2)
+        e = [json.loads(c[6:]) for c in chunks if c.startswith('data: ')][1]
+        self.assertEqual(e['devices']['192.168.1.10']['inet'], [1000000, 8000])
+        self.assertEqual(e['wan'], {'devs': ['em0'], 'down': 0, 'up': 0})
+        self.assertIn('ifinfo', e['error'])
+        self.assertFalse(set('<>&') & set(e['error']))
+
+
+class Run(unittest.TestCase):
+    def test_tolerates_output_that_is_not_utf8(self):
+        out = live._run([sys.executable, '-c', "import sys; sys.stdout.buffer.write(b'ok \\xff\\n')"])
+        self.assertTrue(out.startswith('ok '), out)
+
+    def test_reports_a_failing_command(self):
+        with self.assertRaises(RuntimeError):
+            live._run([sys.executable, '-c', 'raise SystemExit(3)'])
+
+
 class Main(unittest.TestCase):
     def test_rejects_bad_intervals(self):
         for arg in ('0', '11', '1.5', '', '١'):

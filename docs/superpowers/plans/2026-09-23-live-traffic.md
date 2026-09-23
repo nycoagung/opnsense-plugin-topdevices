@@ -1740,6 +1740,7 @@ Expected: `FAIL: test_fields_agree` for every compared state, and exit status 1.
 
 Run: `python3 -m unittest discover -s tests -v`
 Expected: `Ran 39 tests` … `OK (skipped=3)`. The parity tests skip without core.
+(Historical count: later tasks and 0.1.1 added tests; the README has the current suite.)
 
 Run: `OPNSENSE_CORE="$TMPDIR/core-26.7.4" python3 -m unittest discover -s tests -v`
 Expected: `Ran 39 tests` … `OK`, with the three `CoreParity` tests passing.
@@ -3551,7 +3552,8 @@ In the commands below, `$FW` is the firewall's address. `$KEY` and `$SECRET` are
 key with access to Diagnostics and to this plugin's privilege.
 
 The weekly *Install/refresh TopDevices dashboard widget* job reinstalls `main`, which
-would silently put 0.0.1 back. Either finish Task 11 before its next run, or pause
+would silently put 0.0.1 back (superseded: main carries 0.1.0 since 2026-09-23, so the
+job now refreshes, not reverts). Either finish Task 11 before its next run, or pause
 the job under System → Settings → Cron until Task 12.
 
 - [ ] **Step 1: (user) Install the branch from an SSH shell, not through `configctl`**
