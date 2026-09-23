@@ -325,12 +325,14 @@ def credits(state, b0, b1, topo):
             out.append((FW, None, None, port, b1, b0))
         elif nat is not None and local(nat) and not local(src):
             out.append((INET, nat, dst, port, b1, b0))
-        elif nat is None and src in upstream:
+        elif nat is None and src in upstream and not local(dst):
             out.append((FW, None, None, port, b1, b0))
         return out
     if nat is not None and not local(nat) and local(dst) and dst not in never and not local(src):
         out.append((INET, dst, src, port, b0, b1))       # port-forward: remote initiator
-    elif nat is None and dst in upstream:
+    elif nat is None and dst in upstream and not local(src):
+        # the WAN address reached from a local device (WireGuard from home Wi-Fi)
+        # crosses the LAN only, so it is not upstream traffic
         out.append((FW, None, None, port, b0, b1))
     if local(src) and src not in never:
         out.append((ALL, src, dst, port, b1, b0))
