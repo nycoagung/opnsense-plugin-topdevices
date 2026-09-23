@@ -176,6 +176,13 @@ class Credits(unittest.TestCase):
             with self.subTest(state=hex(n)):
                 self.assertEqual(self.credit(n), want)
 
+    def test_subnet_broadcast_is_never_a_device(self):
+        # NetBIOS or SSDP to x.x.x.255 makes an ordinary pass state. The NetFlow
+        # view already drops such addresses; Live must not list 192.168.1.255
+        # as a device either - only the sender is credited.
+        s = live.parse_header('all udp 192.168.1.255:137 <- 192.168.1.10:137       SINGLE:NO_TRAFFIC')
+        self.assertEqual(live.credits(s, 50, 0, self.topo), [('all', '192.168.1.10', '192.168.1.255', 137, 0, 50)])
+
     def test_double_nat_still_credits_internet(self):
         topo = topology(DOUBLE_NAT_IFCONFIG)
         s = live.parse_header('all tcp 192.168.0.2:60000 (192.168.1.10:50000) -> 203.0.113.7:443       '
