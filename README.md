@@ -388,8 +388,8 @@ fixture: point `OPNSENSE_CORE` at an opnsense/core checkout, or `CORE_STATES_PY`
 its `states.py`. On the firewall, `python3 tests/parity_live.py` does the same
 over the live state table.
 
-On the firewall, python3 tests/parity_flows.py compares flows.py with core's own
-code over the live log and times it through configd.
+On the firewall, `python3 tests/parity_flows.py` compares `flows.py` with core's
+own code over the live log and times it through configd.
 
 ## Removing
 
