@@ -16,6 +16,7 @@ globalThis.BaseWidget = class {
 // jQuery: chainable no-ops, except what the tests read back - the last .html()
 // or .text() written to a selector - and $.ajax, answered by `reply`.
 const requests = [];
+let lastAjax = null;                 // the last $.ajax options
 let reply = () => '';
 const dom = {};
 const chain = new Proxy(function () {}, {
@@ -29,6 +30,7 @@ const element = (sel) => new Proxy(function () {}, {
     apply: () => chain
 });
 function ajax(opts) {
+    lastAjax = opts;
     requests.push(opts.url);
     const text = Promise.resolve(reply(opts.url));   // a string, null (the request fails), or a promise of one
     const p = { done(fn) { text.then(t => { if (t !== null) fn(t); }); return p; },
@@ -668,4 +670,20 @@ test('a device answer without its lists is not kept: the next panel read asks ag
     const before = requests.length;
     await assert.rejects(w._detailsData('192.168.1.10'));
     assert.equal(requests.length, before + 1);
+});
+
+test('a custom range ending later today asks the raw log up to now', async () => {
+    const w = widget('custom');
+    w.state.customFrom = '2026-09-23T17:00';
+    w.state.customTo = '2026-09-23T21:00';                   // ends after now (19:08:54)
+    reply = flowsOnly(() => totalsAnswer(S(7, 0), NOW));
+    const before = requests.length;
+    await w._load(NOW * 1000);
+    assert.deepEqual(requests.slice(before), [`${FLOWS_API}/totals/${S(7, 0)}/${NOW}`]);
+    assert.equal(w.state.request.raw, true);
+});
+
+test('the raw log gets a minute to answer, as JSON', async () => {
+    await loadRaw('1h', () => totalsAnswer(NOW - 3600, NOW));
+    assert.deepEqual([lastAjax.dataType, lastAjax.timeout], ['json', 60000]);
 });

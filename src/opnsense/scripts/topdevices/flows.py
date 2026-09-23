@@ -492,8 +492,11 @@ def core_hourly(lo, hi):
 
 def upstream_ifindex(index, upstream_devs):
     """The interface numbers core's aggregator gives the upstream devices, from
-    its map {number: device}. A device missing from the map - ifinfo failed, or
-    its output changed - would silently leave internet only empty: an error."""
+    its map {number: device}. No upstream device at all (no default route and no
+    public address), or one missing from the map (ifinfo failed, or its output
+    changed), would silently leave internet only empty: an error."""
+    if not upstream_devs:
+        raise RuntimeError('no upstream interface: no default route and no public address')
     missing = [d for d in upstream_devs if d not in index.values()]
     if missing:
         raise RuntimeError("core's interface map has no number for %s (ifinfo)" % ', '.join(missing))

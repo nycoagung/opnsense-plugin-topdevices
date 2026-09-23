@@ -99,6 +99,13 @@ FLOW_MUTANTS = [
      "            out = answer_device(req['ip'], req['from'], req['to'], now, opened, net, workers)",
      "            out = answer_device(req['ip'], req['to'], req['from'], now, opened, net, workers)"),
     ('a log nobody rotates read anyway', '        if biggest > MAX_FILE:', '        if False:'),
+    ("each device list sorted by all traffic",
+     '    items = sorted(((key, v[k]) for key, v in table.items() if v[k] > 0), key=lambda kv: (-kv[1], kv[0]))',
+     '    items = sorted(((key, v[k]) for key, v in table.items() if v[k] > 0), key=lambda kv: (-table[kv[0]][0], kv[0]))'),
+    ('the day bound excluding its edge', "    if mode == 'totals' and frm < now - DAY - SLACK:",
+     "    if mode == 'totals' and frm <= now - DAY - SLACK:"),
+    ('the future bound excluding its edge', '    if to > now + SLACK:', '    if to >= now + SLACK:'),
+    ('no upstream interface ignored', '    if not upstream_devs:\n        raise', '    if False:\n        raise'),
 ]
 
 
