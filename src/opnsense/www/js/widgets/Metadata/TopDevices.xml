@@ -9,6 +9,7 @@
             <endpoint>/api/dnsmasq/leases/search</endpoint>
             <endpoint>/api/dnsmasq/settings/searchHost</endpoint>
             <endpoint>/api/topdevices/live/*</endpoint>
+            <endpoint>/api/topdevices/flows/*</endpoint>
         </endpoints>
         <translations>
             <title>Top Devices</title>

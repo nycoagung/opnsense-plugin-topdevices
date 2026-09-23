@@ -24,12 +24,23 @@ src/opnsense/scripts/topdevices/live.py|/usr/local/opnsense/scripts/topdevices/l
 src/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/LiveController.php|/usr/local/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/LiveController.php|644
 src/opnsense/mvc/app/models/OPNsense/TopDevices/ACL/ACL.xml|/usr/local/opnsense/mvc/app/models/OPNsense/TopDevices/ACL/ACL.xml|644
 install.sh|/usr/local/opnsense/scripts/topdevices/install.sh|755
+src/opnsense/scripts/topdevices/flows.py|/usr/local/opnsense/scripts/topdevices/flows.py|755
+src/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/FlowsController.php|/usr/local/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/FlowsController.php|644
 LIST
 
 A="$R/usr/local/opnsense/service/conf/actions.d/actions_topdevices.conf"
 grep -qx '\[live\]' "$A" || fail "no [live] action"
 grep -qx 'command:/usr/local/opnsense/scripts/topdevices/live.py' "$A" || fail "live action path wrong (ROOT leaked?)"
 grep -qx 'type:stream_output' "$A" || fail "live action is not a stream"
+for a in 'flows.totals|totals|%s %s' 'flows.device|device|%s %s %s'; do
+    name=${a%%|*}; rest=${a#*|}; mode=${rest%%|*}; params=${rest#*|}
+    block=$(awk -v h="[$name]" '$0 == h {on = 1; next} /^\[/ {on = 0} on' "$A")
+    echo "$block" | grep -qx "command:/usr/local/opnsense/scripts/topdevices/flows.py $mode" || fail "[$name] command wrong"
+    echo "$block" | grep -qx "parameters:$params" || fail "[$name] parameters wrong"
+    echo "$block" | grep -qx 'type:script_output' || fail "[$name] is not script_output"
+done
+grep -q '<pattern>api/topdevices/flows/\*</pattern>' "$R/usr/local/opnsense/mvc/app/models/OPNsense/TopDevices/ACL/ACL.xml" \
+    || fail "the ACL does not cover the flows endpoints"
 [ -z "$(find "$R" -name '*.tdnew' -o -name '.actions_topdevices.new')" ] || fail "staging files left behind"
 # A download that fails must not leave the installer's scratch directory behind.
 F="$R/fetchfail"; mkdir -p "$F"

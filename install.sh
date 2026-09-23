@@ -10,7 +10,7 @@
 #
 # WHY codeload AND NOT THE API OR raw:
 #   - the API costs one rate-limited request per file (60/hour per IP, and it is
-#     the firewall's own public IP that counts). Six files is survivable, but
+#     the firewall's own public IP that counts). Eight files is survivable, but
 #     it is the same flaw that locked the sibling parentalcontrol plugin out
 #     entirely at fifteen.
 #   - raw.githubusercontent is CDN-cached, lags pushes by minutes and is cached
@@ -52,6 +52,8 @@ $P/scripts/topdevices/live.py|$SCRIPTS/live.py
 $P/mvc/app/controllers/OPNsense/TopDevices/Api/LiveController.php|$MVC/controllers/OPNsense/TopDevices/Api/LiveController.php
 $P/mvc/app/models/OPNsense/TopDevices/ACL/ACL.xml|$MVC/models/OPNsense/TopDevices/ACL/ACL.xml
 install.sh|$SCRIPTS/install.sh
+$P/scripts/topdevices/flows.py|$SCRIPTS/flows.py
+$P/mvc/app/controllers/OPNsense/TopDevices/Api/FlowsController.php|$MVC/controllers/OPNsense/TopDevices/Api/FlowsController.php
 "
 
 HERE=$(dirname "$0")
@@ -112,6 +114,18 @@ command:$SCRIPTS/live.py
 parameters:%s
 type:stream_output
 message:TopDevices live stream (%s s)
+
+[flows.totals]
+command:$SCRIPTS/flows.py totals
+parameters:%s %s
+type:script_output
+message:TopDevices flows totals %s %s
+
+[flows.device]
+command:$SCRIPTS/flows.py device
+parameters:%s %s %s
+type:script_output
+message:TopDevices flows device %s
 ACT
     if cmp -s "$TMP2" "$ROOT$ACTIONS/actions_topdevices.conf" 2>/dev/null; then
         # Unchanged: no restart, so the weekly cron run never restarts configd.
