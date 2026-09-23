@@ -144,5 +144,76 @@ class Spread(unittest.TestCase):
         self.assertEqual(flows.share(250.003, 250.0, -3, 42, 100, 200), 0.0)
 
 
+def utc(t):
+    """A bucket's start as core's aggregates return it: a naive UTC datetime."""
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).replace(tzinfo=None)
+
+
+LAN = ipaddress.ip_network('192.168.1.0/24')
+IOT = ipaddress.ip_network('192.168.20.0/24')
+NET = flows.Net([LAN, IOT], [1], ['em0'])       # upstream: interface 1, em0
+
+
+class Coverage(unittest.TestCase):
+    """What covers which part of a range (spec §4)."""
+
+    def test_a_range_inside_the_log_is_the_log_alone(self):
+        self.assertEqual(flows.plan(T0 + 100, T0 + 200, T0 + 50),
+                         {'raw_all': (T0 + 100, T0 + 200), 'hourly': None, 'inet': (T0 + 100, T0 + 200)})
+
+    def test_before_the_log_all_traffic_is_filled_from_hourly_records_up_to_the_next_hour(self):
+        # the log complete from 22:06:16 AEST; the next whole hour is 23:00 AEST
+        L, seam, frm, to = 1790082376, 1790085600, 1790068194, 1790154594
+        self.assertEqual(flows.plan(frm, to, L),
+                         {'raw_all': (seam, to), 'hourly': (frm, seam), 'inet': (L, to)})
+
+    def test_a_log_shorter_than_its_first_hour_leaves_all_traffic_to_the_hourly_records(self):
+        frm, to, L = 1790000000, 1790007200, 1790007000     # the next hour, 1790010000, is after to
+        self.assertEqual(flows.plan(frm, to, L), {'raw_all': (to, to), 'hourly': (frm, to), 'inet': (L, to)})
+
+    def test_a_range_wholly_before_the_log_has_no_internet_only_span(self):
+        frm, to, L = 1790000000, 1790000600, 1790000900
+        p = flows.plan(frm, to, L)
+        self.assertEqual(p['inet'], (L, to))
+        self.assertGreaterEqual(p['inet'][0], p['inet'][1])
+
+    def test_hourly_buckets_are_weighted_by_their_overlap(self):
+        b = 1790085600
+        now = b + 5 * 3600
+        self.assertEqual(flows.hourly_weight(b, b - 100, b + 3600, now), 1.0)
+        self.assertEqual(flows.hourly_weight(b, b + 900, b + 3600, now), 0.75)
+        self.assertEqual(flows.hourly_weight(b, b + 3600, b + 7200, now), 0.0)
+
+    def test_a_bucket_in_progress_counts_for_the_part_recorded(self):
+        b = 1790085600
+        self.assertEqual(flows.hourly_weight(b, b, b + 3600, now=b + 1800), 1.0)
+        self.assertEqual(flows.hourly_weight(b, b + 900, b + 3600, now=b + 1800), 0.5)
+
+
+class Devices(unittest.TestCase):
+    def test_a_device_is_in_a_local_subnet_and_not_its_broadcast(self):
+        self.assertTrue(NET.is_device(IP('192.168.1.10')))
+        self.assertTrue(NET.is_device(IP('192.168.1.254')))    # the firewall's own address: a table row
+        self.assertTrue(NET.is_device(IP('192.168.20.5')))
+        self.assertFalse(NET.is_device(IP('192.168.1.255')))
+        self.assertFalse(NET.is_device(IP('192.168.2.10')))
+        self.assertFalse(NET.is_device(IP('8.8.8.8')))
+        self.assertEqual((NET.upstream, NET.upstream_names), (frozenset({1}), ['em0']))
+
+
+class Hourly(unittest.TestCase):
+    def test_hourly_rows_become_device_download_and_upload(self):
+        b = 1790085600
+        rows = [{'start_time': utc(b), 'src_addr': '192.168.1.10', 'direction': 'out', 'octets': 4000.0},
+                {'start_time': utc(b), 'src_addr': '192.168.1.10', 'direction': 'in', 'octets': 1000.0},
+                {'start_time': utc(b + 3600), 'src_addr': '192.168.1.10', 'direction': 'out', 'octets': 800.0},
+                {'start_time': utc(b), 'src_addr': '8.8.8.8', 'direction': 'in', 'octets': 9.0},
+                {'start_time': utc(b), 'src_addr': '192.168.1.255', 'direction': 'out', 'octets': 9.0},
+                {'start_time': utc(b), 'src_addr': 'fd00::1', 'direction': 'out', 'octets': 9.0}]
+        got = flows.hourly_fill(rows, b + 900, b + 3600 + 1800, now=b + 7 * 3600, net=NET)
+        # a totals row holds one address: 'out' is bytes delivered to it, 'in' bytes it sent
+        self.assertEqual(got, {IP('192.168.1.10'): [4000 * 0.75 + 800 * 0.5, 1000 * 0.75]})
+
+
 if __name__ == '__main__':
     unittest.main()

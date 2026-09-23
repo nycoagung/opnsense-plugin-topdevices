@@ -135,3 +135,82 @@ def share(flow_start, flow_end, dur_ms, octets, lo, hi):
     if dur_ms < 0:
         return (flow_end - flow_start) / (dur_ms / 1000.0) * octets
     return octets
+
+
+# ---------------------------------------------------------------- coverage
+
+
+def plan(frm, to, L):
+    """What covers each part of a totals answer for [frm, to), the log being
+    complete from L (spec §4): all traffic from the raw log over raw_all and from
+    core's hourly records over hourly (or None); internet only from the raw log
+    over inet. A span whose start is not before its end is empty."""
+    if frm >= L:
+        return {'raw_all': (frm, to), 'hourly': None, 'inet': (frm, to)}
+    seam = min(math.ceil(L / HOUR) * HOUR, to)
+    return {'raw_all': (seam, to), 'hourly': (frm, seam), 'inet': (L, to)}
+
+
+def hourly_weight(bucket, lo, hi, now):
+    """How much of an hourly bucket falls in [lo, hi): its overlap over the time it
+    spans, which ends at now while the bucket is still in progress (spec §4)."""
+    end = min(bucket + HOUR, now)
+    if end <= bucket:
+        return 0.0
+    ov = min(end, hi) - max(bucket, lo)
+    return ov / (end - bucket) if ov > 0 else 0.0
+
+
+class Net:
+    """Which addresses are devices and which interfaces lead upstream, as integers
+    for speed. A device is an IPv4 address in a local subnet, except each subnet's
+    broadcast address; the firewall's own addresses are kept (the table lists them
+    as '<network> gateway')."""
+
+    def __init__(self, local_nets, upstream_ifindex, upstream_names):
+        self.nets = [(int(n.network_address), int(n.netmask)) for n in local_nets]
+        self.bcast = {int(n.broadcast_address) for n in local_nets if n.prefixlen < 31}
+        self.upstream = frozenset(upstream_ifindex)
+        self.upstream_names = list(upstream_names)
+        self._dev = {}
+
+    def is_device(self, ip):
+        d = self._dev.get(ip)
+        if d is None:
+            d = self._dev[ip] = ip not in self.bcast and any(ip & m == n for n, m in self.nets)
+        return d
+
+
+def _ip4(text):
+    """An IPv4 address as an integer, or None for anything else (IPv6)."""
+    try:
+        return int(ipaddress.IPv4Address(text))
+    except ValueError:
+        return None
+
+
+def _ip_str(ip):
+    return socket.inet_ntoa(struct.pack('>I', ip))
+
+
+def _epoch(value):
+    """A bucket's start as core's aggregates return it (a naive UTC datetime), or seconds."""
+    if isinstance(value, datetime.datetime):
+        return calendar.timegm(value.timetuple())
+    return int(value)
+
+
+def hourly_fill(rows, lo, hi, now, net):
+    """All-traffic [down, up] per device from core's hourly totals over [lo, hi).
+    A totals row holds one address: 'out' rows are bytes delivered to it, 'in' rows
+    bytes it sent (core's FlowSourceAddrTotals.add())."""
+    out = {}
+    for row in rows:
+        ip = _ip4(row['src_addr'])
+        if ip is None or not net.is_device(ip):
+            continue
+        w = hourly_weight(_epoch(row['start_time']), lo, hi, now)
+        if w:
+            t = out.setdefault(ip, [0.0, 0.0])
+            t[0 if row['direction'] == 'out' else 1] += w * float(row['octets'] or 0)
+    return out
