@@ -26,7 +26,7 @@ import subprocess
 import sys
 import time
 
-VERSION = '0.1.2'
+VERSION = '0.2.0'
 
 PFCTL = ('/sbin/pfctl', '-vvs', 'state')
 IFCONFIG = ('/sbin/ifconfig',)

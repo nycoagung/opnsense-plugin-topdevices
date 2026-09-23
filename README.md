@@ -146,11 +146,12 @@ way core's own Traffic Graph streams interface counters.
   counters over the last 60 seconds. If they disagree by more than 10% - the sign
   of a firmware update having changed pfctl's output - the widget says so instead
   of showing quietly wrong numbers.
-- **Access.** The stream needs the *Dashboard: Top Devices live traffic*
-  privilege. It shows every device's peers, as Diagnostics → States does.
-  OPNsense offers a widget only to users who hold the privileges of every
-  endpoint it declares, so from 0.1.0 a non-root user needs this privilege to
-  see the widget at all.
+- **Access.** The stream and the recent ranges need the *Dashboard: Top Devices*
+  privilege. It shows every device's peers, as Diagnostics → States does. OPNsense
+  offers a widget only to users who hold the privileges of every endpoint it
+  declares, so from 0.1.0 a non-root user needs this privilege to see the widget
+  at all. The recent ranges also need *Diagnostics: Network Insight*, so they
+  never show more than core's own NetFlow pages would.
 
 ## Upstream API limitations
 
@@ -208,6 +209,25 @@ Both were measured against a live firewall, not assumed:
    on screen, so both scopes describe the same span, and switching back is served
    from the cache.
 
+3. **Since 0.2.0, recent ranges read the raw flow log instead.** A range that starts
+   within the last day - Last hour, Today, Last 24 hours, or a custom one - is read by
+   the plugin's `flows.py` from `/var/log/flowd.log` and its rotations, which hold
+   every flow with its interfaces. It is exact to the second in both scopes, and
+   agrees to the byte with core's own parser and aggregators run over the same log.
+   A read takes about a second on up to half the firewall's cores (three on the
+   reference install), and there is no rate limit: the widget refreshes slowly, and
+   only while a dashboard is open. Core keeps that log by size, not time: about 110
+   MB, which is roughly a day on the reference install and less on a busy network.
+   Where a range reaches further back, all traffic is filled in from core's hourly
+   records (the oldest hour counted in proportion), and internet only says how much
+   it covers. The table above still applies to older ranges, and to recent ones when
+   the raw log cannot be read (the caption says so). NetFlow reports a long
+   connection every 30 minutes (`activeTimeout`), so the most recent half hour can
+   under-count a long download. One known edge: while core holds rows stamped in the
+   future (after the firewall's clock jumped back), its cleanup can drop the oldest
+   hourly record early, and Last 24 hours can then be short by up to that hour's part
+   of the range, with no note.
+
 ## Install without building
 
 Run once on the firewall as root:
@@ -223,8 +243,9 @@ widget picker. Afterwards `configctl topdevices install` does the same thing.
 installer only knows its own three files, so `configctl topdevices install` (or
 the weekly cron job) installs the new widget and installer but not the live
 backend; running it a second time completes the upgrade, still without SSH. From
-0.1.0 on, non-root users need the *Dashboard: Top Devices live traffic* privilege,
-or the widget disappears for them (see *Access* under *Live traffic*).
+0.1.0 on, non-root users need the *Dashboard: Top Devices* privilege (called
+*… live traffic* before 0.2.0), or the widget disappears for them (see
+*Access* under *Live traffic*).
 
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
@@ -350,13 +371,14 @@ behind a traffic-shaper pipe.
 limit locked the sibling `os-parentalcontrol` plugin out entirely. No GitHub API
 request is made at all now, and no hop goes through raw's per-edge cache — both
 of which silently served stale files here before. The codeload path was dry-run
-against the live repo and installs all six files byte-identically.
+against the live repo and installs all eight files byte-identically.
 
 ## Tests
 
     python3 -m unittest discover -s tests -v    # sampler: parser, crediting rules, loop
     node --test tests/live_view.test.mjs         # widget: averaging, lifecycle, watchdog
     node --test tests/netflow_ranges.test.mjs    # widget: NetFlow exports, buckets, windows, captions
+    OPNSENSE_CORE=<core checkout> python3 -m unittest tests.test_flows -v   # flows.py against core's parser and aggregators
     sh tests/test_install.sh                     # installer dry run into a scratch root
     python3 tests/mutate.py                      # each planted sampler bug must fail the suite
     node tests/mutate_widget.mjs                 # the same for the widget
@@ -365,6 +387,9 @@ against the live repo and installs all six files byte-identically.
 fixture: point `OPNSENSE_CORE` at an opnsense/core checkout, or `CORE_STATES_PY` at
 its `states.py`. On the firewall, `python3 tests/parity_live.py` does the same
 over the live state table.
+
+On the firewall, python3 tests/parity_flows.py compares flows.py with core's own
+code over the live log and times it through configd.
 
 ## Removing
 
@@ -382,6 +407,11 @@ System → Settings → Cron first, or it puts everything back. Then, as root:
 Rolling back to 0.0.1 with its bootstrap command leaves the live sampler, the
 controller and the ACL behind. They are inert without the `live` action, and the
 commands above remove them.
+
+Rolling back from 0.2.0 to an earlier release leaves `flows.py` and
+`Api/FlowsController.php` behind in the same way: they are inert without the
+`flows` actions, which the earlier installer's actions file does not list, and
+the commands above remove them.
 
 ## Requirements
 
