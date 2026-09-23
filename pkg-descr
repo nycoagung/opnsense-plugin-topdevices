@@ -17,6 +17,17 @@ WWW: https://github.com/nycoagung/opnsense-plugin-topdevices
 Plugin Changelog
 ----------------
 
+0.2.0
+
+* Last hour, Today, Last 24 hours and custom ranges starting within the last
+  day are exact to the second in both scopes: read on demand from NetFlow's
+  raw flow log (about a day of flows), with no cron job and no database
+* Where a range reaches past the log, all traffic is filled in from NetFlow's
+  hourly records, and internet only says how much it covers
+* The device panel's peers and ports cover exactly the table's window
+* The privilege is now called "Dashboard: Top Devices"; it also needs
+  "Diagnostics: Network Insight" to read the new endpoints
+
 0.1.2
 
 * Fixed: the NetFlow ranges read whole UTC days, so Last hour showed
