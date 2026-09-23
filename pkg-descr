@@ -17,6 +17,16 @@ WWW: https://github.com/nycoagung/opnsense-plugin-topdevices
 Plugin Changelog
 ----------------
 
+0.1.2
+
+* Fixed: the NetFlow ranges read whole UTC days, so Last hour showed
+  everything since 10:00 (UTC+10), Last 24 hours and Today both everything
+  since 10:00 the day before, and Yesterday two days
+* All traffic reads 5-minute buckets for Last hour and hourly ones for Last
+  24 hours and Today; every window snaps to whole buckets
+* The caption shows the span the figures cover, with a note when daily
+  buckets stand in for a shorter range (internet only, older history)
+
 0.1.1
 
 * Live: a tab shown again reconnects at once, even after three failed

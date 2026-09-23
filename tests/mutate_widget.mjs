@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const widget = 'src/opnsense/www/js/widgets/TopDevices.js';
 const source = readFileSync(join(root, widget), 'utf8');
+const TESTS = ['tests/live_view.test.mjs', 'tests/netflow_ranges.test.mjs'];
 
 const mutants = [
     ['stream URL not forgotten when leaving Live', '        this.eventSourceUrl = null;\n        this.eventSourceOnData = null;\n', ''],
@@ -75,6 +76,33 @@ const mutants = [
     ['the line graph offered outside Live', "            if (kind === 'line') return false;\n", ''],
     ['no stand-in without the streaming plugin', "        return kind === 'line' && !this._streamingOk() ? 'bar' : kind;",
      '        return kind;'],
+    // NetFlow ranges
+    ['all traffic read from the daily details, as before 0.1.2',
+     '    for (const [res, kept] of TOTALS_KEPT) {', '    return detailsPlan(from, to, now);\n    for (const [res, kept] of TOTALS_KEPT) {'],
+    ['no 5-minute or hourly buckets', 'const TOTALS_KEPT = [[300, 3600], [3600, 86400], [86400, Infinity]];',
+     'const TOTALS_KEPT = [[86400, Infinity]];'],
+    ['buckets used past their retention', '        if (start >= Math.floor(now / res) * res - kept) return',
+     '        if (true) return'],
+    ['internet only read from the totals, which have no interface',
+     "    if (scope === 'wan') return detailsPlan(from, to, now);\n", ''],
+    ['window start rounded down, as the export does', '    const near = (t) => Math.round(t / res) * res;',
+     '    const near = (t) => Math.floor(t / res) * res;'],
+    ['a bucket still in progress claimed to its end', '    let end = to >= now ? now : Math.min(near(to), now);',
+     '    let end = to >= now ? now : near(to);'],
+    ['totals rows read with the details convention', "        const sent = totals ? r.dir !== 'out' : r.dir === 'out';",
+     "        const sent = r.dir === 'out';"],
+    ['totals rows keyed on a destination they do not have', '        const ip = totals ? r.src : r.dst;',
+     '        const ip = r.dst;'],
+    ['the caption shows the window asked for', '        this.state.window = [plan.start, plan.end];',
+     '        this.state.window = [from, to];'],
+    ['no note when the buckets are coarser than the range',
+     '        if (p.res === 86400 && (Math.abs(p.start - q.from) >= 3600 || Math.abs(p.end - q.to) >= 3600)) {',
+     '        if (false) {'],
+    ["the panel shows the day's totals, not the row's", '        if (row) { down = row.down; up = row.up; }\n', ''],
+    ['the caption follows the scope control rather than the rows shown',
+     "        const scopeTxt = q.scope === 'wan'", "        const scopeTxt = this.state.scope === 'wan'"],
+    ['the panel never says its lists cover more', "        const note = same ? null : `Peers and ports cover",
+     "        const note = true ? null : `Peers and ports cover"],
 ];
 
 let survivors = 0;
@@ -85,9 +113,9 @@ for (const [name, from, to] of mutants) {
     mkdirSync(join(dir, 'src/opnsense/www/js/widgets'), { recursive: true });
     mkdirSync(join(dir, 'tests'));
     writeFileSync(join(dir, widget), source.replace(from, to));
-    copyFileSync(join(root, 'tests/live_view.test.mjs'), join(dir, 'tests/live_view.test.mjs'));
+    for (const t of TESTS) copyFileSync(join(root, t), join(dir, t));
     // a mutant that leaves a timer running keeps node alive: a hang counts as caught
-    const run = spawnSync(process.execPath, ['--test', 'tests/live_view.test.mjs'],
+    const run = spawnSync(process.execPath, ['--test', ...TESTS],
                           { cwd: dir, encoding: 'utf8', timeout: 20000 });
     const killed = run.status !== 0;
     console.log(`${killed ? 'killed  ' : 'SURVIVED'} ${name}${run.status === null ? ' (hung)' : ''}`);
