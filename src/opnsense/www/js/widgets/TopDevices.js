@@ -37,7 +37,7 @@
 /* ---------- live view: pure helpers (tests/live_view.test.mjs) ---------- */
 
 export const LIVE_WINDOW_S = 3;       // rows and chart average this many seconds
-export const LIVE_LINGER_MS = 10000;  // a device that goes quiet stays listed this long
+export const LIVE_LINGER_MS = 10000;  // a quiet device keeps its rate entry this long (it stays listed anyway)
 export const LIVE_RETRY_MS = 30000;   // an unavailable stream retries by itself this often
 export const LIVE_LINE_S = 60;        // the line graph shows this many seconds
 
@@ -178,8 +178,8 @@ export function cleanPick(value) {
 }
 
 // A to Z by what the table shows (the name, else the IP), numbers compared as numbers.
-const byLabel = (a, b) => String(a.name || a.ip).localeCompare(String(b.name || b.ip), undefined,
-                                                               { numeric: true, sensitivity: 'base' });
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+const byLabel = (a, b) => collator.compare(String(a.name || a.ip), String(b.name || b.ip));
 
 // Which rows the Live table can list, in order. With devices picked: exactly
 // those, idle ones included, A to Z - a fixed set, so the table keeps its size.
@@ -1025,6 +1025,7 @@ export default class TopDevices extends BaseWidget {
     _setChart(kind) {
         if (this.state.range === 'live') {
             if (kind === 'line' && !this._streamingOk()) return false;
+            if (kind !== this.state.liveChart) this.live.yMax = 0;    // the bar stacks down + up, the line is download only
             this.state.liveChart = kind;
         } else {
             if (kind === 'line') return false;
@@ -1040,6 +1041,14 @@ export default class TopDevices extends BaseWidget {
         this.live.yMax = 0;
         this.live.dynOrder = null;
         this.live.lineSets = {};
+        // points older than the graph can show would set the new axis top: a
+        // previous visit to Live must not size this one
+        const cutoff = Date.now() - (LIVE_LINE_S + 10) * 1000;
+        for (const scope of ['all', 'inet']) {
+            for (const s of Object.values(this.live.series[scope])) {
+                while (s.length && s[0].x < cutoff) s.shift();
+            }
+        }
     }
 
     _liveViewChanged() {
@@ -1180,6 +1189,11 @@ export default class TopDevices extends BaseWidget {
         this.live.status = 'off';
         this.live.view = null;
         this.live.rowsKey = null;            // whatever renders next owns the table body
+        // the line graph's realtime scale keeps scrolling until destroyed - under
+        // a NetFlow range whose data may never load - and a restart must rebuild
+        // it anyway, for the interval now in use
+        if (this.chartObj) { this.chartObj.destroy(); this.chartObj = null; }
+        $('.td-chartbox').hide();
     }
 
     _onLiveEvent(ev) {
@@ -1256,8 +1270,9 @@ export default class TopDevices extends BaseWidget {
     // What the Devices picker offers, grouped by network in the interfaces' order:
     // every named device on a local network (DHCP leases and host records), every
     // device this Live session has seen, and whatever is already picked - never the
-    // firewall's own addresses or a broadcast address. A pick that is on no network
-    // any more stays listed under Other, so it can still be unticked.
+    // firewall's own addresses or a broadcast address. A pick on no network any
+    // more, or a device seen on a network the widget does not know (an interface
+    // with no identifier), is listed under Other.
     _pickChoices() {
         const pick = this.state.livePick || [];
         const gateways = this.ifaceNames || {};
@@ -1268,7 +1283,7 @@ export default class TopDevices extends BaseWidget {
             const d = { ip: ip, name: this.names[ip] || '' };
             const g = groups.find(x => x.key === this._netOf(ip));
             if (g) g.devices.push(d);
-            else if (pick.includes(ip)) other.devices.push(d);
+            else if (pick.includes(ip) || this.live.known.has(ip)) other.devices.push(d);
         }
         return groups.concat(other).filter(g => g.devices.length)
                      .map(g => ({ label: g.label, devices: g.devices.sort(byLabel) }));

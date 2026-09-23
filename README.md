@@ -13,7 +13,8 @@ NetFlow/Insight aggregator. No extra collector required.
 - **All traffic or internet only** — the latter counts flows at the WAN,
   so purely local traffic is excluded
 - **Filter** by network (LAN / IOT / GUEST / …), or free-text on hostname or IP
-- **Sort** on any column, ascending or descending
+- **Sort** on any column, ascending or descending (NetFlow ranges; Live keeps its
+  own order)
 - **Row count** selectable at 10 / 20 / 50 / 100
 - **Detail column** beside the table, so the list stays visible while you click
   through devices; collapses to below the table when the widget is narrow
@@ -105,8 +106,9 @@ way core's own Traffic Graph streams interface counters.
   once the firewall's own traffic and 14 bytes of Ethernet header per packet are
   counted. Core's iftop-based *Top talkers* read 32-68% of the same steady load,
   which is why it is not used.
-- **What the numbers are.** Rows and chart show a 3-second average, refreshed each
-  interval; the WAN figure beside the range is the last interval alone.
+- **What the numbers are.** Rows and the pie and bar charts show a 3-second
+  average, refreshed each interval; the line graph plots each interval's own rate,
+  and the WAN figure beside the range is the last interval alone.
 - **Which devices.** With nothing picked, the table always shows exactly the row
   count you chose. It starts busiest first, and after that only the busiest device
   moves: to the top, entering if it was not listed, while the bottom row drops

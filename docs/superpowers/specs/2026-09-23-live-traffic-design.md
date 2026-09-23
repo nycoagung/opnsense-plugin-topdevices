@@ -356,6 +356,8 @@ at 365-day retention.
   - Rows and chart show a 3-second time-weighted average (`Σ rate·dt / Σ dt`), and the
     WAN figure shows the last interval alone.
   - A device that goes quiet stays listed at 0 for 10 s before it drops off.
+    *(Superseded by the Table notes above: listed devices no longer drop off, and
+    the 10 s now only bounds a quiet device's rate entry.)*
   - Row order freezes while the pointer is over the table; values keep updating.
 - **Chart.** It is updated in place (`chart.update('none')`) rather than destroyed and
   rebuilt each second.
