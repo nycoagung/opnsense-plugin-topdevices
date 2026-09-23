@@ -243,3 +243,219 @@ class WanRates(unittest.TestCase):
         self.assertEqual(sample, {'rx': 0, 'tx': 0, 'hdr_rx': 0, 'hdr_tx': 0})
 
 
+class Throttle(unittest.TestCase):
+    def test_ema(self):
+        self.assertEqual(live.ema(None, 0.2), 0.2)
+        self.assertAlmostEqual(live.ema(0.2, 0.8), 0.4)
+
+    def test_next_interval(self):
+        self.assertEqual(live.next_interval(1, None), 1.0)
+        self.assertEqual(live.next_interval(1, 0.05), 1.0)
+        self.assertAlmostEqual(live.next_interval(1, 0.3), 3.0)
+        self.assertEqual(live.next_interval(5, 0.3), 5.0)
+
+
+class DriftCheck(unittest.TestCase):
+    @staticmethod
+    def sample(rx=1000000, tx=50000, rxp=800, txp=400, down=988800, up=44400, v6=0):
+        wan = {'rx': rx, 'tx': tx, 'hdr_rx': rxp * 14, 'hdr_tx': txp * 14}
+        return (1.0, wan, down, up, v6)
+
+    def fill(self, n=60, **kw):
+        d = live.Drift()
+        for _ in range(n):
+            d.add(*self.sample(**kw))
+        return d
+
+    def test_needs_a_full_window(self):
+        self.assertIsNone(self.fill(59).coverage())
+
+    def test_reconciled(self):
+        # 8 Mb/s down is judged; 0.4 Mb/s up is below the minimum and is not
+        self.assertEqual(self.fill().coverage(), {'down': 1.0, 'up': None, 'ok': True})
+
+    def test_drift_is_flagged(self):
+        self.assertEqual(self.fill(down=494400).coverage(), {'down': 0.5, 'up': None, 'ok': False})
+
+    def test_quiet_link_is_not_judged(self):
+        self.assertEqual(self.fill(rx=1000, tx=1000, rxp=1, txp=1, down=0, up=0).coverage(),
+                         {'down': None, 'up': None, 'ok': None})
+
+    def test_ipv6_suspends_the_check(self):
+        self.assertIsNone(self.fill(v6=20000).coverage())
+
+    def test_window_slides(self):
+        d = self.fill(down=494400)
+        for _ in range(60):
+            d.add(*self.sample())
+        self.assertEqual(d.coverage()['ok'], True)
+        self.assertEqual(len(d.samples), 60)
+
+
+class Events(unittest.TestCase):
+    def test_output_is_relay_safe(self):
+        line = live.format_event({'error': live.safe_text('bad <tag> & more'), 'x': '<&>'})
+        self.assertTrue(line.startswith('data: ') and line.endswith('\n\n'))
+        self.assertFalse(set('<>&') & set(line))
+        self.assertIn('bad', json.loads(line[6:])['error'])
+
+
+class FakeClock:
+    def __init__(self):
+        self.t = 1000.0
+        self.cpu = 0.0
+
+    def __call__(self):
+        return self.t
+
+    def sleep(self, seconds):
+        self.t += seconds
+
+
+def pf_text(b0, b1):
+    return ('all tcp 203.0.113.7:443 <- 192.168.1.10:50000       ESTABLISHED:ESTABLISHED\n'
+            '   age 00:05:00, expires in 23:59:59, 1:1 pkts, %d:%d bytes, rule 12\n'
+            '   id: 0000000000000001 creatorid: 0a0a0a0a\n'
+            'all tcp 198.51.100.2:60000 (192.168.1.10:50000) -> 203.0.113.7:443       ESTABLISHED:ESTABLISHED\n'
+            '   age 00:05:00, expires in 23:59:59, 1:1 pkts, %d:%d bytes, rule 3\n'
+            '   id: 0000000000000002 creatorid: 0a0a0a0a\n') % (b0, b1, b0, b1)
+
+
+def ifinfo_text(rx, tx, rxp, txp):
+    return ('Interface em0 (em0):\n\ttype: Ethernet\n\tpackets received: %d\n\tpackets transmitted: %d\n'
+            '\tbytes received: %d\n\tbytes transmitted: %d\n') % (rxp, txp, rx, tx)
+
+
+class Loop(unittest.TestCase):
+    def run_loop(self, interval=1, cost=0.001, lifetime=10 ** 6, max_samples=2, fail=None):
+        clock = FakeClock()
+        chunks = []
+        pf = [pf_text(1000, 100000), pf_text(2000, 225000)]
+        counters = [ifinfo_text(0, 0, 0, 0), ifinfo_text(126000, 1200, 90, 60)]
+        calls = {'ifconfig': 0, 'pf': 0}
+
+        def read_states():
+            clock.cpu += cost
+            calls['pf'] += 1
+            if fail:
+                raise fail
+            return pf[min(calls['pf'], len(pf)) - 1]
+
+        def read_ifaddrs():
+            calls['ifconfig'] += 1
+            return IFCONFIG_TEXT
+
+        def read_counters(devs):
+            self.assertEqual(devs, ['em0'])
+            return counters[min(calls['pf'], len(counters)) - 1]
+
+        rc = live.run_loop(interval, read_states, read_ifaddrs, lambda: ROUTES_TEXT, read_counters, chunks.append,
+                           clock=clock, wall=lambda: 1790000000.0, cpu=lambda: clock.cpu,
+                           sleep=clock.sleep, lifetime=lifetime, max_samples=max_samples)
+        events = [json.loads(c[6:]) for c in chunks if c.startswith('data: ')]
+        return rc, chunks, events, calls
+
+    def test_baseline_then_rates(self):
+        rc, chunks, events, _ = self.run_loop()
+        self.assertEqual(rc, 0)
+        self.assertEqual(chunks[0], 'retry: 1000\n\n')
+        self.assertNotIn(': keepalive\n\n', chunks)
+        self.assertEqual(len(events), 2)
+        self.assertEqual((events[0]['dt'], events[0]['devices'], events[0]['error']), (0, {}, None))
+        e = events[1]
+        self.assertEqual(e['dt'], 1.0)
+        self.assertEqual(e['devices']['192.168.1.10']['inet'], [1000000, 8000])
+        self.assertEqual(e['devices']['192.168.1.10']['all'], [1000000, 8000])
+        self.assertEqual(e['wan'], {'devs': ['em0'], 'down': 1008000, 'up': 9600})
+        self.assertEqual((e['states'], e['unparsed'], e['v6_skipped']), (2, 0, 0))
+        self.assertEqual((e['interval'], e['effective'], e['throttled']), (1, 1.0, False))
+        self.assertEqual(e['v'], live.VERSION)
+
+    def test_throttle_stretches_and_keeps_the_relay_alive(self):
+        rc, chunks, events, _ = self.run_loop(cost=0.2)
+        self.assertEqual((events[0]['effective'], events[0]['throttled']), (2.0, True))
+        first, second = [i for i, c in enumerate(chunks) if c.startswith('data: ')]
+        self.assertEqual(chunks[first + 1:second], [': keepalive\n\n'])
+        self.assertEqual(events[1]['dt'], 2.0)
+
+    def test_lifetime_ends_the_stream(self):
+        rc, _, events, _ = self.run_loop(lifetime=2.5, max_samples=None)
+        self.assertEqual((rc, len(events)), (0, 3))
+
+    def test_reader_failure_is_reported_not_raised(self):
+        rc, _, events, _ = self.run_loop(fail=RuntimeError('pfctl exited with 1 <boom> & more'))
+        self.assertEqual(rc, 0)
+        self.assertIn('boom', events[0]['error'])
+        self.assertFalse(set('<>&') & set(events[0]['error']))
+        self.assertEqual(events[1]['devices'], {})
+
+    def test_failed_interface_read_is_reported(self):
+        clock, chunks = FakeClock(), []
+
+        def broken():
+            raise OSError('ifconfig <gone>')
+
+        live.run_loop(1, lambda: pf_text(1, 1), broken, lambda: ROUTES_TEXT, lambda devs: '', chunks.append,
+                      clock=clock,
+                      wall=lambda: 0.0, cpu=lambda: 0.0, sleep=clock.sleep, max_samples=1)
+        event = json.loads([c for c in chunks if c.startswith('data: ')][0][6:])
+        self.assertIn('interface addresses', event['error'])
+        self.assertEqual(event['wan']['devs'], [])
+
+    def test_missing_upstream_is_said_out_loud(self):
+        clock, chunks = FakeClock(), []
+        live.run_loop(1, lambda: pf_text(1, 1), lambda: DOUBLE_NAT_IFCONFIG, lambda: '', lambda devs: '',
+                      chunks.append, clock=clock, wall=lambda: 0.0, cpu=lambda: 0.0, sleep=clock.sleep,
+                      max_samples=1)
+        event = json.loads([c for c in chunks if c.startswith('data: ')][0][6:])
+        self.assertEqual(event['error'], 'no upstream interface found')
+
+    def test_never_silent_longer_than_the_interval_between_samples(self):
+        # The web relay drops a stream silent for longer than its timeout; while
+        # throttled, keepalives must keep every gap at the requested interval.
+        clock, stamps = FakeClock(), []
+        cost = {'cpu': 0.0}
+
+        def read_states():
+            cost['cpu'] += 0.5                      # 5 s effective interval at 1 s requested
+            return pf_text(1000, 1000)
+
+        live.run_loop(1, read_states, lambda: IFCONFIG_TEXT, lambda: ROUTES_TEXT,
+                      lambda devs: ifinfo_text(0, 0, 0, 0), lambda chunk: stamps.append(clock.t), clock=clock,
+                      wall=lambda: 0.0, cpu=lambda: cost['cpu'], sleep=clock.sleep, max_samples=3)
+        gaps = [b - a for a, b in zip(stamps, stamps[1:])]
+        self.assertTrue(gaps and max(gaps) <= 1.0 + 1e-9, gaps)
+
+    def test_topology_is_refreshed(self):
+        _, _, _, calls = self.run_loop(interval=10, lifetime=125, max_samples=None)
+        self.assertEqual(calls['ifconfig'], 3)    # start, t+60, t+120
+
+
+class Main(unittest.TestCase):
+    def test_rejects_bad_intervals(self):
+        for arg in ('0', '11', '1.5', '', '١'):
+            with self.subTest(arg=arg):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    rc = live.main(['live.py', arg])
+                self.assertEqual(rc, 1)
+                self.assertIn('interval must be', json.loads(out.getvalue()[6:])['error'])
+
+    def test_exits_quietly_when_the_reader_goes_away(self):
+        proc = subprocess.Popen([sys.executable, LIVE_PY, '1'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            first = proc.stdout.readline()
+            self.assertEqual(first, b'retry: 1000\n')
+            proc.stdout.close()                   # the browser tab closes
+            rc = proc.wait(timeout=10)
+            err = proc.stderr.read()
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            proc.stderr.close()
+        self.assertEqual(rc, 0)
+        self.assertEqual(err, b'')
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -410,3 +410,215 @@ def wan_rates(prev, cur, devs, dt):
             {'rx': rx, 'tx': tx, 'hdr_rx': hrx, 'hdr_tx': htx})
 
 
+# ---------------------------------------------------------------- self-control
+
+
+def ema(previous, value, samples=COST_EMA_SAMPLES):
+    if previous is None:
+        return value
+    return previous + (2.0 / (samples + 1)) * (value - previous)
+
+
+def next_interval(requested, cost_ema):
+    """Seconds until the next sample: the requested interval, stretched so that
+    sampling never takes more than CPU_BUDGET of one core."""
+    return max(float(requested), (cost_ema or 0.0) / CPU_BUDGET)
+
+
+class Drift:
+    """Attributed bytes against the WAN counters over a sliding window (spec 5.8).
+
+    Expected is the WAN interface bytes less one Ethernet header per frame.
+    Attributed is internet device traffic plus the firewall's own. A direction
+    is judged only above DRIFT_MIN_BPS, and the whole check is suspended while
+    IPv6 carries more than DRIFT_MAX_V6_SHARE of the bytes: IPv6 is not
+    attributed, and with floating states there is no telling which IPv6 states
+    crossed the WAN.
+    """
+
+    def __init__(self, window=DRIFT_WINDOW):
+        self.window = window
+        self.samples = []
+
+    def add(self, dt, wan, attr_down, attr_up, v6_bytes):
+        self.samples.append((dt, wan['rx'], wan['tx'], wan['hdr_rx'], wan['hdr_tx'], attr_down, attr_up, v6_bytes))
+        keep, total = [], 0.0
+        for s in reversed(self.samples):
+            keep.append(s)
+            total += s[0]
+            if total >= self.window:
+                break
+        self.samples = keep[::-1]
+
+    def coverage(self):
+        """{'down': ratio|None, 'up': ratio|None, 'ok': bool|None}, or None when not judgeable."""
+        dt = sum(s[0] for s in self.samples)
+        if dt < self.window:
+            return None
+        rx, tx, hrx, htx, down, up, v6 = (sum(s[i] for s in self.samples) for i in range(1, 8))
+        if v6 > DRIFT_MAX_V6_SHARE * (rx + tx):
+            return None
+        result = {}
+        for key, wire, hdr, attributed in (('down', rx, hrx, down), ('up', tx, htx, up)):
+            expected = wire - hdr
+            ok_rate = wire * 8 / dt >= DRIFT_MIN_BPS
+            result[key] = round(attributed / expected, 3) if ok_rate and expected > 0 else None
+        judged = [result['down'], result['up']]
+        judged = [v for v in judged if v is not None]
+        result['ok'] = all(DRIFT_BAND[0] <= v <= DRIFT_BAND[1] for v in judged) if judged else None
+        return result
+
+
+def safe_text(text):
+    """The web relay HTML-escapes every line, so no event may contain <, > or &."""
+    return _UNSAFE.sub(' ', str(text))[:200]
+
+
+def format_event(event):
+    return 'data: ' + _UNSAFE.sub(' ', json.dumps(event, separators=(',', ':'))) + '\n\n'
+
+
+def cpu_seconds():
+    """CPU used by this process and the commands it ran (pfctl, ifinfo)."""
+    kids = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return time.process_time() + kids.ru_utime + kids.ru_stime
+
+
+# ---------------------------------------------------------------- the loop
+
+
+def run_loop(interval, read_states, read_ifaddrs, read_routes, read_counters, write, clock=time.monotonic,
+             wall=time.time, cpu=cpu_seconds, sleep=time.sleep, lifetime=LIFETIME, max_samples=None):
+    """One event per tick until `lifetime` seconds have passed; returns 0.
+
+    read_states() -> pfctl text, read_ifaddrs() -> ifconfig text,
+    read_routes() -> netstat text and read_counters(devs) -> ifinfo text may
+    raise: the error is reported in that sample's event and the loop carries on. write(chunk) sends to the client and
+    raises BrokenPipeError once the client is gone.
+    """
+    write('retry: 1000\n\n')
+    start = clock()
+    topo, topo_error = _topology(read_ifaddrs, read_routes, Topology([]))
+    topo_at = start
+    drift = Drift()
+    prev = prev_counters = prev_t = None
+    cost_ema = None
+    samples = 0
+    next_tick = start
+    while True:
+        now = clock()
+        if now - start >= lifetime or (max_samples is not None and samples >= max_samples):
+            return 0
+        if now - topo_at >= TOPOLOGY_REFRESH:
+            topo, topo_error = _topology(read_ifaddrs, read_routes, topo)
+            topo_at = now
+        c0 = cpu()
+        event = {'v': VERSION, 't': round(wall(), 3), 'dt': 0, 'interval': interval,
+                 'states': 0, 'unparsed': 0, 'v6_skipped': 0,
+                 'wan': {'devs': list(topo.upstream_devs), 'down': 0, 'up': 0},
+                 'coverage': drift.coverage(), 'devices': {}, 'error': topo_error}
+        try:
+            states, unparsed = parse_states(read_states())
+            counters = parse_ifinfo(read_counters(topo.upstream_devs)) if topo.upstream_devs else {}
+        except Exception as exc:
+            states = None
+            event['error'] = safe_text(exc)
+        t = clock()
+        if states is not None:
+            event.update(states=len(states), unparsed=unparsed,
+                         v6_skipped=sum(1 for s in states.values() if s['af'] != 4))
+            if prev is not None and t > prev_t:
+                dt = t - prev_t
+                rows, v6_bytes = [], 0
+                for s, b0, b1 in deltas(prev, states, dt):
+                    if s['af'] != 4:
+                        v6_bytes += b0 + b1
+                    else:
+                        rows.extend(credits(s, b0, b1, topo))
+                devices, fw_bytes = aggregate(rows, dt, topo)
+                down, up, wan = wan_rates(prev_counters, counters, topo.upstream_devs, dt)
+                inet_down = sum(r[4] for r in rows if r[0] == INET)
+                inet_up = sum(r[5] for r in rows if r[0] == INET)
+                drift.add(dt, wan, inet_down + fw_bytes[0], inet_up + fw_bytes[1], v6_bytes)
+                event.update(dt=round(dt, 3), devices=devices, coverage=drift.coverage())
+                event['wan'].update(down=down, up=up)
+            prev, prev_counters, prev_t = states, counters, t
+        cost = max(0.0, cpu() - c0)
+        cost_ema = ema(cost_ema, cost)
+        effective = next_interval(interval, cost_ema)
+        event.update(cost_ms=int(round(cost * 1000)), effective=round(effective, 1),
+                     throttled=effective > interval)
+        write(format_event(event))
+        samples += 1
+        next_tick = max(next_tick + effective, clock())
+        _sleep_until(next_tick, interval, clock, sleep, write)
+
+
+def _topology(read_ifaddrs, read_routes, fallback):
+    """(Topology, warning or None), for the event's error field until a refresh
+    succeeds. Unreadable addresses keep the previous topology; unreadable routes
+    fall back to the address rule alone; no upstream at all is said out loud."""
+    try:
+        ifaddrs = parse_ifconfig(read_ifaddrs())
+    except Exception as exc:
+        return fallback, safe_text('interface addresses: %s' % exc)
+    warning = None
+    try:
+        devs = parse_default_devs(read_routes())
+    except Exception as exc:
+        devs, warning = [], safe_text('routes: %s' % exc)
+    topo = Topology(ifaddrs, devs)
+    if not topo.upstream_devs and warning is None:
+        warning = 'no upstream interface found'
+    return topo, warning
+
+
+def _sleep_until(deadline, every, clock, sleep, write):
+    """Sleep until `deadline`, writing an SSE comment every `every` seconds: the
+    web relay drops a stream that stays silent longer than interval + 10 s."""
+    last = clock()
+    while True:
+        now = clock()
+        if now >= deadline:
+            return
+        sleep(max(0.0, min(deadline, last + every) - now))
+        if clock() < deadline:
+            write(': keepalive\n\n')
+            last = clock()
+
+
+def _run(cmd):
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+    if proc.returncode != 0:
+        raise RuntimeError('%s exited with %d' % (cmd[0], proc.returncode))
+    return proc.stdout
+
+
+def main(argv):
+    arg = argv[1] if len(argv) == 2 else ''
+
+    def write(chunk):
+        sys.stdout.write(chunk)
+        sys.stdout.flush()
+
+    try:
+        if not (arg.isascii() and arg.isdigit() and MIN_INTERVAL <= int(arg) <= MAX_INTERVAL):
+            write(format_event({'v': VERSION, 'error': 'interval must be a whole number of seconds from 1 to 10'}))
+            return 1
+        return run_loop(int(arg),
+                        read_states=lambda: _run(PFCTL),
+                        read_ifaddrs=lambda: _run(IFCONFIG),
+                        read_routes=lambda: _run(ROUTES),
+                        read_counters=lambda devs: ''.join(_run((IFINFO, d)) for d in devs),
+                        write=write)
+    except BrokenPipeError:
+        # The reader is gone: tab closed, stream recycled or configd restarted.
+        # Point stdout at /dev/null so the interpreter's final flush cannot raise again.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        return 0
+    except KeyboardInterrupt:
+        return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))
