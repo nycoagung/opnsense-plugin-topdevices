@@ -113,7 +113,8 @@ way core's own Traffic Graph streams interface counters.
   count you chose. It starts busiest first, and after that only the busiest device
   moves: to the top, entering if it was not listed, while the bottom row drops
   off. The rest are topped up with recently seen devices, then other known ones,
-  at 0 b/s, and nothing moves while the pointer is over the table. To watch
+  at 0 b/s, and nothing moves while the pointer is over the table. A device you
+  have selected stays listed until you deselect it. To watch
   particular devices, tick them in the *Devices* picker beside the network filter:
   it lists every known device (DHCP leases, host records and anything Live has
   seen), with a search box and select all / none. The table then shows exactly

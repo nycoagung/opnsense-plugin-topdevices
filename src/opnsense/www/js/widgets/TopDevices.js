@@ -139,19 +139,26 @@ export function liveStatusFor(ageMs, effectiveS) {
 // only the busiest device moves, to the top - entering if it was not listed, the
 // bottom row then dropping off - and a short list is topped up in `ranked` order.
 // `ranked` holds every candidate, busiest first; `prev` is null to seed afresh.
-// `hold` (the pointer is over the table) keeps every row still.
-export function dynamicOrder(prev, ranked, n, hold = false) {
+// `hold` (the pointer is over the table) keeps every row still. `keep` (the
+// selected device) is never pushed off: it holds the bottom row instead.
+export function dynamicOrder(prev, ranked, n, hold = false, keep = null) {
     const ips = ranked.map(r => r.ip);
-    if (!prev) return ips.slice(0, n);
-    let order = prev.filter(ip => ips.includes(ip));
-    const top = ranked[0];
-    if (!hold && top && top.total > 0 && order[0] !== top.ip) {
-        order = [top.ip].concat(order.filter(ip => ip !== top.ip));
+    let order;
+    if (!prev) {
+        order = ips.slice();                    // busiest first, trimmed below
+    } else {
+        order = prev.filter(ip => ips.includes(ip));
+        const top = ranked[0];
+        if (!hold && top && top.total > 0 && order[0] !== top.ip) {
+            order = [top.ip].concat(order.filter(ip => ip !== top.ip));
+        }
+        for (const ip of ips) {
+            if (order.length >= n) break;
+            if (!order.includes(ip)) order.push(ip);
+        }
     }
-    for (const ip of ips) {
-        if (order.length >= n) break;
-        if (!order.includes(ip)) order.push(ip);
-    }
+    const at = keep ? order.indexOf(keep) : -1;
+    if (n > 0 && at >= n) { order.splice(at, 1); order.splice(n - 1, 0, keep); }
     return order.slice(0, n);
 }
 
@@ -1341,7 +1348,8 @@ export default class TopDevices extends BaseWidget {
             // seed only from a measured interval: before the first, every device
             // is at 0 and the seed would come out A to Z instead of busiest first
             const measured = !!(l.view && l.view.events.length);
-            const order = dynamicOrder(measured ? l.dynOrder : null, ranked, this.state.rowsN || 20, l.hover);
+            const order = dynamicOrder(measured ? l.dynOrder : null, ranked, this.state.rowsN || 20, l.hover,
+                                       this.state.selected);   // an open details panel keeps its device listed
             if (measured) l.dynOrder = order;
             const byIp = new Map(ranked.map(r => [r.ip, r]));
             rows = order.map(ip => byIp.get(ip));

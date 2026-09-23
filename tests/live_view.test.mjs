@@ -717,3 +717,24 @@ test('switching the Live chart sizes the new one afresh', async (t) => {
     send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([1000000, 7000000]) } });
     assert.equal(w.chartObj.options.scales.y.max, 1000000);          // the line plots download only
 });
+
+/* ---------- a selected device stays listed (user decision after the review) ---------- */
+
+test('the list keeps a device it is told to keep, on the bottom row, when a new busiest pushes in', () => {
+    const r = (ip, total) => ({ ip, name: '', net: 'lan', down: total, up: 0, total });
+    const ranked = [r('x', 9), r('a', 5), r('b', 4), r('c', 3)];
+    assert.deepEqual(m.dynamicOrder(['a', 'b', 'c'], ranked, 3, false, 'c'), ['x', 'a', 'c']);   // b drops, not c
+    assert.deepEqual(m.dynamicOrder(['a', 'b', 'c'], ranked, 3, false, 'a'), ['x', 'a', 'b']);   // not at risk: as usual
+    assert.deepEqual(m.dynamicOrder(['a', 'b', 'c'], ranked, 3), ['x', 'a', 'b']);
+});
+
+test('with nothing picked, the selected device stays listed while others become the busiest', async (t) => {
+    const { w, send } = await running(t);
+    w.state.rowsN = 2;
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([900, 0]), '192.168.1.11': dev([500, 0]) } });
+    assert.deepEqual(w._liveTableRows().map(r => r.ip), ['192.168.1.10', '192.168.1.11']);
+    w.state.selected = '192.168.1.11';                      // its details panel is open
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.12': dev([90000, 0]) } });
+    assert.deepEqual(w._liveTableRows().map(r => r.ip), ['192.168.1.12', '192.168.1.11']);
+    assert.equal(w.state.selected, '192.168.1.11');
+});
