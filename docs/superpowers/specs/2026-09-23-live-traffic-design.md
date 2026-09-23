@@ -154,6 +154,13 @@ kernel counters: `b1` is download for outbound NAT.
 NetBIOS or SSDP traffic to `x.x.x.255` creates ordinary states, and the NetFlow view has
 always dropped these addresses.
 
+*(Refined on the firewall:)* the upstream-address rows of *Firewall's own* also need the
+other end to be non-local: `dst` for out states, `src` for in states. A phone on home
+Wi-Fi reaching WireGuard on the WAN address crosses the LAN only. Counted as upstream,
+a 300 Mb/s download through that tunnel made the drift check read upload at 38–55× the
+WAN counter and warn falsely. The phone's LAN address still carries the tunnel in
+*all*.
+
 Consequences, each one a test case:
 
 - **Internet classification needs no WAN address.** It only asks "did NAT translate

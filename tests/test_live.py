@@ -183,6 +183,19 @@ class Credits(unittest.TestCase):
         s = live.parse_header('all udp 192.168.1.255:137 <- 192.168.1.10:137       SINGLE:NO_TRAFFIC')
         self.assertEqual(live.credits(s, 50, 0, self.topo), [('all', '192.168.1.10', '192.168.1.255', 137, 0, 50)])
 
+    def test_wireguard_from_the_lan_is_not_upstream_traffic(self):
+        # A phone on home Wi-Fi reaches the WireGuard listener on the WAN address
+        # across the LAN, so the tunnel never touches the WAN. Counted as the
+        # firewall's upstream traffic, it made the drift check read upload at
+        # 38-55x the WAN counter on the reference install. The phone's LAN
+        # address still carries it, in 'all'.
+        s = live.parse_header('all udp 198.51.100.2:51820 <- 192.168.1.41:58864       MULTIPLE:MULTIPLE')
+        self.assertEqual(live.credits(s, 1000, 42000, self.topo),
+                         [('all', '192.168.1.41', '198.51.100.2', 51820, 42000, 1000)])
+        # the same tunnel when the firewall sends first (a keepalive to the peer's endpoint)
+        s = live.parse_header('all udp 198.51.100.2:51820 -> 192.168.1.41:58864       MULTIPLE:MULTIPLE')
+        self.assertEqual(live.credits(s, 900, 30000, self.topo), [])
+
     def test_double_nat_still_credits_internet(self):
         topo = topology(DOUBLE_NAT_IFCONFIG)
         s = live.parse_header('all tcp 192.168.0.2:60000 (192.168.1.10:50000) -> 203.0.113.7:443       '
