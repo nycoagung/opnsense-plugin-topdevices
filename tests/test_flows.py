@@ -480,6 +480,70 @@ class Device(unittest.TestCase):
                 self.answer(b''.join(KINDS), T0, T0 + 100, ip=ip)
 
 
+class CommandLine(unittest.TestCase):
+    NOW = T0 + 86400
+
+    def reject(self, args):
+        with self.assertRaises(ValueError) as caught:
+            flows.parse_args(args, self.NOW)
+        return str(caught.exception)
+
+    def test_both_modes_parse(self):
+        self.assertEqual(flows.parse_args(['totals', str(self.NOW - 3600), str(self.NOW)], self.NOW),
+                         {'mode': 'totals', 'from': self.NOW - 3600, 'to': self.NOW})
+        self.assertEqual(flows.parse_args(['device', '192.168.1.10', str(self.NOW - 60), str(self.NOW)], self.NOW),
+                         {'mode': 'device', 'from': self.NOW - 60, 'to': self.NOW, 'ip': IP('192.168.1.10')})
+
+    def test_bad_input_is_refused_with_a_reason(self):
+        now = str(self.NOW)
+        cases = [(['totals', '1'], 'usage'), (['bogus', '1', '2'], 'usage'),
+                 (['totals', 'abc', now], 'whole epoch seconds'), (['totals', '\u0661', now], 'whole epoch seconds'),
+                 (['totals', '', now], 'whole epoch seconds'), (['totals', now, now], 'before TO'),
+                 (['totals', str(self.NOW - 86400 - 301), now], 'more than a day ago'),
+                 (['totals', str(self.NOW - 60), str(self.NOW + 301)], 'in the future'),
+                 (['device', 'fd00::1', str(self.NOW - 60), now], 'IPv4'),
+                 (['device', '192.168.01.10', str(self.NOW - 60), now], 'IPv4')]
+        for args, reason in cases:
+            with self.subTest(args=args):
+                self.assertIn(reason, self.reject(args))
+
+    def test_the_clocks_may_differ_by_minutes(self):
+        req = flows.parse_args(['totals', str(self.NOW - 86400 - 299), str(self.NOW + 299)], self.NOW)
+        self.assertEqual((req['from'], req['to']), (self.NOW - 86400 - 299, self.NOW))
+
+    def test_a_range_that_has_not_begun_is_refused(self):
+        self.assertIn('not begun', self.reject(['totals', str(self.NOW + 10), str(self.NOW + 200)]))
+
+    def run_main(self, argv, log, now=None):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = flows.main(argv, now=now, log=log, system=lambda: NET, hourly=lambda lo, hi: [])
+        self.assertEqual(rc, 0)
+        line = out.getvalue()
+        self.assertTrue(line.endswith('\n') and line.count('\n') == 1, line)
+        return json.loads(line)
+
+    def test_an_answer_is_one_json_line(self):
+        with tempfile.TemporaryDirectory() as d:
+            log = write_log(d, [('flowd.log', b''.join(KINDS), T0 + 100)])
+            a = self.run_main(['flows.py', 'totals', str(T0 + 100), str(T0 + 200)], log, now=T0 + 300)
+        self.assertEqual(a['v'], flows.VERSION)
+        self.assertIn('cost_ms', a)
+        self.assertNotIn('error', a)
+
+    def test_no_flow_log_is_an_error_answer(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = self.run_main(['flows.py', 'totals', str(T0 + 100), str(T0 + 200)], os.path.join(d, 'flowd.log'),
+                              now=T0 + 300)
+        self.assertIn('NetFlow', a['error'])
+
+    def test_the_script_never_prints_a_traceback(self):
+        proc = subprocess.run([sys.executable, FLOWS_PY, 'totals', 'x', 'y'], capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn('whole epoch seconds', json.loads(proc.stdout)['error'])
+        self.assertEqual(proc.stderr, '')
+
+
 CORE_NETFLOW = next((p for p in (os.environ.get('CORE_NETFLOW'),
                                  os.path.join(os.environ.get('OPNSENSE_CORE', '/nonexistent'), 'src/opnsense/scripts/netflow'),
                                  flows.NETFLOW_LIB)
