@@ -1,0 +1,13 @@
+Routing tables
+
+Internet:
+Destination        Gateway            Flags   Nhop#    Mtu      Netif Expire
+default            198.51.100.1       UGS         1   1500        em0
+10.0.0.0/24        link#5             U           4   1420        wg0
+10.0.0.1           link#5             UHS         5  16384        lo0
+127.0.0.1          link#4             UH          2  16384        lo0
+192.168.1.0/24     link#2             U           3   1500       igb1
+192.168.1.1        link#2             UHS         6  16384        lo0
+192.168.20.0/24    link#3             U           7   1500     vlan01
+198.51.100.0/24    link#1             U           8   1500        em0
+198.51.100.2       link#1             UHS         9  16384        lo0

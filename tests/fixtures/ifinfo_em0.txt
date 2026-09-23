@@ -1,0 +1,12 @@
+Interface em0 (em0):
+	flags: 8843
+	type: Ethernet
+	header length: 18
+	line rate: 1000000000 bit/s
+	packets received: 1000
+	input errors: 0
+	packets transmitted: 500
+	output errors: 0
+	bytes received: 1500000
+	bytes transmitted: 40000
+	multicasts received: 3

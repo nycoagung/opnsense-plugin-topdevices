@@ -1,0 +1,30 @@
+em0: flags=1008843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST,LOWER_UP> metric 0 mtu 1500
+	description: WAN (wan)
+	options=4800028<VLAN_MTU,JUMBO_MTU,NOMAP>
+	ether 00:00:5e:00:53:01
+	inet 198.51.100.2 netmask 0xffffff00 broadcast 198.51.100.255
+	inet6 fe80::200:5eff:fe00:5301%em0 prefixlen 64 scopeid 0x1
+	media: Ethernet autoselect (1000baseT <full-duplex>)
+	status: active
+igb1: flags=1008843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST,LOWER_UP> metric 0 mtu 1500
+	description: LAN (lan)
+	ether 00:00:5e:00:53:02
+	inet 192.168.1.1 netmask 0xffffff00 broadcast 192.168.1.255
+	status: active
+vlan01: flags=1008843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST,LOWER_UP> metric 0 mtu 1500
+	description: IOT (opt1)
+	ether 00:00:5e:00:53:02
+	inet 192.168.20.1 netmask 0xffffff00 broadcast 192.168.20.255
+	vlan: 20 vlanproto: 802.1q vlanpcp: 0 parent interface: igb1
+igb2: flags=1008802<BROADCAST,SIMPLEX,MULTICAST,LOWER_UP> metric 0 mtu 1500
+	ether 00:00:5e:00:53:03
+	inet 169.254.3.1 netmask 0xffff0000 broadcast 169.254.255.255
+wg0: flags=10080c1<UP,RUNNING,NOARP,MULTICAST,LOWER_UP> metric 0 mtu 1420
+	description: WG_CLIENTS (opt3)
+	options=80000<LINKSTATE>
+	inet 10.0.0.1 --> 10.0.0.1 netmask 0xffffff00
+	groups: wg wireguard
+lo0: flags=1008049<UP,LOOPBACK,RUNNING,MULTICAST,LOWER_UP> metric 0 mtu 16384
+	options=680003<RXCSUM,TXCSUM,LINKSTATE,RXCSUM_IPV6,TXCSUM_IPV6>
+	inet 127.0.0.1 netmask 0xff000000
+	inet6 ::1 prefixlen 128

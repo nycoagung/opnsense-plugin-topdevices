@@ -1,0 +1,78 @@
+all tcp 203.0.113.7:443 <- 192.168.1.10:50000       ESTABLISHED:ESTABLISHED
+   [1000 + 65535] wscale 7  [2000 + 65535] wscale 7
+   age 00:05:00, expires in 23:59:59, 100:200 pkts, 10000:500000 bytes, rule 12
+   id: 0000000000000001 creatorid: 0a0a0a0a
+all tcp 198.51.100.2:60000 (192.168.1.10:50000) -> 203.0.113.7:443       ESTABLISHED:ESTABLISHED
+   [1000 + 65535] wscale 7  [2000 + 65535] wscale 7
+   age 00:05:00, expires in 23:59:59, 100:200 pkts, 10000:500000 bytes, rule 3, allow-opts
+   id: 0000000000000002 creatorid: 0a0a0a0a
+all tcp 192.168.1.80:443 (198.51.100.2:443) <- 192.0.2.50:41000       ESTABLISHED:ESTABLISHED
+   [5000 + 65535] wscale 7  [6000 + 65535] wscale 7
+   age 00:01:00, expires in 23:59:00, 50:40 pkts, 3000:90000 bytes, rule 20
+   id: 0000000000000003 creatorid: 0a0a0a0a
+all tcp 192.0.2.50:41000 -> 192.168.1.80:443       ESTABLISHED:ESTABLISHED
+   [5000 + 65535] wscale 7  [6000 + 65535] wscale 7
+   age 00:01:00, expires in 23:59:00, 50:40 pkts, 3000:90000 bytes, rule 4, allow-opts
+   id: 0000000000000004 creatorid: 0a0a0a0a
+all udp 192.168.1.53:53 (192.0.2.53:53) <- 192.168.20.5:33333       SINGLE:MULTIPLE
+   age 00:00:10, expires in 00:00:20, 2:2 pkts, 120:360 bytes, rule 30
+   id: 0000000000000005 creatorid: 0a0a0a0a
+all udp 192.168.20.5:33333 -> 192.168.1.53:53       MULTIPLE:SINGLE
+   age 00:00:10, expires in 00:00:20, 2:2 pkts, 120:360 bytes, rule 5, allow-opts
+   id: 0000000000000006 creatorid: 0a0a0a0a
+all tcp 192.168.20.5:554 <- 192.168.1.20:40000       ESTABLISHED:ESTABLISHED
+   [7000 + 65535] wscale 7  [8000 + 65535] wscale 7
+   age 01:00:00, expires in 23:59:59, 1000:3000 pkts, 50000:4000000 bytes, rule 12
+   id: 0000000000000007 creatorid: 0a0a0a0a
+all tcp 192.168.1.20:40000 -> 192.168.20.5:554       ESTABLISHED:ESTABLISHED
+   [7000 + 65535] wscale 7  [8000 + 65535] wscale 7
+   age 01:00:00, expires in 23:59:59, 1000:3000 pkts, 50000:4000000 bytes, rule 6, allow-opts
+   id: 0000000000000008 creatorid: 0a0a0a0a
+all udp 198.51.100.2:12345 -> 203.0.113.53:53       MULTIPLE:SINGLE
+   age 00:00:02, expires in 00:00:58, 1:1 pkts, 60:200 bytes, rule 2, allow-opts
+   id: 0000000000000009 creatorid: 0a0a0a0a
+all udp 198.51.100.2:51820 <- 192.0.2.99:51000       MULTIPLE:MULTIPLE
+   age 00:10:00, expires in 00:02:00, 400:500 pkts, 60000:70000 bytes, rule 40
+   id: 000000000000000a creatorid: 0a0a0a0a
+all tcp 203.0.113.9:443 <- 10.0.0.2:52000       ESTABLISHED:ESTABLISHED
+   [9000 + 65535] wscale 7  [9100 + 65535] wscale 7
+   age 00:03:00, expires in 23:59:59, 30:40 pkts, 2000:80000 bytes, rule 50
+   id: 000000000000000b creatorid: 0a0a0a0a
+all tcp 198.51.100.2:61000 (10.0.0.2:52000) -> 203.0.113.9:443       ESTABLISHED:ESTABLISHED
+   [9000 + 65535] wscale 7  [9100 + 65535] wscale 7
+   age 00:03:00, expires in 23:59:59, 30:40 pkts, 2000:80000 bytes, rule 3, allow-opts
+   id: 000000000000000c creatorid: 0a0a0a0a
+all udp 198.51.100.2:5353 (192.168.1.1:5353) -> 203.0.113.123:123       MULTIPLE:SINGLE
+   age 00:00:05, expires in 00:00:55, 1:1 pkts, 76:76 bytes, rule 3, allow-opts
+   id: 000000000000000d creatorid: 0a0a0a0a
+all udp 192.168.1.1:53 <- 192.168.1.10:40001       SINGLE:MULTIPLE
+   age 00:00:03, expires in 00:00:27, 1:1 pkts, 70:300 bytes, rule 12
+   id: 000000000000000e creatorid: 0a0a0a0a
+all tcp 2001:db8::10[443] <- 2001:db8:1::5[50001]       ESTABLISHED:ESTABLISHED
+   [100 + 65535] wscale 7  [200 + 65535] wscale 7
+   age 00:02:00, expires in 23:59:59, 10:10 pkts, 1500:2500 bytes, rule 60
+   id: 000000000000000f creatorid: 0a0a0a0a
+all icmp 203.0.113.7:4242 <- 192.168.1.10:4242       0:0
+   age 00:00:01, expires in 00:00:10, 1:1 pkts, 84:84 bytes, rule 12
+   id: 0000000000000010 creatorid: 0a0a0a0a
+all tcp 192.168.1.80:443 (198.51.100.2:443) <- 192.168.1.10:50500 (192.168.1.1:62000)       ESTABLISHED:ESTABLISHED
+   [300 + 65535] wscale 7  [400 + 65535] wscale 7
+   age 00:00:30, expires in 23:59:59, 5:5 pkts, 700:900 bytes, rule 21
+   id: 0000000000000011 creatorid: 0a0a0a0a
+all udp 192.0.2.77:3478 <- 192.168.1.10:3478       MULTIPLE:MULTIPLE
+   age 123:04:05, expires in 00:01:00, 9:9 pkts, 900:900 bytes, rule 12
+   id: 0000000000000012 creatorid: 0a0a0a0a
+   origif: igb1
+this line is not a state header
+all tcp 203.0.113.7:443 192.168.1.10:50600       ESTABLISHED:ESTABLISHED
+   age 00:00:10, expires in 23:59:59, 1:1 pkts, 10:10 bytes, rule 12
+   id: 0000000000000013 creatorid: 0a0a0a0a
+all udp 203.0.113.8:53 <- 192.168.1.10:40002       SINGLE:MULTIPLE
+   frobnicate: yes
+   age 00:00:10, expires in 00:00:20, 1:1 pkts, 10:10 bytes, rule 12
+   id: 0000000000000014 creatorid: 0a0a0a0a
+all udp 203.0.113.9:53 <- 192.168.1.10:40003       SINGLE:MULTIPLE
+   age 00:00:10, expires in 00:00:20
+   id: 0000000000000015 creatorid: 0a0a0a0a
+all udp 203.0.113.10:53 <- 192.168.1.10:40004       SINGLE:MULTIPLE
+   age 00:00:10, expires in 00:00:20, 1:1 pkts, 10:10 bytes, rule 12
