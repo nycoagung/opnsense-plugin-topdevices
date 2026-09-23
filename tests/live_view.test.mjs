@@ -300,3 +300,14 @@ test('within Live, the connect timer still reconnects a stream that never opened
     await pause(12);
     assert.ok(FakeEventSource.opened.length >= 2, FakeEventSource.opened.length);
 });
+
+test('the summary says what Live could not count, and stays quiet when nothing was missed', async (t) => {
+    const { w, send } = await running(t);
+    send({ dt: 1, effective: 1, wan, v6_skipped: 7, unparsed: 2, devices: {} });
+    const missed = w._liveSummary();
+    assert.match(missed, /IPv6/);
+    assert.match(missed, /\b7\b/);
+    assert.match(missed, /\b2\b/);
+    send({ dt: 1, effective: 1, wan, v6_skipped: 0, unparsed: 0, devices: {} });
+    assert.doesNotMatch(w._liveSummary(), /IPv6|unreadable/);
+});
