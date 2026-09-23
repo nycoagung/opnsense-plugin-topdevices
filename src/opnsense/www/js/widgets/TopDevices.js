@@ -402,7 +402,9 @@ export default class TopDevices extends BaseWidget {
         return `${n.toFixed(1)} ${u[i]}`;
     }
 
-    _esc(s) { return $('<div>').text(s === null || s === undefined ? '' : String(s)).html(); }
+    // .html() escapes as the DOM does, which leaves quotes alone: add them,
+    // since names also land inside title="..." attributes
+    _esc(s) { return $('<div>').text(s === null || s === undefined ? '' : String(s)).html().replace(/"/g, '&quot;'); }
 
     _ip2int(ip) {
         const p = String(ip).split('.');
@@ -1246,6 +1248,10 @@ export default class TopDevices extends BaseWidget {
     }
 
     onVisibilityChanged(visible) {
+        // BaseWidget.openEventSource refuses once retryLimit connects in a row
+        // have timed out, and only a successful open resets the count. A tab
+        // hidden through a firewall reboot would otherwise wait for the watchdog.
+        if (visible && this.eventSourceUrl !== null) this.eventSourceRetryCount = 0;
         super.onVisibilityChanged(visible);
         if (visible && this.state.range === 'live' && this.eventSourceUrl !== null) {
             this.live.lastAt = Date.now();

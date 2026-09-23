@@ -738,3 +738,24 @@ test('with nothing picked, the selected device stays listed while others become 
     assert.deepEqual(w._liveTableRows().map(r => r.ip), ['192.168.1.12', '192.168.1.11']);
     assert.equal(w.state.selected, '192.168.1.11');
 });
+
+test('a shown tab reconnects even after three connects in a row failed', async (t) => {
+    // BaseWidget.openEventSource refuses once retryLimit opens have timed out (a
+    // firewall rebooting while the tab was hidden) and only a successful open
+    // resets the count: coming back to the tab must start the count afresh
+    FakeEventSource.opened.length = 0;
+    const w = widget();
+    t.after(() => w._stopLive());
+    await w._startLive();
+    w.eventSourceRetryCount = w.retryLimit;             // what three timed-out opens leave behind
+    w.onVisibilityChanged(false);
+    w.onVisibilityChanged(true);
+    assert.equal(FakeEventSource.opened.length, 2);
+    assert.equal(w.eventSourceRetryCount, 0);
+});
+
+test('_esc makes a name safe inside a quoted attribute as well', () => {
+    const w = widget();
+    assert.equal(w._esc('a"b<c&d'), 'a&quot;b&lt;c&amp;d');
+    assert.equal(w._esc(null), '');
+});

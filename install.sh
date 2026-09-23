@@ -55,13 +55,12 @@ install.sh|$SCRIPTS/install.sh
 "
 
 HERE=$(dirname "$0")
-CLEAN=""
 if [ -d "$HERE/$P/www/js/widgets" ]; then
     SRC="$HERE"
     echo "installing from $SRC"
 else
     TMP=$(mktemp -d /tmp/tdinst.XXXXXX)
-    CLEAN="$TMP"
+    trap 'rm -rf "$TMP"' EXIT              # a failed fetch must not leave it behind
     echo "fetching ${GH_OWNER}/${GH_REPO}@${GH_REF} from codeload"
     fetch -qT 30 -o "$TMP/src.tgz" \
         "https://codeload.github.com/${GH_OWNER}/${GH_REPO}/tar.gz/refs/heads/${GH_REF}"
@@ -95,7 +94,6 @@ for entry in $FILES; do
     case "$d" in *.sh|*.py) chmod 0755 "$d" ;; *) chmod 0644 "$d" ;; esac
     printf '  %-26s %6d bytes\n' "$(basename "$s")" "$(wc -c < "$d" | tr -d ' ')"
 done
-[ -n "$CLEAN" ] && rm -rf "$CLEAN"
 echo "widget installed"
 
 # --- register the configd actions (idempotent) ---

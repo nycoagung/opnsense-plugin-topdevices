@@ -31,4 +31,12 @@ grep -qx '\[live\]' "$A" || fail "no [live] action"
 grep -qx 'command:/usr/local/opnsense/scripts/topdevices/live.py' "$A" || fail "live action path wrong (ROOT leaked?)"
 grep -qx 'type:stream_output' "$A" || fail "live action is not a stream"
 [ -z "$(find "$R" -name '*.tdnew' -o -name '.actions_topdevices.new')" ] || fail "staging files left behind"
+# A download that fails must not leave the installer's scratch directory behind.
+F="$R/fetchfail"; mkdir -p "$F"
+cp install.sh "$F/install.sh"                      # no source tree beside it: the fetch path runs
+printf '#!/bin/sh\nexit 1\n' > "$F/fetch"; chmod 755 "$F/fetch"
+before=$(ls -d /tmp/tdinst.* 2>/dev/null | wc -l)
+PATH="$F:$PATH" ROOT="$R" sh "$F/install.sh" >/dev/null 2>&1 && fail "install succeeded without a source"
+after=$(ls -d /tmp/tdinst.* 2>/dev/null | wc -l)
+[ "$before" = "$after" ] || fail "a failed fetch left /tmp/tdinst.* behind"
 echo "install dry run: OK"

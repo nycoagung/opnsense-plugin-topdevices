@@ -36,6 +36,8 @@ MUTANTS = [
      'elif nat is None and dst in upstream and not local(src):', 'elif nat is None and dst in upstream:'),
     ('WireGuard from the LAN counted as upstream (out state)',
      'elif nat is None and src in upstream and not local(dst):', 'elif nat is None and src in upstream:'),
+    ('a failed WAN counter read discards the device rates too',
+     "                counters = None\n", "                states = None\n"),
     ('parser trusts a fixed arrow position',
      "arrow = next((i for i, p in enumerate(parts) if p in ('->', '<-')), None)",
      "arrow = len(parts) - 3 if len(parts) >= 6 and parts[-3] in ('->', '<-') else None"),
