@@ -339,7 +339,8 @@ at 365-day retention.
   row count - seeded busiest first from the first measured interval, topped up
   with recently seen and then other known devices at 0 - and after that only the
   busiest device moves, to the top, entering if it was not listed while the
-  bottom row drops off. Live gains a **Line** chart, its default and remembered
+  bottom row drops off - except the selected device, which holds the bottom row
+  while selected *(the user's choice after review)*. Live gains a **Line** chart, its default and remembered
   apart from the NetFlow ranges' choice: each listed device's download over the
   last 60 s on chartjs-plugin-streaming's realtime scale, like core's Traffic
   Graph (a plain update when a line joins, as the plugin's quiet update needs
