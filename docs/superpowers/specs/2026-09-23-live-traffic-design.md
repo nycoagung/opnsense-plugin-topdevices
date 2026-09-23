@@ -1,6 +1,7 @@
 # Live traffic for TopDevices: design
 
-- **Status:** draft for review
+- **Status:** approved 2026-09-23. It was then refined while prototyping, before
+  any implementation; each refinement is marked *(refined)* where it appears.
 - **Date:** 2026-09-23
 - **Branch:** `live-traffic`
 - **Baseline:** release `0.0.1` (`0dac056`), the widget as deployed on the reference
@@ -74,7 +75,9 @@ LiveController.php ── configdStream('topdevices live', [interval]) ──►
 | `src/opnsense/www/js/widgets/TopDevices.js` | `/usr/local/opnsense/www/js/widgets/TopDevices.js` | changed |
 | `src/opnsense/www/js/widgets/Metadata/TopDevices.xml` | `.../widgets/Metadata/TopDevices.xml` | changed |
 | `install.sh` | `/usr/local/opnsense/scripts/topdevices/install.sh` | changed |
-| `tests/test_live.py`, `tests/fixtures/*`, `tests/live_view.test.mjs` | not installed | new |
+| `tests/test_live.py`, `tests/fixtures/*`, `tests/test_core_parity.py`, `tests/mutate.py` | not installed | new |
+| `tests/live_view.test.mjs`, `tests/mutate_widget.mjs`, `tests/test_install.sh` | not installed | new |
+| `tests/parity_live.py` (run on the firewall, from the extracted tarball) | not installed | new |
 | `README.md`, `pkg-descr`, `Makefile` | not installed | changed |
 
 ## 5. Sampler (`live.py`)
@@ -91,14 +94,19 @@ parameters (`BaseAction._cmd_builder`); this validation is defence in depth.
 
 ### 5.2 Networks and addresses
 
-These are derived from `ifconfig -a` inet lines at start-up and again every 60 s, so a
-DHCP change on the WAN is picked up.
+These are derived from `ifconfig` inet lines and the IPv4 routing table
+(`netstat -rWn -f inet`, read the way core's `show_routes.py` reads it) at start-up and
+again every 60 s, so a DHCP change on the WAN is picked up.
 
-- **Local networks:** the subnets (address and netmask) of every interface address that
-  falls inside RFC 1918 (`10/8`, `172.16/12`, `192.168/16`).
-- **Upstream interfaces:** those with an IPv4 address that is not RFC 1918, not
-  loopback and not link-local. This is the widget's existing rule, which also treats
-  CGNAT `100.64/10` as upstream.
+- **Upstream interfaces** *(refined)*: every interface carrying an IPv4 default route,
+  plus any interface with an IPv4 address that is not RFC 1918, not loopback and not
+  link-local. The address-only rule, which is the widget's existing NetFlow rule, fails
+  behind an ISP router (double NAT). There the WAN has an RFC 1918 address, the rule
+  would call it local, and no internet traffic would be credited at all.
+- **Local networks:** the subnets (address and netmask) of every address inside RFC 1918
+  (`10/8`, `172.16/12`, `192.168/16`) on an interface that is not upstream.
+- **No upstream found:** the sampler says so in each event's `error` field rather than
+  showing silently empty internet figures.
 - **Firewall addresses:** every inet address on the firewall. These are never shown
   as devices.
 - **Never use `ipaddress.is_private`.** It returns `True` for the documentation ranges
@@ -109,7 +117,9 @@ DHCP change on the WAN is picked up.
 
 1. **Read the table.** Run `pfctl -vvs state` and parse each state into `id`,
    `direction`, `src`, `dst`, `nat` (optional), `dst_port`, `bytes = (fwd, rev)` and
-   `age`. The field semantics follow core's `lib/states.py::query_states`. The parser
+   `age`. The field semantics follow core's `lib/states.py::query_states`. Only TCP,
+   UDP and SCTP have ports; for ICMP pfctl prints the query id in that position, so it
+   is reported as port 0 *(refined)*. The parser
    counts lines it cannot parse (`unparsed`) instead of guessing. IPv6 states are parsed
    and differenced like IPv4 ones, but are never attributed. They are counted in
    `v6_skipped`, and their bytes feed only the drift check (§5.8).
@@ -178,8 +188,11 @@ interval are included.
   event reports `effective` and `throttled`, and the interval returns to the requested
   value once cost falls.
 - **Keepalive.** The web relay ends a stream that is silent for longer than
-  `requested + 4 s` (§6.2). While throttled, the sampler therefore writes a `: keepalive`
-  comment line every requested interval.
+  `requested + 10 s` (§6.2). While throttled, the sampler therefore writes a
+  `: keepalive` comment line every requested interval. The only silence left is a
+  single sample, and the 10 s margin *(refined; it was 4 s)* covers a sample slowed by a
+  very large state table. A margin that is too tight would drop the stream on every
+  slow sample and start a reconnect storm of fresh samplers.
 - **Hourly recycle.** The sampler exits cleanly after 3,600 s. Its first output line is
   `retry: 1000`, so the browser reconnects about 1 s later and a fresh process takes
   over. This bounds anything slow-growing that the soak test might miss.
@@ -225,14 +238,19 @@ This guards against silent breakage after a firmware update. Over a sliding 60 s
 window, for each direction:
 
 ```
-attributed = Σ internet device bytes + Σ firewall-own upstream bytes + Σ v6_skipped bytes
+attributed = Σ internet device bytes + Σ firewall-own upstream bytes
 expected   = Σ WAN interface bytes − packets × 14      (Ethernet interfaces only)
 coverage   = attributed / expected
 ```
 
-- `ok` is `false` when either direction leaves `0.90–1.10`. It is only evaluated while
-  WAN traffic in the window averages more than 1 Mb/s; below that, keepalives and
-  blocked scans dominate and the ratio means nothing.
+- `ok` is `false` when a judged direction leaves `0.90–1.10`. *(Refined:)* each
+  direction is judged on its own, and only while that direction averages more than
+  1 Mb/s over the window. Below that, keepalives and blocked scans dominate and the
+  ratio means nothing. The upload of a busy download is often below it.
+- **IPv6** *(refined)*: the whole check is suspended while IPv6 states carry more than
+  1% of the WAN bytes. IPv6 is not attributed, and with floating states there is no
+  telling which IPv6 states crossed the WAN, so they cannot be added in as the draft
+  formula did.
 - **Header size.** `ifinfo` reports a `header length` of 18 on `em0`, which is the
   VLAN-capable maximum, but the measured reconciliation needed 14 bytes per packet. So
   the check uses 14 for Ethernet and 0 otherwise, and the band absorbs the rest.
@@ -267,7 +285,8 @@ at 365-day retention.
 
 - It rejects anything but an integer from 1 to 10.
 - It calls `$this->configdStream('topdevices live', [$interval],
-  ['Content-Type: text/event-stream', 'Cache-Control: no-cache'], $interval + 4)`.
+  ['Content-Type: text/event-stream', 'Cache-Control: no-cache'], $interval + 10)`
+  *(refined; see §5.6)*.
 - **The relay timeout.** `configdStream`'s poll timeout becomes the relay's
   `stream_set_timeout`. In `Response::send`, a stream read that times out ends the
   response, which is why the sampler guarantees a line at least every requested
@@ -324,7 +343,9 @@ at 365-day retention.
   last values stay on screen meanwhile.
 - **unavailable:** no event for `max(20 s, 6 × effective)`. The widget shows "Live data
   unavailable" with a Retry link, which resets `eventSourceRetryCount` and reopens the
-  stream. This covers a firmware upgrade having removed the backend.
+  stream. This covers a firmware upgrade having removed the backend. *(Refined:)* it
+  also retries by itself every 30 s, so a laptop waking from sleep or a firewall back
+  from a reboot recovers without a click.
 - **Why the timeouts scale.** `effective` comes from the latest event. EventSource
   never surfaces the sampler's `: keepalive` comment lines, so fixed timeouts would
   report a throttled or 5 s stream as down.
@@ -368,6 +389,9 @@ Node test loads the module with a stubbed global `BaseWidget`.
   It prints whether that succeeded. The cache is
   `/var/lib/php/tmp/opnsense_acl_cache.json` with a one-hour TTL. Clearing it makes the
   new privilege appear immediately.
+- **Dry run** *(refined)*. `ROOT=<dir>` installs under that directory and skips the
+  configd restart and the ACL cache. `tests/test_install.sh` uses it to check every
+  installed file, its mode and the generated actions, and that a second run is a no-op.
 - **Upgrade from 0.0.1.** The 0.0.1 installer has only three files in its list. Run
   from `configctl` or cron, it installs the new widget and the new `install.sh`, but not
   the backend, until its next run. The first upgrade must therefore use the bootstrap
@@ -408,14 +432,23 @@ Node test loads the module with a stubbed global `BaseWidget`.
 - **`tests/live_view.test.mjs`** (Node) tests `mergeLive`: the averaging with uneven
   `dt`, the linger and expiry, and switching scope.
 - **Python compatibility.** Tests run on Python 3.14 locally. The code must also run on
-  3.13, so no syntax newer than 3.13 is allowed.
+  3.13, so no syntax newer than 3.13 is allowed. *(Refined:)* no 3.13 interpreter was
+  available locally, so the suite is also run on the firewall's own Python 3.13 from
+  the extracted tarball (§11.1).
+- **Installer and widget checks** *(refined)*. `tests/test_install.sh` does the dry run
+  from §8. `tests/mutate_widget.mjs` proves the Node tests catch the lifecycle
+  mistakes: the stream URL not forgotten, no start-up guard, the watchdog not cleared,
+  fixed timeouts, no automatic retry, and baselines averaged in.
 
 ## 11. Verification on the firewall (before merge)
 
 The user installs the branch. Checks run through the API unless marked (user).
 
 1. **Deployed files.** The widget JS and metadata match the branch by sha256 over
-   HTTPS, and each event's `v` matches the sampler version.
+   HTTPS, and each event's `v` matches the sampler version. *(Refined:)* (user) from
+   the extracted tarball, the unit suite passes on the firewall's Python 3.13 with
+   `CORE_STATES_PY` pointing at the installed core parser. `tests/parity_live.py`
+   reports zero mismatches and zero unparsed lines against the live state table.
 2. **Accuracy.** Over 60 consecutive events, internet devices plus firewall-own traffic
    match the WAN counter (net of headers) within ±2%. IoT camera uploads under "all"
    match the `vlan01` rx counter.
@@ -488,6 +521,9 @@ These are not blocking the design; each has a planned check.
 
 - `new OPNsense\Core\ACL()` works from the CLI without a session (§11.9).
 - `pfctl -vvs state` variants on 26.7, such as `route-to`, `rtable` or several flag
-  words, are handled or counted as `unparsed` (differential test and §11.2).
-- A throttled sampler's keepalive keeps the relay open at the largest effective
-  interval (a unit test, plus an induced slow sample on the firewall).
+  words, are handled or counted as `unparsed`. The printer was read in opnsense/src
+  `stable/26.7` (`sbin/pfctl/pf_print_state.c`); `tests/parity_live.py` settles it
+  against real output (§11.1).
+- The keepalive keeps every gap at the requested interval while throttled. That is
+  unit-tested (`test_never_silent_longer_than_the_interval_between_samples`); the
+  firewall run confirms the stream stays up.
