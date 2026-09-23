@@ -10,7 +10,7 @@
 #
 # WHY codeload AND NOT THE API OR raw:
 #   - the API costs one rate-limited request per file (60/hour per IP, and it is
-#     the firewall's own public IP that counts). Three files is survivable, but
+#     the firewall's own public IP that counts). Six files is survivable, but
 #     it is the same flaw that locked the sibling parentalcontrol plugin out
 #     entirely at fifteen.
 #   - raw.githubusercontent is CDN-cached, lags pushes by minutes and is cached
