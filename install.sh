@@ -21,30 +21,42 @@
 # These files are not owned by any package, so a firmware upgrade can remove
 # them - hence the configd action and the weekly cron job.
 #
+# UPGRADING FROM 0.0.1: the 0.0.1 installer only knows its own three files. Run
+# through configctl or cron it installs the new widget and this script but not
+# the live backend, until the next run. Use the bootstrap command once instead.
+#
 # NOTE: OPNsense cron runs as root regardless - configd executes jobs as root.
 # Using cron avoids interactive SSH, not root privileges.
+#
+# ROOT=<dir> installs under that directory instead of / and skips the configd
+# restart and the ACL cache: a dry run for testing, never used on a firewall.
 set -e
 
 GH_OWNER="${GH_OWNER:-nycoagung}"
 GH_REPO="${GH_REPO:-opnsense-plugin-topdevices}"
 GH_REF="${GH_REF:-main}"
-P=src/opnsense/www/js/widgets
+ROOT="${ROOT:-}"
+P=src/opnsense
 
-W=/usr/local/opnsense/www/js/widgets
-SCRIPTDIR=/usr/local/opnsense/scripts/topdevices
+WIDGETS=/usr/local/opnsense/www/js/widgets
+SCRIPTS=/usr/local/opnsense/scripts/topdevices
+MVC=/usr/local/opnsense/mvc/app
 ACTIONS=/usr/local/opnsense/service/conf/actions.d
 
-[ -d "$W/Metadata" ] || { echo "widget dir not found: $W/Metadata" >&2; exit 1; }
+[ -d "$ROOT$WIDGETS/Metadata" ] || { echo "widget dir not found: $ROOT$WIDGETS/Metadata" >&2; exit 1; }
 
 FILES="
-$P/TopDevices.js|$W/TopDevices.js
-$P/Metadata/TopDevices.xml|$W/Metadata/TopDevices.xml
-install.sh|$SCRIPTDIR/install.sh
+$P/www/js/widgets/TopDevices.js|$WIDGETS/TopDevices.js
+$P/www/js/widgets/Metadata/TopDevices.xml|$WIDGETS/Metadata/TopDevices.xml
+$P/scripts/topdevices/live.py|$SCRIPTS/live.py
+$P/mvc/app/controllers/OPNsense/TopDevices/Api/LiveController.php|$MVC/controllers/OPNsense/TopDevices/Api/LiveController.php
+$P/mvc/app/models/OPNsense/TopDevices/ACL/ACL.xml|$MVC/models/OPNsense/TopDevices/ACL/ACL.xml
+install.sh|$SCRIPTS/install.sh
 "
 
 HERE=$(dirname "$0")
 CLEAN=""
-if [ -d "$HERE/$P" ]; then
+if [ -d "$HERE/$P/www/js/widgets" ]; then
     SRC="$HERE"
     echo "installing from $SRC"
 else
@@ -55,7 +67,7 @@ else
         "https://codeload.github.com/${GH_OWNER}/${GH_REPO}/tar.gz/refs/heads/${GH_REF}"
     tar -xzf "$TMP/src.tgz" -C "$TMP"
     SRC=$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)
-    [ -n "$SRC" ] && [ -d "$SRC/$P" ] || { echo "archive did not contain $P" >&2; exit 1; }
+    [ -n "$SRC" ] && [ -d "$SRC/$P/www/js/widgets" ] || { echo "archive did not contain $P" >&2; exit 1; }
 fi
 
 # Check the whole set is present before touching anything on disk, so a
@@ -66,49 +78,69 @@ for entry in $FILES; do
     [ -f "$SRC/$s" ] || { echo "missing from source: $s" >&2; exit 1; }
 done
 
-mkdir -p "$SCRIPTDIR"
-
 # Stage beside the destination, then rename into place. Not only for atomicity:
 # this script installs ITSELF, and sh reads a script incrementally, so a cp over
 # the running file shifts the shell's read offset and it dies mid-script. mv
 # gives the file a new inode and leaves the running descriptor untouched.
 for entry in $FILES; do
     [ -n "$entry" ] || continue
-    s=${entry%%|*}; d=${entry#*|}
+    s=${entry%%|*}; d=$ROOT${entry#*|}
     mkdir -p "$(dirname "$d")"
     cp "$SRC/$s" "$d.tdnew"
 done
 for entry in $FILES; do
     [ -n "$entry" ] || continue
-    s=${entry%%|*}; d=${entry#*|}
+    s=${entry%%|*}; d=$ROOT${entry#*|}
     mv "$d.tdnew" "$d"
-    case "$d" in *.sh) chmod 0755 "$d" ;; *) chmod 0644 "$d" ;; esac
+    case "$d" in *.sh|*.py) chmod 0755 "$d" ;; *) chmod 0644 "$d" ;; esac
     printf '  %-26s %6d bytes\n' "$(basename "$s")" "$(wc -c < "$d" | tr -d ' ')"
 done
 [ -n "$CLEAN" ] && rm -rf "$CLEAN"
 echo "widget installed"
 
-# --- register the configd action (idempotent) ---
-if [ -d "$ACTIONS" ]; then
-    TMP2="$ACTIONS/.actions_topdevices.new"
+# --- register the configd actions (idempotent) ---
+if [ -d "$ROOT$ACTIONS" ]; then
+    TMP2="$ROOT$ACTIONS/.actions_topdevices.new"
     cat > "$TMP2" <<ACT
 [install]
-command:$SCRIPTDIR/install.sh
+command:$SCRIPTS/install.sh
 parameters:
 type:script
 message:Refreshing TopDevices widget
 description:Install/refresh TopDevices dashboard widget
+
+[live]
+command:$SCRIPTS/live.py
+parameters:%s
+type:stream_output
+message:TopDevices live stream (%s s)
 ACT
-    if cmp -s "$TMP2" "$ACTIONS/actions_topdevices.conf" 2>/dev/null; then
-        # Unchanged. Do NOT restart configd here: when this script is invoked BY
-        # configd (the cron path) restarting it would kill this very process.
+    if cmp -s "$TMP2" "$ROOT$ACTIONS/actions_topdevices.conf" 2>/dev/null; then
+        # Unchanged: no restart, so the weekly cron run never restarts configd.
         rm -f "$TMP2"
-        echo "configd action already current"
+        echo "configd actions already current"
     else
-        mv "$TMP2" "$ACTIONS/actions_topdevices.conf"
-        chmod 0644 "$ACTIONS/actions_topdevices.conf"
-        service configd restart >/dev/null 2>&1 || true
-        echo "configd action 'topdevices install' registered"
+        mv "$TMP2" "$ROOT$ACTIONS/actions_topdevices.conf"
+        chmod 0644 "$ROOT$ACTIONS/actions_topdevices.conf"
+        if [ -z "$ROOT" ]; then
+            # Detached and a second late. configctl and the cron job run this
+            # script under configd; configd_stop only signals configd itself, so
+            # the script would survive a synchronous restart - but the configctl
+            # caller would lose its reply halfway.
+            /usr/sbin/daemon -f /bin/sh -c 'sleep 1; /usr/local/etc/rc.d/configd restart'
+            echo "configd actions changed - configd restarts in 1 s"
+        else
+            echo "configd actions changed - restart skipped (ROOT=$ROOT)"
+        fi
+    fi
+fi
+
+# --- make a new ACL privilege visible now, not when the one-hour cache expires ---
+if [ -z "$ROOT" ]; then
+    if /usr/local/bin/php -r 'require "/usr/local/opnsense/mvc/script/load_phalcon.php"; (new OPNsense\Core\ACL())->invalidateCache();' >/dev/null 2>&1; then
+        echo "ACL cache cleared"
+    else
+        echo "WARNING: could not clear the ACL cache; the new privilege appears within an hour" >&2
     fi
 fi
 
