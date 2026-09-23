@@ -162,6 +162,10 @@ export default class TopDevices extends BaseWidget {
         this.ptrCache = {};       // peer ip -> reverse-DNS name ('' = none)
         this.chartObj = null;
         this.loading = false;
+        this.live = {
+            interval: 1, view: null, last: null, lastAt: 0, retryAt: 0, status: 'off', token: 0,
+            watchdog: null, hover: false, order: [], rowsShown: -1, ptrPending: new Set()
+        };
     }
 
     getGridOptions() { return { sizeToContent: 1000 }; }
@@ -192,6 +196,15 @@ export default class TopDevices extends BaseWidget {
                     { value: '3600', label: '1 hour' }
                 ],
                 default: '900', required: true
+            },
+            liveInterval: {
+                id: 'liveInterval', title: 'Live update interval', type: 'select',
+                options: [
+                    { value: '1', label: '1 second' },
+                    { value: '2', label: '2 seconds' },
+                    { value: '5', label: '5 seconds' }
+                ],
+                default: '1', required: true
             }
         };
     }
@@ -222,6 +235,7 @@ export default class TopDevices extends BaseWidget {
 
     _ranges() {
         return [
+            { key: 'live',      label: 'Live' },
             { key: '1h',        label: 'Last hour' },
             { key: '24h',       label: 'Last 24 hours' },
             { key: 'today',     label: 'Today' },
@@ -627,11 +641,27 @@ export default class TopDevices extends BaseWidget {
         $(document).off('.topdevices');
 
         $(document).on('change.topdevices', '.td-range', function () {
+            const was = self.state.range;
             self.state.range = $(this).val();
             self.state.selected = null;
             $('.td-custom').css('display', self.state.range === 'custom' ? 'flex' : 'none');
             self._saveView();
+            if (self.state.range === 'live') { self._startLive(); return; }
+            if (was === 'live') {
+                // leave nothing of the live view behind for the NetFlow render
+                self._stopLive();
+                self.state.rows = [];
+                self.state.window = null;
+                $('.td-window small').text('');
+            }
             if (self.state.range !== 'custom') self.refresh();
+            else self.render();
+        });
+        $(document).on('mouseenter.topdevices', '.td-tablewrap', function () { self.live.hover = true; });
+        $(document).on('mouseleave.topdevices', '.td-tablewrap', function () { self.live.hover = false; });
+        $(document).on('click.topdevices', '.td-live-retry', function (e) {
+            e.preventDefault();
+            self._startLive();
         });
         $(document).on('click.topdevices', '.td-apply', function () {
             self.state.customFrom = $('.td-from').val();
@@ -685,6 +715,8 @@ export default class TopDevices extends BaseWidget {
     }
 
     async refresh(force) {
+        // Live restarts its stream: the header refresh button and an options change land here
+        if (this.state.range === 'live') { await this._startLive(); return; }
         if (this.loading) return;
         this.loading = true;
         this._busy(true);
@@ -700,7 +732,10 @@ export default class TopDevices extends BaseWidget {
         } finally { this.loading = false; this._busy(false); }
     }
 
-    async onWidgetTick() { await this.refresh(); }
+    async onWidgetTick() {
+        if (this.state.range === 'live') return;      // the stream refreshes itself
+        await this.refresh();
+    }
 
     async onWidgetOptionsChanged() { await this.onMarkupRendered(); }
 
@@ -729,6 +764,7 @@ export default class TopDevices extends BaseWidget {
     }
 
     async _render() {
+        if (this.state.range === 'live') { this._renderLive(); return; }
         // _load() applies the scope filter while aggregating, so a scope change
         // needs a re-aggregate. The export itself is cached, so this is cheap.
         if (this._scopeShown !== this.state.scope && this.state.window) {
@@ -757,35 +793,8 @@ export default class TopDevices extends BaseWidget {
             $('.td-window small').text(
                 `${this._dateStr(this.state.window[0])}  →  ${this._dateStr(this.state.window[1])}${scopeTxt}`);
         }
-        $('.td-chartbtns button').removeClass('btn-primary').addClass('btn-default');
-        $(`.td-chartbtns button[data-chart="${this.state.chart}"]`).removeClass('btn-default').addClass('btn-primary');
-        $('.td-sort').each((i, el) => {
-            $(el).find('.td-arrow').remove();
-            if ($(el).data('key') === this.state.sortKey) {
-                $(el).append(`<span class="td-arrow"> ${this.state.sortDir === 'asc' ? '▲' : '▼'}</span>`);
-            }
-        });
-
-        if (rows.length === 0) {
-            $('.td-body').html('<tr><td colspan="5" class="text-muted">No matching devices</td></tr>');
-        } else {
-            $('.td-body').html(rows.map((r) => {
-                const clip = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-                const label = r.name
-                    ? `<strong style="display:block;${clip}">${this._esc(r.name)}</strong>`
-                      + `<small class="text-muted" style="display:block;${clip}">${this._esc(r.ip)}</small>`
-                    : `<strong style="display:block;${clip}">${this._esc(r.ip)}</strong>`;
-                const net = this.networks.find(n => n.key === r.net);
-                const sel = this.state.selected === r.ip ? ' class="info"' : '';
-                return `<tr${sel} data-ip="${this._esc(r.ip)}" style="cursor:pointer;"
-                        title="${this._esc((r.name ? r.name + ' ' : '') + r.ip)}">
-                    <td style="text-align:left;${clip}">${label}</td>
-                    <td style="text-align:left;${clip}"><small>${this._esc(net ? net.label : '')}</small></td>
-                    <td style="text-align:right;">${this._fmt(r.down)}</td>
-                    <td style="text-align:right;">${this._fmt(r.up)}</td>
-                    <td style="text-align:right;"><strong>${this._fmt(r.total)}</strong></td></tr>`;
-            }).join(''));
-        }
+        this._renderChrome();
+        $('.td-body').html(this._rowsHtml(rows, (v) => this._fmt(v), 'No matching devices'));
         this._renderChart(rows.slice(0, CHART_MAX));
         if (rows.length > CHART_MAX && this.state.chart !== 'none') {
             $('.td-window small').append(
@@ -796,24 +805,67 @@ export default class TopDevices extends BaseWidget {
         this._fitHeight();
     }
 
-    _renderChart(rows) {
-        if (this.chartObj) { this.chartObj.destroy(); this.chartObj = null; }
-        if (this.state.chart === 'none' || rows.length === 0) { $('.td-chartbox').hide(); return; }
+    _renderChrome() {
+        $('.td-chartbtns button').removeClass('btn-primary').addClass('btn-default');
+        $(`.td-chartbtns button[data-chart="${this.state.chart}"]`).removeClass('btn-default').addClass('btn-primary');
+        $('.td-sort').each((i, el) => {
+            $(el).find('.td-arrow').remove();
+            if ($(el).data('key') === this.state.sortKey) {
+                $(el).append(`<span class="td-arrow"> ${this.state.sortDir === 'asc' ? '▲' : '▼'}</span>`);
+            }
+        });
+    }
+
+    // One row per device; fmt formats the three figures (bytes for NetFlow
+    // ranges, bits per second for Live).
+    _rowsHtml(rows, fmt, empty) {
+        if (rows.length === 0) return `<tr><td colspan="5" class="text-muted">${this._esc(empty)}</td></tr>`;
+        return rows.map((r) => {
+            const clip = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+            const label = r.name
+                ? `<strong style="display:block;${clip}">${this._esc(r.name)}</strong>`
+                  + `<small class="text-muted" style="display:block;${clip}">${this._esc(r.ip)}</small>`
+                : `<strong style="display:block;${clip}">${this._esc(r.ip)}</strong>`;
+            const net = this.networks.find(n => n.key === r.net);
+            const sel = this.state.selected === r.ip ? ' class="info"' : '';
+            return `<tr${sel} data-ip="${this._esc(r.ip)}" style="cursor:pointer;"
+                    title="${this._esc((r.name ? r.name + ' ' : '') + r.ip)}">
+                <td style="text-align:left;${clip}">${label}</td>
+                <td style="text-align:left;${clip}"><small>${this._esc(net ? net.label : '')}</small></td>
+                <td style="text-align:right;">${fmt(r.down)}</td>
+                <td style="text-align:right;">${fmt(r.up)}</td>
+                <td style="text-align:right;"><strong>${fmt(r.total)}</strong></td></tr>`;
+        }).join('');
+    }
+
+    _renderChart(rows, fmt = (v) => this._fmt(v), live = false) {
+        const isPie = this.state.chart === 'pie';
+        const type = isPie ? 'doughnut' : 'bar';
+        if (this.state.chart === 'none' || rows.length === 0) {
+            if (this.chartObj) { this.chartObj.destroy(); this.chartObj = null; }
+            $('.td-chartbox').hide();
+            return;
+        }
         $('.td-chartbox').show();
+        const labels = rows.map(r => r.name || r.ip);
+        const datasets = isPie
+            ? [{ data: rows.map(r => r.total), borderWidth: 0 }]
+            : [{ label: 'Down', data: rows.map(r => r.down) },
+               { label: 'Up',   data: rows.map(r => r.up) }];
+        // Live redraws every interval: update the chart in place instead of
+        // destroying and rebuilding it, which flickers.
+        if (live && this.chartObj && this.chartObj.$live && this.chartObj.config.type === type) {
+            this.chartObj.data.labels = labels;
+            this.chartObj.data.datasets.forEach((ds, i) => { ds.data = datasets[i].data; });
+            this.chartObj.update('none');
+            return;
+        }
+        if (this.chartObj) { this.chartObj.destroy(); this.chartObj = null; }
         const el = $('.td-canvas')[0];
         if (!el) return;
-        const labels = rows.map(r => r.name || r.ip);
-        const isPie = this.state.chart === 'pie';
-        const fmt = (v) => this._fmt(v);
         this.chartObj = new Chart(el.getContext('2d'), {
-            type: isPie ? 'doughnut' : 'bar',
-            data: {
-                labels: labels,
-                datasets: isPie
-                    ? [{ data: rows.map(r => r.total), borderWidth: 0 }]
-                    : [{ label: 'Down', data: rows.map(r => r.down) },
-                       { label: 'Up',   data: rows.map(r => r.up) }]
-            },
+            type: type,
+            data: { labels: labels, datasets: datasets },
             options: {
                 responsive: true, maintainAspectRatio: false,
                 plugins: {
@@ -827,6 +879,178 @@ export default class TopDevices extends BaseWidget {
                 }
             }
         });
+        this.chartObj.$live = live;
+    }
+
+    /* ---------- live ---------- */
+
+    async _startLive() {
+        this._stopLive();
+        const token = this.live.token;
+        const cfg = await this.getWidgetConfig() || {};
+        const n = parseInt(cfg.liveInterval, 10);
+        this.live.interval = [1, 2, 5].includes(n) ? n : 1;
+        try { await this._loadNames(); } catch (e) { /* names are cosmetic */ }
+        // the range may have changed while we waited
+        if (token !== this.live.token || this.state.range !== 'live') return;
+        Object.assign(this.live, { view: null, last: null, lastAt: Date.now(), status: 'connecting', rowsShown: -1 });
+        this.eventSourceRetryCount = 0;
+        this.openEventSource(`/api/topdevices/live/stream/${this.live.interval}`, (ev) => this._onLiveEvent(ev));
+        this.live.watchdog = setInterval(() => this._liveTick(), 1000);
+        this._renderLive();
+    }
+
+    _stopLive() {
+        this.live.token++;
+        if (this.live.watchdog) { clearInterval(this.live.watchdog); this.live.watchdog = null; }
+        this.closeEventSource();
+        // BaseWidget.onVisibilityChanged reopens any remembered stream URL, and
+        // closing does not forget it: forget it here, or a hidden-then-shown tab
+        // would restart the stream while a NetFlow range is on screen.
+        this.eventSourceUrl = null;
+        this.eventSourceOnData = null;
+        this.live.status = 'off';
+        this.live.view = null;
+    }
+
+    _onLiveEvent(ev) {
+        let e;
+        try { e = JSON.parse(ev.data); } catch (err) { return; }
+        const now = Date.now();
+        this.live.last = e;
+        this.live.lastAt = now;
+        this.live.view = mergeLive(this.live.view, e, now);
+        this.live.status = e.dt > 0 ? 'live' : 'measuring';
+        this._renderLive();
+    }
+
+    // Once a second: notice a stream that has gone quiet. Events clear it again.
+    _liveTick() {
+        if (this.state.range !== 'live') return;
+        if (typeof document !== 'undefined' && document.hidden) return;
+        const now = Date.now();
+        if (this.live.status === 'unavailable') {
+            // a laptop waking up, a firewall back from a reboot: try again by
+            // ourselves rather than waiting for someone to click Retry
+            if (now - this.live.retryAt >= LIVE_RETRY_MS) this._startLive();
+            return;
+        }
+        const eff = (this.live.last && this.live.last.effective) || this.live.interval;
+        const status = liveStatusFor(now - this.live.lastAt, eff);
+        if (status === 'live' || status === this.live.status) return;
+        this.live.status = status;
+        if (status === 'unavailable') {
+            this.closeEventSource();        // stop the browser's own retries; ours follow LIVE_RETRY_MS
+            this.live.retryAt = now;
+        }
+        this._renderLive();
+    }
+
+    onVisibilityChanged(visible) {
+        super.onVisibilityChanged(visible);
+        if (visible && this.state.range === 'live' && this.eventSourceUrl !== null) {
+            this.live.lastAt = Date.now();
+            this.live.status = 'connecting';
+            this._renderLive();
+        }
+    }
+
+    _liveSummary() {
+        const l = this.live, e = l.last;
+        const parts = ['Live'];
+        if (e && e.wan) {
+            const via = (e.wan.devs || []).join(', ') || 'WAN';
+            parts.push(`WAN \u2193 ${fmtRate(e.wan.down)} \u2191 ${fmtRate(e.wan.up)} (via ${via})`);
+        }
+        parts.push(this.state.scope === 'wan' ? 'internet only' : 'all traffic');
+        parts.push(e && e.throttled ? `throttled to ${e.effective} s` : `${l.interval} s`);
+        if (e && e.coverage && e.coverage.ok === false) parts.push('\u26a0 totals disagree with the WAN counters');
+        if (e && e.error) parts.push(`\u26a0 ${e.error}`);
+        const status = { connecting: 'connecting\u2026', measuring: 'measuring\u2026',
+                         reconnecting: 'reconnecting\u2026' }[l.status];
+        if (status) parts.push(status);
+        return parts.join(' \u00b7 ');
+    }
+
+    _renderLive() {
+        const l = this.live;
+        const CHART_MAX = 10;
+        const scope = this.state.scope === 'wan' ? 'inet' : 'all';
+        const rates = l.view ? liveRates(l.view, scope) : {};
+        this.state.rows = Object.entries(rates).map(([ip, r]) => ({
+            ip: ip, name: this.names[ip] || (this.ifaceNames || {})[ip] || '', net: this._netOf(ip),
+            down: r.down, up: r.up, total: r.down + r.up
+        }));
+        let all = this._visibleRows();
+        // the selected device keeps its panel while it lingers, and loses it once gone
+        if (this.state.selected && !all.some(r => r.ip === this.state.selected)) this.state.selected = null;
+        if (l.hover) all = holdOrder(all, l.order);
+        const rows = all.slice(0, this.state.rowsN || 20);
+        l.order = rows.map(r => r.ip);
+
+        $('.td-window small').text(this._liveSummary());
+        this._renderChrome();
+        if (l.status === 'unavailable') {
+            $('.td-body').html('<tr><td colspan="5" class="text-muted">Live data unavailable. '
+                             + '<a href="#" class="td-live-retry">Retry</a></td></tr>');
+        } else {
+            $('.td-body').html(this._rowsHtml(rows, fmtRate, l.view ? 'No active devices' : 'Measuring\u2026'));
+        }
+        this._renderChart(rows.slice(0, CHART_MAX), fmtRate, true);
+        if (rows.length > CHART_MAX && this.state.chart !== 'none') {
+            $('.td-window small').append(
+                `<span class="text-muted"> \u00b7 chart: top ${CHART_MAX} of ${rows.length}</span>`);
+        }
+        if (this.state.selected) this._renderLiveDetails(this.state.selected);
+        else $('.td-details').empty();
+        this._applyLayout();
+        if (rows.length !== l.rowsShown) { l.rowsShown = rows.length; this._fitHeight(); }
+    }
+
+    _renderLiveDetails(ip) {
+        const $d = $('.td-details');
+        const view = this.live.view;
+        if (!view) { $d.html('<small class="text-muted">Measuring\u2026</small>'); return; }
+        const scope = this.state.scope === 'wan' ? 'inet' : 'all';
+        const rate = liveRates(view, scope)[ip] || { down: 0, up: 0 };
+        const detail = liveDetail(view, ip, scope);
+        // resolve peer names in the background; the next event re-renders with them
+        const todo = detail.peers.map(p => p.key)
+            .filter(k => !this.names[k] && this.ptrCache[k] === undefined && !this.live.ptrPending.has(k));
+        if (todo.length) {
+            todo.forEach(k => this.live.ptrPending.add(k));
+            this._ptrMany(todo, 6).then(() => todo.forEach(k => this.live.ptrPending.delete(k)));
+        }
+        const row = (label, title, v) => `<tr title="${this._esc(title)}">`
+            + `<td style="text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0;">`
+            + `${this._esc(label)}</td>`
+            + `<td style="text-align:right;white-space:nowrap;width:78px;">${fmtRate(v.down + v.up)}</td></tr>`;
+        const none = '<tr><td colspan="2" class="text-muted">none</td></tr>';
+        const peers = detail.peers.map((p) => {
+            const name = this.names[p.key] || this.ptrCache[p.key] || p.key;
+            return row(name, name === p.key ? p.key : `${name}  ${p.key}`, p);
+        }).join('') || none;
+        const ports = detail.ports.map(p => row(p.key === '0' ? 'other' : p.key, p.key, p)).join('') || none;
+        $d.html(`
+            <div style="border-top:1px solid #ddd;padding-top:6px;">
+                <div title="${this._esc((this.names[ip] || ip) + ' ' + ip)}"
+                     style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                    <strong>${this._esc(this.names[ip] || ip)}</strong>
+                    <small class="text-muted">${this._esc(ip)}</small>
+                </div>
+                <div style="margin-top:3px;"><small class="text-muted">down ${fmtRate(rate.down)}
+                    &middot; up ${fmtRate(rate.up)} &middot; ${LIVE_WINDOW_S} s average</small></div>
+                <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;">
+                    <div style="flex:1 1 260px;min-width:0;">
+                        <small class="text-muted">Top peers</small>
+                        <table class="table table-condensed" style="margin:0;table-layout:fixed;width:100%;">${peers}</table>
+                    </div>
+                    <div style="flex:1 1 150px;min-width:0;">
+                        <small class="text-muted">Top ports</small>
+                        <table class="table table-condensed" style="margin:0;table-layout:fixed;width:100%;">${ports}</table>
+                    </div>
+                </div>
+            </div>`);
     }
 
     async renderDetails(ip) {
@@ -835,6 +1059,7 @@ export default class TopDevices extends BaseWidget {
     }
 
     async _renderDetails(ip) {
+        if (this.state.range === 'live') { this._renderLiveDetails(ip); return; }
         const $d = $('.td-details');
         // clicking a device must acknowledge immediately: the aggregate is cheap
         // but resolving peer names can take a second or more
@@ -948,6 +1173,8 @@ export default class TopDevices extends BaseWidget {
     }
 
     onWidgetClose() {
+        this._stopLive();
+        super.onWidgetClose();              // BaseWidget closes the EventSource here
         $(document).off('.topdevices');
         $('.td-refresh').remove();
         if (this.chartObj) { this.chartObj.destroy(); this.chartObj = null; }

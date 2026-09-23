@@ -133,3 +133,124 @@ test('fmtRate', () => {
     assert.equal(m.fmtRate(1500000000), '1.5 Gb/s');
 });
 
+function widget(interval = '1') {
+    const w = new TopDevices({ widget: { liveInterval: interval } });
+    w.state.range = 'live';
+    return w;
+}
+
+test('starting Live opens the stream at the configured interval', async (t) => {
+    FakeEventSource.opened.length = 0;
+    const w = widget('5');
+    t.after(() => w._stopLive());
+    await w._startLive();
+    assert.deepEqual(FakeEventSource.opened, ['/api/topdevices/live/stream/5']);
+    assert.ok(w.live.watchdog);
+});
+
+test('leaving Live forgets the stream, so a hidden/shown tab cannot reopen it', async () => {
+    FakeEventSource.opened.length = 0;
+    const w = widget();
+    await w._startLive();
+    const es = w.eventSource;
+    w.state.range = '24h';
+    w._stopLive();
+    assert.equal(es.closed, true);
+    assert.equal(w.live.watchdog, null);
+    w.onVisibilityChanged(false);
+    w.onVisibilityChanged(true);
+    assert.equal(FakeEventSource.opened.length, 1);
+});
+
+test('while Live, a hidden/shown tab reopens the stream', async (t) => {
+    FakeEventSource.opened.length = 0;
+    const w = widget();
+    t.after(() => w._stopLive());
+    await w._startLive();
+    w.onVisibilityChanged(false);
+    w.onVisibilityChanged(true);
+    assert.equal(FakeEventSource.opened.length, 2);
+    assert.equal(w.live.status, 'connecting');
+});
+
+test('closing the widget closes the stream', async () => {
+    const w = widget();
+    await w._startLive();
+    const es = w.eventSource;
+    w.onWidgetClose();
+    assert.equal(es.closed, true);
+    assert.equal(w.eventSource, null);
+    assert.equal(w.live.watchdog, null);
+});
+
+test('a range change during start-up does not leave a stream behind', async () => {
+    FakeEventSource.opened.length = 0;
+    const w = widget();
+    const starting = w._startLive();       // awaits config and names
+    w.state.range = '24h';
+    w._stopLive();
+    await starting;
+    assert.equal(FakeEventSource.opened.length, 0);
+    assert.equal(w.live.watchdog, null);
+});
+
+test('events drive the status; the watchdog escalates and gives up', async (t) => {
+    const w = widget();
+    t.after(() => w._stopLive());
+    await w._startLive();
+    const send = (e) => w.eventSource.onmessage({ data: JSON.stringify(e) });
+    send({ dt: 0, devices: {}, effective: 1, wan: { devs: ['em0'], down: 0, up: 0 } });
+    assert.equal(w.live.status, 'measuring');
+    send({ dt: 1, effective: 1, wan: { devs: ['em0'], down: 8, up: 8 },
+           devices: { '192.168.1.10': dev([1000000, 8000], [1000000, 8000]) } });
+    assert.equal(w.live.status, 'live');
+    assert.deepEqual(w.state.rows.map(r => [r.ip, r.down]), [['192.168.1.10', 1000000]]);
+    w.live.lastAt = Date.now() - 7000;
+    w._liveTick();
+    assert.equal(w.live.status, 'reconnecting');
+    const es = w.eventSource;
+    w.live.lastAt = Date.now() - 21000;
+    w._liveTick();
+    assert.equal(w.live.status, 'unavailable');
+    assert.equal(es.closed, true);
+});
+
+async function running(t) {
+    const w = widget();
+    t.after(() => w._stopLive());
+    await w._startLive();
+    const send = (e) => w.eventSource.onmessage({ data: JSON.stringify(e) });
+    return { w, send };
+}
+const wan = { devs: ['em0'], down: 0, up: 0 };
+
+test('a recycled stream keeps its rows on screen through the new baseline', async (t) => {
+    const { w, send } = await running(t);
+    send({ dt: 1, effective: 1, wan, devices: { '192.168.1.10': dev([5000, 50], [5000, 50]) } });
+    send({ dt: 0, effective: 1, wan, devices: {} });          // the hourly recycle's first event
+    assert.equal(w.live.status, 'measuring');
+    assert.deepEqual(w.state.rows.map(r => r.ip), ['192.168.1.10']);
+});
+
+test('an event carrying a warning still shows its rates, and the warning', async (t) => {
+    const { w, send } = await running(t);
+    send({ dt: 1, effective: 1, wan, error: 'routes: netstat exited with 1',
+           devices: { '192.168.1.10': dev([5000, 50], [5000, 50]) } });
+    assert.deepEqual(w.state.rows.map(r => [r.ip, r.down]), [['192.168.1.10', 5000]]);
+    assert.match(w._liveSummary(), /routes: netstat exited with 1/);
+});
+
+test('an unavailable stream retries by itself', async (t) => {
+    FakeEventSource.opened.length = 0;
+    const { w } = await running(t);
+    w.live.lastAt = Date.now() - 21000;
+    w._liveTick();
+    assert.equal(w.live.status, 'unavailable');
+    w._liveTick();                                          // too soon: no retry yet
+    assert.equal(FakeEventSource.opened.length, 1);
+    w.live.retryAt = Date.now() - m.LIVE_RETRY_MS;
+    w._liveTick();
+    await new Promise((r) => setTimeout(r, 0));             // _startLive awaits config and names
+    assert.equal(FakeEventSource.opened.length, 2);
+    assert.equal(w.live.status, 'connecting');
+});
