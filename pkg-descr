@@ -21,6 +21,8 @@ Plugin Changelog
 
 * Live view: per-device download and upload rates, streamed from the pf
   state table and updated every second
+* Live: pick which devices to watch, so the table keeps its size and order;
+  no column sorting in Live
 * The live sampler throttles itself, checks its totals against the WAN
   counters and restarts hourly
 * The installer adds the live backend, clears the ACL cache and restarts
