@@ -26,7 +26,119 @@
  *
  * Figures are TOTAL traffic - internal plus internet. An NVR pulling camera
  * streams will dominate with traffic that never reaches the WAN.
+ *
+ * LIVE: the "Live" range shows current rates instead, streamed once per
+ * interval by the plugin's own sampler (scripts/topdevices/live.py) through
+ * /api/topdevices/live/stream/{interval}. The sampler reads the pf state
+ * table; NetFlow is not involved. Design and measurements:
+ * docs/superpowers/specs/2026-09-23-live-traffic-design.md
  */
+
+/* ---------- live view: pure helpers (tests/live_view.test.mjs) ---------- */
+
+export const LIVE_WINDOW_S = 3;       // rows and chart average this many seconds
+export const LIVE_LINGER_MS = 10000;  // a device that goes quiet stays listed this long
+export const LIVE_RETRY_MS = 30000;   // an unavailable stream retries by itself this often
+
+// Fold one sampler event into the view: the events covering the last
+// LIVE_WINDOW_S seconds, and when each device last moved traffic, per scope.
+// A baseline event (dt 0) carries no rates and changes nothing.
+export function mergeLive(view, event, nowMs) {
+    const v = view
+        ? { events: view.events.slice(), seen: { all: { ...view.seen.all }, inet: { ...view.seen.inet } } }
+        : { events: [], seen: { all: {}, inet: {} } };
+    if (!event || !(event.dt > 0)) return v;
+    const devices = event.devices || {};
+    v.events.push({ dt: event.dt, devices: devices });
+    let covered = 0, keep = 0;
+    for (let i = v.events.length - 1; i >= 0; i--) {
+        keep++;
+        covered += v.events[i].dt;
+        if (covered >= LIVE_WINDOW_S) break;
+    }
+    v.events = v.events.slice(v.events.length - keep);
+    for (const [ip, d] of Object.entries(devices)) {
+        for (const scope of ['all', 'inet']) {
+            const r = d[scope] || [0, 0];
+            if (r[0] + r[1] > 0) v.seen[scope][ip] = nowMs;
+        }
+    }
+    for (const scope of ['all', 'inet']) {
+        for (const ip of Object.keys(v.seen[scope])) {
+            if (nowMs - v.seen[scope][ip] > LIVE_LINGER_MS) delete v.seen[scope][ip];
+        }
+    }
+    return v;
+}
+
+// Time-weighted average per device over the window: sum(rate * dt) / sum(dt).
+// A device missing from an event moved nothing during it, so a lingering but
+// idle device comes out at 0.
+export function liveRates(view, scope) {
+    const key = scope === 'inet' ? 'inet' : 'all';
+    const span = view.events.reduce((s, e) => s + e.dt, 0);
+    const out = {};
+    for (const ip of Object.keys(view.seen[key])) {
+        let down = 0, up = 0;
+        for (const e of view.events) {
+            const r = e.devices[ip] && e.devices[ip][key];
+            if (r) { down += r[0] * e.dt; up += r[1] * e.dt; }
+        }
+        out[ip] = span > 0 ? { down: down / span, up: up / span } : { down: 0, up: 0 };
+    }
+    return out;
+}
+
+// The same averaging for one device's peers and ports. In the internet scope
+// only internet peers are listed; ports come from the scope's own list.
+export function liveDetail(view, ip, scope) {
+    const key = scope === 'inet' ? 'inet' : 'all';
+    const span = view.events.reduce((s, e) => s + e.dt, 0) || 1;
+    const peers = {}, ports = {};
+    for (const e of view.events) {
+        const d = e.devices[ip];
+        if (!d) continue;
+        for (const [peer, down, up, inet] of d.peers || []) {
+            if (key === 'inet' && !inet) continue;
+            const p = peers[peer] || (peers[peer] = { down: 0, up: 0 });
+            p.down += down * e.dt; p.up += up * e.dt;
+        }
+        for (const [port, down, up] of (d.ports && d.ports[key]) || []) {
+            const p = ports[port] || (ports[port] = { down: 0, up: 0 });
+            p.down += down * e.dt; p.up += up * e.dt;
+        }
+    }
+    const rank = (o) => Object.entries(o)
+        .map(([k, v]) => ({ key: k, down: v.down / span, up: v.up / span }))
+        .sort((a, b) => (b.down + b.up) - (a.down + a.up));
+    return { peers: rank(peers), ports: rank(ports) };
+}
+
+// Connection state from the age of the last event, scaled to the interval the
+// sampler really uses: EventSource never surfaces the sampler's ': keepalive'
+// comments, so fixed timeouts would call a throttled or 5 s stream dead.
+export function liveStatusFor(ageMs, effectiveS) {
+    const eff = Math.max(1, effectiveS || 1) * 1000;
+    if (ageMs > Math.max(20000, 6 * eff)) return 'unavailable';
+    if (ageMs > Math.max(6000, 3 * eff)) return 'reconnecting';
+    return 'live';
+}
+
+// Keep the row order steady while the pointer is over the table: rows already
+// shown keep their place, new ones follow in the order given.
+export function holdOrder(rows, previousOrder) {
+    const pos = new Map(previousOrder.map((ip, i) => [ip, i]));
+    const at = (r) => (pos.has(r.ip) ? pos.get(r.ip) : previousOrder.length);
+    return rows.map((r, i) => ({ r, i })).sort((a, b) => (at(a.r) - at(b.r)) || (a.i - b.i)).map(x => x.r);
+}
+
+export function fmtRate(bps) {
+    if (!bps || bps < 1) return '0 b/s';
+    const units = ['b/s', 'kb/s', 'Mb/s', 'Gb/s'];
+    let i = 0, n = bps;
+    while (n >= 1000 && i < units.length - 1) { n /= 1000; i++; }
+    return `${n.toFixed(i > 0 && n < 100 ? 1 : 0)} ${units[i]}`;
+}
 
 export default class TopDevices extends BaseWidget {
 
