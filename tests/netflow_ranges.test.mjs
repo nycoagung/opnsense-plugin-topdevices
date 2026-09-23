@@ -617,3 +617,37 @@ test('leaving Live for a custom range brings back nothing from before Live', asy
     assert.equal(w.state.window, null);
     assert.deepEqual(byIp(w), {});
 });
+
+// a flows/device answer as flows.py gives it (spec §5.1)
+function deviceAnswer(from, to) {
+    return { v: '0.2.0', ip: '192.168.1.10', from, to, log_from: from,
+             peers: { all: [['8.8.8.8', 1000], ['1.1.1.1', 300], ['192.168.20.5', 50]], inet: [['8.8.8.8', 1000], ['1.1.1.1', 300]] },
+             ports: { all: [['443', 1300], ['445', 50]], inet: [['443', 1300]] } };
+}
+
+test('the device panel reads the raw log for the table\'s window, and a scope switch reuses it', async () => {
+    const { w } = await loadRaw('1h', (url) => (url.includes('/device/') ? deviceAnswer(NOW - 3600, NOW)
+        : totalsAnswer(NOW - 3600, NOW)));
+    const before = requests.length;
+    let d = await w._detailsData('192.168.1.10');
+    assert.deepEqual(requests.slice(before), [`${FLOWS_API}/device/192.168.1.10/${NOW - 3600}/${NOW}`]);
+    assert.deepEqual(d, { peers: { '8.8.8.8': 1000, '1.1.1.1': 300, '192.168.20.5': 50 }, ports: { 443: 1300, 445: 50 },
+                          down: 1000, up: 357, note: null });
+    w.state.scope = 'wan';
+    await w.render();
+    d = await w._detailsData('192.168.1.10');
+    assert.equal(requests.length, before + 1);
+    assert.deepEqual([d.peers, d.down, d.up], [{ '8.8.8.8': 1000, '1.1.1.1': 300 }, 1000, 300]);
+});
+
+test('the device panel says when its lists cover less than the range', async () => {
+    const { w } = await loadRaw('1h', (url) => (url.includes('/device/') ? deviceAnswer(NOW - 3000, NOW)
+        : totalsAnswer(NOW - 3600, NOW)));
+    assert.equal((await w._detailsData('192.168.1.10')).note, 'Peers and ports cover the last 50 min');
+});
+
+test('a refused panel read is an error, which the panel shows as unavailable', async () => {
+    const { w } = await loadRaw('1h', (url) => (url.includes('/device/') ? { error: '192.168.1.99 is not a local device' }
+        : totalsAnswer(NOW - 3600, NOW)));
+    await assert.rejects(w._detailsData('192.168.1.99'));
+});

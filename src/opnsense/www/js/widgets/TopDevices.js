@@ -1080,7 +1080,7 @@ export default class TopDevices extends BaseWidget {
         if (this.loading) return;
         this.loading = true;
         this._busy(true);
-        if (force) this.cache = {};          // drop the cached export on an explicit refresh
+        if (force) { this.cache = {}; this._device = null; }   // an explicit refresh reads everything again
         try {
             await this._loadNames();
             if (await this._load()) {
@@ -1727,10 +1727,27 @@ export default class TopDevices extends BaseWidget {
         try { await this._renderDetails(ip); } finally { this._busy(false); }
     }
 
+    // The device panel from the raw log, for exactly the table's window. The answer
+    // holds both scopes, so a scope switch redraws the panel without a request.
+    async _rawDetails(ip) {
+        const q = this.state.request;
+        const key = `device/${ip}/${q.from}/${q.to}`;
+        if (!this._device || this._device.key !== key) this._device = { key, resp: await this._flows(key) };
+        const d = this._device.resp;
+        const k = q.scope === 'wan' ? 'inet' : 'all';
+        const row = this.state.rows.find(x => x.ip === ip);
+        return {
+            peers: Object.fromEntries(d.peers[k]), ports: Object.fromEntries(d.ports[k]),
+            down: row ? row.down : 0, up: row ? row.up : 0,
+            note: d.from > q.from ? `Peers and ports cover the last ${fmtSpan(d.to - d.from)}` : null
+        };
+    }
+
     // Peers and ports exist only in the daily details, which can cover more than
     // the table's window (see nfPlan): the lists then say what they cover, while
     // the panel's download and upload stay the table's.
     async _detailsData(ip) {
+        if (this.state.request && this.state.request.raw) return this._rawDetails(ip);
         const q = this.state.request, table = this.state.plan;
         if (!q || !table) throw new Error('no range loaded');
         const plan = detailsPlan(q.from, q.to, q.now);

@@ -160,6 +160,10 @@ const mutants = [
     ['a raw answer landing mid-switch ends the loop', '        while (this.state.window && q && q.scope !== this.state.scope) {', '        while (this.state.window && q && !q.raw && q.scope !== this.state.scope) {'],
     ['a raw answer applied with no table on screen', '        while (this.state.window && q && q.scope !== this.state.scope) {', '        while ((this.state.window || (q && q.raw)) && q && q.scope !== this.state.scope) {'],
     ["the caption names the widget's own WAN, not the answer's", '(r.wan || []).join', '(this.wanDevs || []).join'],
+    ['the raw panel re-read on a scope switch', '        if (!this._device || this._device.key !== key)', '        if (true)'],
+    ["the raw panel's internet lists taken from all traffic", "        const k = q.scope === 'wan' ? 'inet' : 'all';", "        const k = 'all';"],
+    ['no note when the raw panel covers less', '            note: d.from > q.from ? ', '            note: false ? '],
+    ['the panel reads the daily details on a raw range', '        if (this.state.request && this.state.request.raw) return this._rawDetails(ip);\n', ''],
 ];
 
 let survivors = 0;
