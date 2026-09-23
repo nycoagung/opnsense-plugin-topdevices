@@ -247,6 +247,13 @@ backend; running it a second time completes the upgrade, still without SSH. From
 *… live traffic* before 0.2.0), or the widget disappears for them (see
 *Access* under *Live traffic*).
 
+**Upgrading from 0.1.x to 0.2.0:** run the bootstrap command above once, too.
+The 0.1.x installer only knows its own six files, so one run of
+`configctl topdevices install` (or of the weekly job, once `main` carries 0.2.0)
+installs the new widget and installer but not `flows.py`, its controller or its
+configd actions. Until a second run completes the upgrade, recent ranges fall
+back to NetFlow's records, with the widget's note.
+
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
 fail here — the **GitHub API** costs one rate-limited request per file (60/hour
@@ -371,7 +378,7 @@ behind a traffic-shaper pipe.
 limit locked the sibling `os-parentalcontrol` plugin out entirely. No GitHub API
 request is made at all now, and no hop goes through raw's per-edge cache — both
 of which silently served stale files here before. The codeload path was dry-run
-against the live repo and installs all eight files byte-identically.
+against the live repo and installed all six files of 0.1.x byte-identically.
 
 ## Tests
 
@@ -408,10 +415,13 @@ Rolling back to 0.0.1 with its bootstrap command leaves the live sampler, the
 controller and the ACL behind. They are inert without the `live` action, and the
 commands above remove them.
 
-Rolling back from 0.2.0 to an earlier release leaves `flows.py` and
-`Api/FlowsController.php` behind in the same way: they are inert without the
-`flows` actions, which the earlier installer's actions file does not list, and
-the commands above remove them.
+To roll back from 0.2.0, pause the weekly job, then run the bootstrap command
+with the earlier release's tag: `refs/tags/0.1.1` in the URL, and the
+`opnsense-plugin-topdevices-0.1.1` directory. The installed 0.2.0 installer
+refuses a source without `flows.py`, so `configctl topdevices install` cannot
+go back. `flows.py` and `Api/FlowsController.php` stay behind, inert without
+the `flows` actions, which the earlier installer's actions file does not list,
+and the commands above remove them.
 
 ## Requirements
 

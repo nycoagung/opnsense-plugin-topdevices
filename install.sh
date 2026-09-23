@@ -24,6 +24,11 @@
 # UPGRADING FROM 0.0.1: the 0.0.1 installer only knows its own three files. Run
 # through configctl or cron it installs the new widget and this script but not
 # the live backend, until the next run. Use the bootstrap command once instead.
+# UPGRADING FROM 0.1.x: likewise, the 0.1.x installer only knows its six files:
+# run through configctl or cron it installs the new widget and this script but
+# not flows.py, its controller or the flows actions, until the next run (the
+# widget falls back to NetFlow's records meanwhile). Use the bootstrap command
+# once instead.
 #
 # NOTE: OPNsense cron runs as root regardless - configd executes jobs as root.
 # Using cron avoids interactive SSH, not root privileges.
