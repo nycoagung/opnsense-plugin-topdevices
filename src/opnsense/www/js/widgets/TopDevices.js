@@ -287,6 +287,39 @@ export function deviceTotals(rows, provider, keep) {
     return acc;
 }
 
+/* ---------- recent ranges from the raw flow log (tests/netflow_ranges.test.mjs) ---------- */
+
+// A range that starts within the last day - and not in the future, where nothing
+// is recorded yet - is read from NetFlow's raw flow log through the plugin's flows
+// endpoints: exact to the second, both scopes in one answer (spec
+// 2026-09-23-raw-flow-ranges §4). Older ranges read NetFlow's records (nfPlan).
+export function rawRange(fromS, nowS) {
+    return fromS >= nowS - DAY && fromS < nowS;
+}
+
+// One scope's rows from a flows/totals answer, whose devices hold
+// [down, up, internet down, internet up].
+export function rawRows(resp, scope) {
+    const k = scope === 'wan' ? 2 : 0;
+    return Object.entries(resp.devices || {})
+        .map(([ip, v]) => ({ ip: ip, down: v[k], up: v[k + 1] }))
+        .filter(r => r.down + r.up > 0);
+}
+
+// The span a scope's figures cover in a flows/totals answer.
+export function rawSpan(resp, scope) {
+    const s = scope === 'wan' ? resp.inet : resp.all;
+    return [s.from, s.to];
+}
+
+// "23 h 0 min", "45 min": a span, rounded down to the minute
+export function fmtSpan(seconds) {
+    const m = Math.floor(Math.max(0, seconds) / 60);
+    return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
+}
+
+const FALLBACK_NOTE = "The raw flow log could not be read: showing NetFlow's records";
+
 export function fmtRate(bps) {
     if (!bps || bps < 1) return '0 b/s';
     const units = ['b/s', 'kb/s', 'Mb/s', 'Gb/s'];
@@ -624,6 +657,23 @@ export default class TopDevices extends BaseWidget {
         const token = this._loadToken = (this._loadToken || 0) + 1;
         const now = Math.floor(nowMs / 1000);
         const [from, to] = this._window(this.state.range, nowMs);
+        let fallback = false;
+        if (rawRange(from, now)) {
+            const end = Math.min(to, now);
+            let resp = null;
+            try { resp = await this._flows(`totals/${from}/${end}`); } catch (e) { resp = null; }
+            if (token !== this._loadToken) return false;
+            if (resp) {
+                this.state.raw = resp;
+                this.state.plan = null;
+                this.state.fallback = false;
+                this.state.request = { from, to: end, now, scope, raw: true };
+                this._applyRaw(scope);
+                this._pruneCache(this.state.request);
+                return true;
+            }
+            fallback = true;                     // say so, and read NetFlow's records instead
+        }
         const plan = nfPlan(from, to, now, scope);
         const flows = await this._export(plan);
         if (token !== this._loadToken) return false;
@@ -635,8 +685,33 @@ export default class TopDevices extends BaseWidget {
         this.state.window = [plan.start, plan.end];          // what the figures cover
         this.state.plan = plan;
         this.state.request = { from, to, now, scope };        // what the range asked for
+        this.state.raw = null;
+        this.state.fallback = fallback;
         this._pruneCache(this.state.request);
         return true;
+    }
+
+    // A flows/ answer from the plugin's own endpoint. $.ajax, not ajaxCall: that
+    // gives up after 5 s and retries, and every retry reads the whole log again.
+    // Only a JSON object without an error is an answer.
+    _flows(path) {
+        return new Promise((resolve, reject) => {
+            $.ajax({ url: `/api/topdevices/flows/${path}`, dataType: 'json', timeout: 60000 })
+                .done((r) => (r && typeof r === 'object' && !r.error ? resolve(r)
+                    : reject(new Error((r && r.error) || 'no answer'))))
+                .fail(() => reject(new Error('flows request failed')));
+        });
+    }
+
+    // Rows, span and scope from the raw answer in hand: a scope switch needs no request.
+    _applyRaw(scope) {
+        const r = this.state.raw;
+        this.state.rows = rawRows(r, scope).map(d => ({
+            ip: d.ip, name: this.names[d.ip] || (this.ifaceNames || {})[d.ip] || '', net: this._netOf(d.ip),
+            down: d.down, up: d.up, total: d.down + d.up
+        }));
+        this.state.window = rawSpan(r, scope);
+        this.state.request = Object.assign({}, this.state.request, { scope });
     }
 
     // A load that failed leaves no rows it cannot vouch for, and no panel beside them.
@@ -648,10 +723,34 @@ export default class TopDevices extends BaseWidget {
         this._applyLayout();
     }
 
+    // What the caption says: the raw answer's span, or the export's (spec §4).
+    _windowCaption() {
+        if (this.state.request.raw) return this._rawCaption();
+        const c = this._exportCaption();
+        if (this.state.fallback) c.note = c.note ? `${FALLBACK_NOTE} · ${c.note}` : FALLBACK_NOTE;
+        return c;
+    }
+
+    // The raw answer's caption: the span the scope covers, and a note only when
+    // internet only reaches past the log.
+    _rawCaption() {
+        const r = this.state.raw, q = this.state.request;
+        const wan = q.scope === 'wan';
+        const tail = wan ? ` · internet only (via ${(r.wan || []).join(', ') || 'WAN'})` : ' · all traffic';
+        const [a, b] = rawSpan(r, q.scope);
+        if (wan && a >= b) {
+            return { text: `${this._dateStr(q.from)}  →  ${this._dateStr(q.to)}${tail}`,
+                     note: 'Internet only: no flows in the log for this range' };
+        }
+        const note = wan && a > q.from
+            ? `Internet only covers the last ${fmtSpan(b - a)}: older flows are no longer in the log` : null;
+        return { text: `${this._dateStr(a)}  →  ${this._dateStr(b)}${tail}`, note };
+    }
+
     // The span the figures cover, and a note when the buckets are coarser than
     // the range asked for (see nfPlan). Everything comes from the loaded request,
     // not the controls: a scope change whose export failed leaves the old rows.
-    _windowCaption() {
+    _exportCaption() {
         const p = this.state.plan, q = this.state.request;
         const scopeTxt = q.scope === 'wan'
             ? ` · internet only (via ${this.wanDevs.join(', ') || 'WAN'})`
@@ -1029,7 +1128,9 @@ export default class TopDevices extends BaseWidget {
         // and switching back is served from the cache - until the rows match the
         // control, since a load for a scope the user has already left can land last.
         let q = this.state.request;
-        while (this.state.window && q && q.scope !== this.state.scope) {
+        if (q && q.raw && q.scope !== this.state.scope) this._applyRaw(this.state.scope);   // both scopes in hand
+        q = this.state.request;
+        while (this.state.window && q && !q.raw && q.scope !== this.state.scope) {
             let current;
             try { current = await this._load(q.now * 1000, this.state.scope); }
             catch (e) { this._loadFailed(); return; }
@@ -1051,7 +1152,7 @@ export default class TopDevices extends BaseWidget {
         // top 10 regardless of table length - labelled, never a silent truncation.
         const CHART_MAX = 10;
 
-        const caption = this.state.window && this.state.plan ? this._windowCaption() : null;
+        const caption = this.state.window && this.state.request ? this._windowCaption() : null;
         if (caption) $('.td-window small').text(caption.text);
         this._renderChrome();
         $('.td-body').html(this._rowsHtml(rows, (v) => this._fmt(v), 'No matching devices'));

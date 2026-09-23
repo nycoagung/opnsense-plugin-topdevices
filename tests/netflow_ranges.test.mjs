@@ -75,6 +75,8 @@ const serve = (url) => (url.includes('/FlowSourceAddrTotals/') ? csv(totalsRows(
 const S = (h, min = 0, day = 23) => Date.UTC(2026, 8, day, h, min) / 1000;
 const NOW = S(9, 8) + 54;
 const EXPORT = '/api/diagnostics/networkinsight/export';
+const FLOWS_API = '/api/topdevices/flows';
+const FALLBACK = "The raw flow log could not be read: showing NetFlow's records";
 
 function widget(range, scope = 'all') {
     const w = new TopDevices({});
@@ -236,13 +238,13 @@ test('Today in a half-hour time zone starts at the nearest UTC hour', inZone('As
     const { w } = await load('today', 'all', S(6, 30));                // 12:00 IST
     assert.deepEqual(w.state.window, [S(19, 0, 22), S(6, 30)]);        // 00:30 IST
     assert.match(w._windowCaption().text, /^Wed Sep 23 00:30:00 IST 2026/);
-    assert.equal(w._windowCaption().note, null);
+    assert.equal(w._windowCaption().note, FALLBACK);
 }));
 
 test('in UTC, Internet only · Last hour just after midnight still says it is kept per day', inZone('UTC', async () => {
     const { w } = await load('1h', 'wan', S(0, 20));
     assert.equal(w._windowCaption().note,
-        'Internet only is kept per day (days start at 00:00): these cover 00:00 → 00:20');
+        `${FALLBACK} · Internet only is kept per day (days start at 00:00): these cover 00:00 → 00:20`);
 }));
 
 // --- rows to download and upload ---------------------------------------------
@@ -275,15 +277,15 @@ test('all traffic from the totals: downloads, uploads and local traffic, broadca
 
 // --- saying what the figures cover --------------------------------------------
 
-test('the caption gives the span the figures cover', async () => {
+test('on the fallback path, the caption gives the span the figures cover', async () => {
     const { w } = await load('1h');
     assert.match(w._windowCaption().text, /^Wed Sep 23 18:10:00 AEST 2026 {2}→ {2}Wed Sep 23 19:08:54 AEST 2026 · all traffic$/);
-    assert.equal(w._windowCaption().note, null);
+    assert.equal(w._windowCaption().note, FALLBACK);
 });
 
 test('Internet only on a sub-day range says it is kept per day, and from when', async () => {
     const { w } = await load('1h', 'wan');
-    assert.match(w._windowCaption().note, /^Internet only is kept per day \(days start at 10:00\): these cover 10:00 → 19:08$/);
+    assert.equal(w._windowCaption().note, `${FALLBACK} · Internet only is kept per day (days start at 10:00): these cover 10:00 → 19:08`);
 });
 
 test('a day range older than the hourly data says why its days start at 10:00', async () => {
@@ -295,10 +297,10 @@ test('Internet only · Last hour right after 10:00 still says it is kept per day
     for (const [h, min, shown] of [[0, 5, '10:05'], [0, 30, '10:30'], [1, 30, '11:30']]) {
         const { w } = await load('1h', 'wan', S(h, min));
         assert.equal(w._windowCaption().note,
-            `Internet only is kept per day (days start at 10:00): these cover 10:00 → ${shown}`, shown);
+            `${FALLBACK} · Internet only is kept per day (days start at 10:00): these cover 10:00 → ${shown}`, shown);
     }
     const { w } = await load('1h', 'all', S(0, 5));
-    assert.equal(w._windowCaption().note, null);
+    assert.equal(w._windowCaption().note, FALLBACK);
 });
 
 test('a span inside one minute is told in seconds', async () => {
@@ -306,10 +308,10 @@ test('a span inside one minute is told in seconds', async () => {
     assert.match(w._windowCaption().note, /these cover 10:00:00 → 10:00:30$/);
 });
 
-test('no note when the buckets fit the range', async () => {
+test('on the fallback path, the only note is the fallback\'s when the buckets fit', async () => {
     for (const range of ['1h', '24h', 'today']) {
         const { w } = await load(range);
-        assert.equal(w._windowCaption().note, null, range);
+        assert.equal(w._windowCaption().note, FALLBACK, range);
     }
 });
 
@@ -384,14 +386,14 @@ test('a late internet-only export does not overwrite all traffic', async () => {
     assert.match(dom['.td-window small'], / · all traffic$/);
 });
 
-test('switching scope and back reads each export once, for the window on screen', async () => {
+test('on the fallback path, switching scope and back reads each export once', async () => {
     const { w } = await load('1h');
     const before = requests.length;
     w.state.scope = 'wan';
     await w.render();
     w.state.scope = 'all';
     await w.render();
-    assert.deepEqual(requests.slice(before), [`${EXPORT}/FlowSourceAddrDetails/${S(0, 0, 23)}/${NOW}/86400`]);
+    assert.deepEqual(requests.slice(before), [`${FLOWS_API}/totals/${NOW - 3600}/${NOW}`, `${EXPORT}/FlowSourceAddrDetails/${S(0, 0, 23)}/${NOW}/86400`, `${FLOWS_API}/totals/${NOW - 3600}/${NOW}`]);
     assert.deepEqual(w.state.window, [S(8, 10), NOW]);
     assert.deepEqual(byIp(w), { '192.168.1.10': [1000, 357], '192.168.20.5': [50, 0] });
 });
@@ -437,4 +439,130 @@ test('a failed scope change says so and closes the device panel', async () => {
     assert.match(dom['.td-body'], /Unable to read NetFlow data/);
     assert.equal(dom['.td-window small'], '');
     assert.equal(w.state.selected, null);
+});
+
+// --- recent ranges from the raw flow log -----------------------------------------
+
+// a flows/totals answer as flows.py gives it (spec §5.1)
+function totalsAnswer(from, to, { L = from - 3600, hourlyUntil = null,
+                                  devices = { '192.168.1.10': [1000, 357, 1000, 300], '192.168.20.5': [50, 0, 0, 0] } } = {}) {
+    return { v: '0.2.0', now: to, log_from: L,
+             all: { from, to, hourly_until: hourlyUntil }, inet: { from: Math.max(from, L), to },
+             wan: ['em0'], devices };
+}
+const flowsOnly = (answer) => (url) => (url.startsWith(`${FLOWS_API}/`) ? answer(url) : null);
+
+async function loadRaw(range, answer, now = NOW, scope = 'all') {
+    const w = widget(range, scope);
+    reply = flowsOnly(answer);
+    const before = requests.length;
+    await w._load(now * 1000);
+    return { w, made: requests.slice(before) };
+}
+
+test('a range starting within the last day, and not in the future, is read from the raw log', () => {
+    assert.equal(m.rawRange(NOW - 86400, NOW), true);
+    assert.equal(m.rawRange(NOW - 86401, NOW), false);
+    assert.equal(m.rawRange(NOW, NOW), false);
+});
+
+test('spans are told rounded down to the minute', () => {
+    assert.equal(m.fmtSpan(22 * 3600 + 40 * 60 + 59), '22 h 40 min');
+    assert.equal(m.fmtSpan(3600), '1 h 0 min');
+    assert.equal(m.fmtSpan(59), '0 min');
+});
+
+test('Last hour reads the raw log for exactly the last hour', async () => {
+    const { w, made } = await loadRaw('1h', () => totalsAnswer(NOW - 3600, NOW));
+    assert.deepEqual(made, [`${FLOWS_API}/totals/${NOW - 3600}/${NOW}`]);
+    assert.deepEqual(w.state.window, [NOW - 3600, NOW]);
+    assert.deepEqual(byIp(w), { '192.168.1.10': [1000, 357], '192.168.20.5': [50, 0] });
+    assert.deepEqual(w._windowCaption(), {
+        text: 'Wed Sep 23 18:08:54 AEST 2026  →  Wed Sep 23 19:08:54 AEST 2026 · all traffic', note: null });
+});
+
+test('Today and Last 24 hours read the raw log from local midnight and from a day back', async () => {
+    let r = await loadRaw('today', () => totalsAnswer(S(14, 0, 22), NOW));
+    assert.deepEqual(r.made, [`${FLOWS_API}/totals/${S(14, 0, 22)}/${NOW}`]);
+    assert.match(r.w._windowCaption().text, /^Wed Sep 23 00:00:00 AEST 2026 {2}→ {2}Wed Sep 23 19:08:54 AEST 2026/);
+    r = await loadRaw('24h', () => totalsAnswer(NOW - 86400, NOW));
+    assert.deepEqual(r.made, [`${FLOWS_API}/totals/${NOW - 86400}/${NOW}`]);
+});
+
+test('Yesterday and Last 7 days still read NetFlow\'s records', async () => {
+    for (const range of ['yesterday', '7d']) {
+        const before = requests.length;
+        await load(range);
+        assert.ok(!requests.slice(before).some(u => u.startsWith(`${FLOWS_API}/`)), range);
+    }
+});
+
+test('both scopes come from one answer: switching scope sends no request', async () => {
+    const { w } = await loadRaw('1h', () => totalsAnswer(NOW - 3600, NOW));
+    const before = requests.length;
+    w.state.scope = 'wan';
+    await w.render();
+    assert.equal(requests.length, before);
+    assert.deepEqual(byIp(w), { '192.168.1.10': [1000, 300] });            // devices with internet traffic only
+    assert.match(dom['.td-window small'], / · internet only \(via em0\)$/);
+});
+
+test('internet only reaching past the log says how much it covers', async () => {
+    const L = NOW - 3000;
+    const { w } = await loadRaw('1h', () => totalsAnswer(NOW - 3600, NOW, { L }), NOW, 'wan');
+    const c = w._windowCaption();
+    assert.match(c.text, /^Wed Sep 23 18:18:54 AEST 2026 {2}→/);
+    assert.equal(c.note, 'Internet only covers the last 50 min: older flows are no longer in the log');
+});
+
+test('internet only for a range wholly before the log says so', async () => {
+    const w = widget('custom', 'wan');
+    w.state.customFrom = '2026-09-23T17:00';
+    w.state.customTo = '2026-09-23T17:30';
+    // the log starts after the range: no internet-only span, so no internet bytes
+    reply = flowsOnly(() => totalsAnswer(S(7, 0), S(7, 30), { L: S(8, 0), devices: { '192.168.1.10': [1000, 357, 0, 0] } }));
+    await w._load(NOW * 1000);
+    assert.deepEqual(byIp(w), {});
+    assert.equal(w._windowCaption().note, 'Internet only: no flows in the log for this range');
+});
+
+test('all traffic filled from hourly records shows the whole range with no note', async () => {
+    const { w } = await loadRaw('24h', () => totalsAnswer(NOW - 86400, NOW, { L: NOW - 80000, hourlyUntil: NOW - 79200 }));
+    assert.deepEqual(w._windowCaption(), {
+        text: 'Tue Sep 22 19:08:54 AEST 2026  →  Wed Sep 23 19:08:54 AEST 2026 · all traffic', note: null });
+});
+
+test('a failed or refused raw read falls back to NetFlow\'s records, and says so', async () => {
+    for (const refused of [null, { error: 'the NetFlow flow log holds no flows yet' }]) {
+        const w = widget('1h');
+        reply = (url) => (url.startsWith(`${FLOWS_API}/`) ? refused : serve(url));
+        await w._load(NOW * 1000);
+        assert.equal(requests[requests.length - 1], `${EXPORT}/FlowSourceAddrTotals/${S(8, 10)}/${NOW}/300`);
+        assert.deepEqual(byIp(w), { '192.168.1.10': [1000, 357], '192.168.20.5': [50, 0] });
+        assert.equal(w._windowCaption().note, FALLBACK);
+    }
+});
+
+test('a raw answer that lands after a newer load is dropped', async () => {
+    const w = widget('1h');
+    let release;
+    reply = flowsOnly((url) => (url.includes(`/${NOW - 3600}/`)
+        ? new Promise(r => { release = () => r(totalsAnswer(NOW - 3600, NOW)); })
+        : totalsAnswer(S(14, 0, 22), NOW)));
+    const first = w._load(NOW * 1000);
+    await tick();
+    w.state.range = 'today';
+    await w._load(NOW * 1000);
+    release();
+    assert.equal(await first, false);
+    assert.deepEqual(w.state.window, [S(14, 0, 22), NOW]);
+});
+
+test('a raw load drops the exports of earlier windows', async () => {
+    const { w } = await load('7d');                     // NetFlow's records: the week's export is cached
+    assert.ok(Object.keys(w.cache).length > 0);
+    w.state.range = '1h';
+    reply = flowsOnly(() => totalsAnswer(NOW - 3600, NOW));
+    await w._load(NOW * 1000);
+    assert.deepEqual(Object.keys(w.cache), []);
 });
