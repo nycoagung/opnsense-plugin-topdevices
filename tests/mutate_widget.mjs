@@ -16,6 +16,7 @@ const mutants = [
     ['watchdog not cleared', '        if (this.live.watchdog) { clearInterval(this.live.watchdog); this.live.watchdog = null; }\n', ''],
     ['fixed timeouts instead of scaling with the interval', "    const eff = Math.max(1, effectiveS || 1) * 1000;", '    const eff = 1000;'],
     ['no automatic retry once unavailable', '            if (now - this.live.retryAt >= LIVE_RETRY_MS) this._startLive();\n', ''],
+    ['a stale connect timer may reopen the stream outside Live', "        if (this.live.closed || this.state.range !== 'live') return;\n", ''],
     ['baseline events averaged in', '    if (!event || !(event.dt > 0)) return v;', '    if (!event) return v;'],
 ];
 
