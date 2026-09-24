@@ -11,6 +11,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 LIVE = ROOT / 'src/opnsense/scripts/topdevices/live.py'
 FLOWS = ROOT / 'src/opnsense/scripts/topdevices/flows.py'
+KEEP = ROOT / 'src/opnsense/scripts/topdevices/keep.py'
 
 MUTANTS = [
     ('port-forward direction not swapped',
@@ -108,6 +109,24 @@ FLOW_MUTANTS = [
     ('no upstream interface ignored', '    if not upstream_devs:\n        raise', '    if False:\n        raise'),
 ]
 
+KEEP_MUTANTS = [
+    ('the current log kept too',
+     "    return [p for p in glob.glob(glob.escape(log) + '.*') if ROTATED.fullmatch(os.path.basename(p)[len(base):])]",
+     "    return glob.glob(glob.escape(log) + '*')"),
+    ('a file kept twice when flowd writes after the rename',
+     '        if (st.st_dev, st.st_ino) in have or st.st_mtime < now - keep_s:', '        if st.st_mtime < now - keep_s:'),
+    ('a file past the reach linked, only to be pruned',
+     '        if (st.st_dev, st.st_ino) in have or st.st_mtime < now - keep_s:', '        if (st.st_dev, st.st_ino) in have:'),
+    ('kept for 50 hours, not 51', 'KEEP_S = 51 * 3600', 'KEEP_S = 50 * 3600'),
+    ('no size cap', '        if st.st_mtime < now - keep_s or total > cap:', '        if st.st_mtime < now - keep_s:'),
+    ('the newest go first over the cap', 'key=lambda kv: kv[1].st_mtime)', 'key=lambda kv: -kv[1].st_mtime)'),
+    ('the directory left as it was', '    os.chmod(kept, 0o700)\n', ''),
+    ('a file renamed meanwhile stops the pass', '        except (FileNotFoundError, FileExistsError):', '        except FileExistsError:'),
+    ('a file linked meanwhile stops the pass', '        except (FileNotFoundError, FileExistsError):', '        except FileNotFoundError:'),
+    ('an error reported as success', '        return 1\n', '        return 0\n'),
+    ('a cap of 10 GB', 'CAP = 1 << 30', 'CAP = 10 << 30'),
+]
+
 
 def run(target, env_name, pattern, mutants, survivors):
     source = target.read_text()
@@ -131,7 +150,8 @@ def run(target, env_name, pattern, mutants, survivors):
 
 def main():
     survivors = []
-    for args in ((LIVE, 'LIVE_PY', 'test_live.py', MUTANTS), (FLOWS, 'FLOWS_PY', 'test_flows.py', FLOW_MUTANTS)):
+    for args in ((LIVE, 'LIVE_PY', 'test_live.py', MUTANTS), (FLOWS, 'FLOWS_PY', 'test_flows.py', FLOW_MUTANTS),
+                 (KEEP, 'KEEP_PY', 'test_keep.py', KEEP_MUTANTS)):
         if not run(*args, survivors):
             return 2
     return 1 if survivors else 0
