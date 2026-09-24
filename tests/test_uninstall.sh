@@ -50,7 +50,7 @@ fresh() {
     for p in $OURS $THEIRS; do [ -e "$R$p" ] || fail "test setup: $p missing"; done
     echo "$R"
 }
-nlink() { stat -f '%l' "$1" 2>/dev/null || stat -c '%h' "$1"; }
+nlink() { stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1"; }    # GNU first: BSD's -f means something else to GNU stat
 all_gone() { for p in $OURS; do [ ! -e "$1$p" ] || fail "$2: still there: $p"; done
              for p in $THEIRS; do [ -e "$1$p" ] || fail "$2: removed something of core's: $p"; done; }
 
@@ -103,6 +103,8 @@ cat > "$S/php" <<'SH'
 #!/bin/sh
 case "$*" in
     *invalidateCache*) echo "php acl" >> "$CALLS"; exit 0 ;;
+    *display_errors=stderr*) ;;
+    *) echo "php jobs without display_errors=stderr" >> "$CALLS"; exit 255 ;;
 esac
 echo "php jobs" >> "$CALLS"
 mode=$(cat "$MODE")
@@ -123,10 +125,13 @@ echo "daemon $*" >> "$CALLS"
 SH
 chmod 755 "$S/php" "$S/configctl" "$S/daemon"
 export CALLS="$LOG" MODE="$S/php.mode"
-onbox() { # MODE FLAG... -> output; $? is the script's exit status
+onbox() { # MODE FLAG... -> stdout only (warnings must be there, configd drops stderr); $? is the script's exit status
     echo "$1" > "$MODE"; shift; : > "$LOG"
-    ROOT="$R" STUBS=1 PHP="$S/php" CONFIGCTL="$S/configctl" DAEMON="$S/daemon" sh "$R$U/scripts/topdevices/uninstall.sh" "$@" 2>&1
+    ROOT="$R" STUBS=1 PHP="$S/php" CONFIGCTL="$S/configctl" DAEMON="$S/daemon" sh "$R$U/scripts/topdevices/uninstall.sh" "$@" 2>/dev/null
 }
+# STUBS=1 without all three stand-ins must refuse, not reach for the real tools
+R=$(fresh)
+ROOT="$R" STUBS=1 PHP="$S/php" sh "$R$U/scripts/topdevices/uninstall.sh" --dry-run >/dev/null 2>&1 && fail "STUBS=1 ran with stand-ins missing"
 
 # 5a. two jobs found: deleted, cron reloaded, ACL cleared before configd is scheduled, exit 0
 R=$(fresh)

@@ -27,11 +27,14 @@
 set -u
 
 ROOT="${ROOT:-}"
-PHP="${PHP:-/usr/local/bin/php}"
-CONFIGCTL="${CONFIGCTL:-/usr/local/sbin/configctl}"
-DAEMON="${DAEMON:-/usr/sbin/daemon}"
-ONBOX=1
-[ -n "$ROOT" ] && [ -z "${STUBS:-}" ] && ONBOX=
+if [ -n "${STUBS:-}" ]; then
+    # the test's stand-ins, all three or nothing; the firewall-only steps run against them
+    PHP="${PHP:?STUBS=1 needs PHP}"; CONFIGCTL="${CONFIGCTL:?STUBS=1 needs CONFIGCTL}"; DAEMON="${DAEMON:?STUBS=1 needs DAEMON}"
+    ONBOX=1
+else
+    PHP=/usr/local/bin/php; CONFIGCTL=/usr/local/sbin/configctl; DAEMON=/usr/sbin/daemon
+    ONBOX=1; [ -n "$ROOT" ] && ONBOX=
+fi
 DRY=
 case "${1:-}" in
     --dry-run) DRY=1 ;;
@@ -113,6 +116,7 @@ remove "$CRON"
 if [ -z "$DRY" ]; then
     i=0
     while [ $i -lt 30 ] && pgrep -qf "$SCRIPTS/keep.py" 2>/dev/null; do sleep 1; i=$((i + 1)); done
+    [ $i -lt 30 ] || warn "a keep.py run is still going after 30 s; if $KEPT comes back, remove it by hand"
 fi
 remove "$KEPT"
 
