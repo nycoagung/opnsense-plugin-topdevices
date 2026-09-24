@@ -162,8 +162,9 @@ message:TopDevices flows device %s
 
 [uninstall]
 command:$SCRIPTS/uninstall.sh
-parameters:
+parameters:%s
 type:script_output
+errors:no
 message:Removing TopDevices widget
 ACT
     if cmp -s "$TMP2" "$ROOT$ACTIONS/actions_topdevices.conf" 2>/dev/null; then
