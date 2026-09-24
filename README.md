@@ -374,14 +374,52 @@ behind a traffic-shaper pipe.
 - Core's export writes an extra empty column before any field that is zero. It
   only ever hit 0-byte rows, which the widget reads as 0.
 
-**Automated tests** cover the live sampler, the widget's live logic and, since
-0.1.2, the NetFlow ranges (see *Tests*).
+**Recent ranges (0.2.0)**, measured on the reference install (6 cores, Python 3.13)
+on 2026-09-24 (AEST), installed with the bootstrap command from the branch:
+
+- **Equal to core's own code**: `flows.py` against core's parser and aggregators
+  run once over the live log (179,356 records) agreed for every device to the
+  byte - all traffic for the whole hour 07:00-08:00 (39 devices), internet only
+  for 07:15-07:45 (31 devices). The largest gap, 0.49 B, is the answer's rounding
+  to whole bytes. The unit tests pass on the firewall against its own core library.
+- **Speed** through configd with 3 workers: Last hour 0.33 s, Today 0.59 s, Last
+  24 hours 1.20 s, reading all 11 log files.
+- **Reach**: the log held 20.9 hours that day, so Last 24 hours' internet only
+  started at the log, with its note, and all traffic took the hours before it
+  from the hourly records. Every record carried ports (9,567 of 9,567 in the
+  newest file), so the panel's Top ports work.
+- **The endpoints**, called from the admin machine, refused bad input with a
+  reason: non-digits, IPv6, a zero-padded IPv4, a range starting over a day ago,
+  a reversed range. A device panel over a window that began 24 h 15 min ago
+  answered.
+- **End to end**: the widget's own code, run against the live endpoints, made one
+  request per recent range, showed rows equal to the answer in both scopes, sent
+  nothing on a scope switch, and captioned each range to the second. A device
+  panel opened 400 s after a Last 24 hours load answered. On the dashboard itself
+  the captions read right, and the panel still works 6 minutes on.
+- **Upgrade and the weekly job**, simulated in scratch roots: the 0.1.2
+  installer's first run installs only the new widget and installer (the widget
+  falls back), and a second run completes it. The 0.2.0 installer refuses
+  `main`'s 0.1.1 tree and changes nothing.
+- **Installed files**: all eight, and the generated actions file, byte-identical
+  to a dry run of the branch.
+
+Not verified: non-root users, and so the endpoints' Network Insight check (only
+root exists on the reference install); IPv6 (not attributed, by design); multiple
+WANs; a log that nothing rotates (unit tests only); and the headless-browser run
+of 0.1.2, replaced here by the widget's code against the live endpoints and the
+dashboard itself.
+
+**Automated tests** cover the live sampler, the widget's live logic, since 0.1.2
+the NetFlow ranges, and since 0.2.0 the raw flow log reader, run against core's
+own parser and aggregators (see *Tests*).
 
 **The installer was ported to codeload** after the GitHub API's per-file rate
 limit locked the sibling `os-parentalcontrol` plugin out entirely. No GitHub API
 request is made at all now, and no hop goes through raw's per-edge cache — both
 of which silently served stale files here before. The codeload path was dry-run
-against the live repo and installed all six files of 0.1.x byte-identically.
+against the live repo and installed all six files of 0.1.x, and all eight of
+0.2.0, byte-identically.
 
 ## Tests
 
