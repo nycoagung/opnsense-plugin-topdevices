@@ -166,6 +166,50 @@ test('the plan: 5-minute buckets while the hour is kept, none core may have drop
 const local = (y, mo, d, h = 0) => `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}T${String(h).padStart(2, '0')}:00`;
 const U = (mo, d, h = 0) => Date.UTC(2026, mo - 1, d, h) / 1000;
 
+// --- the firewall's time zone: pure helpers -------------------------------------------
+
+test('wall-clock parts of an instant in a named zone', () => {
+    assert.deepEqual(m.wallParts(NOW, 'Australia/Brisbane'), [2026, 9, 23, 19, 8, 54, 3]);   // a Wednesday
+    assert.deepEqual(m.wallParts(NOW, 'UTC'), [2026, 9, 23, 9, 8, 54, 3]);
+    assert.deepEqual(m.wallParts(NOW, 'Asia/Kathmandu'), [2026, 9, 23, 14, 53, 54, 3]);        // +5:45
+    assert.deepEqual(m.wallParts(S(14, 0, 22), 'Australia/Brisbane'), [2026, 9, 23, 0, 0, 0, 3]);   // midnight is 00, not 24
+});
+
+test('a wall-clock time in a named zone is the instant it names', () => {
+    assert.equal(m.wallToEpoch(2026, 9, 23, 0, 0, 0, 'Australia/Brisbane'), S(14, 0, 22));
+    assert.equal(m.wallToEpoch(2026, 9, 23, 0, 0, 0, 'Asia/Kathmandu'), S(18, 15, 22));
+    assert.equal(m.wallToEpoch(2026, 9, 23, 19, 8, 54, 'Australia/Brisbane'), NOW);
+    assert.equal(m.offsetAt(NOW, 'Asia/Kathmandu'), 5 * 3600 + 45 * 60);
+});
+
+test('clocks going forward: a wall time that does not occur moves on by the jump', () => {
+    // Sydney, Sun 4 Oct 2026: 02:00 AEST becomes 03:00 AEDT, at 16:00 UTC the day before
+    assert.equal(m.wallToEpoch(2026, 10, 4, 2, 30, 0, 'Australia/Sydney'), U(10, 3, 16) + 1800);   // 03:30 AEDT
+    // Santiago, Sun 6 Sep 2026: midnight -04 becomes 01:00 -03, at 04:00 UTC
+    assert.equal(m.wallToEpoch(2026, 9, 6, 0, 0, 0, 'America/Santiago'), U(9, 6, 4));             // 01:00, the day's first instant
+});
+
+test('clocks going back: a wall time that occurs twice is the earlier', () => {
+    // Sydney, Sun 5 Apr 2026: 03:00 AEDT becomes 02:00 AEST, at 16:00 UTC the day before
+    assert.equal(m.wallToEpoch(2026, 4, 5, 2, 30, 0, 'Australia/Sydney'), U(4, 4, 15) + 1800);     // 02:30 AEDT
+});
+
+test('midnights follow the calendar in the named zone', () => {
+    assert.equal(m.localMidnight(NOW, 0, 'Australia/Brisbane'), S(14, 0, 22));                   // today, Wed 23 Sep
+    assert.equal(m.localMidnight(NOW, 1, 'Australia/Brisbane'), S(14, 0, 21));                   // yesterday
+    assert.equal(m.localMidnight(NOW, 0, 'UTC'), S(0, 0, 23));
+    // Sydney's Sun 4 Oct 2026 lasts 23 hours; Santiago's Sun 6 Sep begins at 01:00
+    const sydney = (back) => m.localMidnight(U(10, 5, 1), back, 'Australia/Sydney');
+    assert.equal(sydney(0) - sydney(1), 23 * 3600);
+    assert.equal(m.localMidnight(U(9, 6, 12), 0, 'America/Santiago'), U(9, 6, 4));
+});
+
+test("the zone is named as the firewall's own date command names it", () => {
+    assert.equal(m.zoneAbbr(NOW, 'Australia/Brisbane'), 'AEST');
+    assert.equal(m.zoneAbbr(U(10, 5, 1), 'Australia/Sydney'), 'AEDT');
+    assert.equal(m.zoneAbbr(NOW, 'Asia/Kolkata'), 'IST');
+});
+
 async function loadCustom(from, to, scope) {
     const w = widget('custom', scope);
     w.state.customFrom = from;

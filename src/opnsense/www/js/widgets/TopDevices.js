@@ -328,6 +328,75 @@ export function fmtRate(bps) {
     return `${n.toFixed(i > 0 && n < 100 ? 1 : 0)} ${units[i]}`;
 }
 
+/* ---------- the firewall's time zone: pure helpers (tests/netflow_ranges.test.mjs) ---------- */
+
+// Every wall-clock conversion goes through Intl with the zone set on the firewall,
+// under System: Settings: General, so the browser's own zone plays no part.
+// tz undefined: the browser's zone (spec 2026-09-24-keep-flow-log §7.2).
+const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const WALL = new Map();                  // one formatter per named zone; the browser's is made afresh
+
+function wallFormat(tz) {
+    const make = () => new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', weekday: 'short',
+        year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' });
+    if (tz === undefined) return make();
+    if (!WALL.has(tz)) WALL.set(tz, make());
+    return WALL.get(tz);
+}
+
+// [year, month 1-12, day, hours, minutes, seconds, weekday 0 = Sunday] of an instant (epoch seconds) in tz
+export function wallParts(ts, tz) {
+    const p = {};
+    wallFormat(tz).formatToParts(new Date(ts * 1000)).forEach((x) => { p[x.type] = x.value; });
+    return [+p.year, +p.month, +p.day, +p.hour, +p.minute, +p.second, WEEKDAYS.indexOf(p.weekday)];
+}
+
+// tz's offset from UTC at an instant, in seconds
+export function offsetAt(ts, tz) {
+    const [y, mo, d, h, mi, s] = wallParts(ts, tz);
+    return Date.UTC(y, mo - 1, d, h, mi, s) / 1000 - Math.floor(ts);
+}
+
+// The instant a wall-clock time names in tz, in epoch seconds. A time that occurs
+// twice, as clocks go back, gives the earlier; one that does not occur, as clocks
+// go forward, moves on by the jump, as Date does for local times.
+export function wallToEpoch(y, mo, d, h, mi, s, tz) {
+    const w = Date.UTC(y, mo - 1, d, h, mi, s) / 1000;          // the wall time, read as if it were UTC
+    const names = (t) => t + offsetAt(t, tz) === w;
+    const before = w - offsetAt(w - 43200, tz);                  // no zone changes its clock twice in a day
+    if (names(before)) return before;
+    const after = w - offsetAt(w + 43200, tz);
+    return names(after) ? after : before;
+}
+
+// The midnight `back` calendar days before the day of ts, in tz - the day's first
+// instant where midnight does not occur. A day with a clock change is 23 or 25 hours.
+export function localMidnight(ts, back, tz) {
+    const [y, mo, d] = wallParts(ts, tz);
+    const day = new Date(Date.UTC(y, mo - 1, d - back));
+    return wallToEpoch(day.getUTCFullYear(), day.getUTCMonth() + 1, day.getUTCDate(), 0, 0, 0, tz);
+}
+
+// "Australian Eastern Standard Time" -> "AEST", as the firewall's own `date` names
+// it; Intl's short name, then the GMT offset, when there is no long one.
+export function zoneAbbr(ts, tz) {
+    const named = (style) => {
+        try {
+            const p = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: style })
+                .formatToParts(new Date(ts * 1000)).find(x => x.type === 'timeZoneName');
+            return p ? p.value : '';
+        } catch (e) { return ''; }
+    };
+    const words = named('long').split(/[\s-]+/).filter(w => /^[A-Za-z]/.test(w));
+    if (words.length > 1) return words.map(w => w[0].toUpperCase()).join('');
+    if (words.length === 1) return words[0];
+    const short = named('short');
+    if (short) return short;
+    const off = Math.round(offsetAt(ts, tz) / 60), sg = off >= 0 ? '+' : '-';
+    return `GMT${sg}${String(Math.floor(Math.abs(off) / 60)).padStart(2, '0')}${String(Math.abs(off) % 60).padStart(2, '0')}`;
+}
+
 export default class TopDevices extends BaseWidget {
 
     constructor(config) {
