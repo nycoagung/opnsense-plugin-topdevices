@@ -540,8 +540,10 @@ configd actions file, after which configd restarts by itself a second later. It
 touches nothing of core's, and running it twice is harmless. To see what it would do
 first:
 
-    configctl topdevices uninstall --dry-run
+    configctl topdevices uninstall dry-run
 
+(The bare word, because configctl's own option parser rejects `--dry-run`; run as
+`sh /usr/local/opnsense/scripts/topdevices/uninstall.sh --dry-run` the dashes work.)
 It leaves the widget's slot in your dashboard layout (an empty tile until you remove
 it there), the browser's saved widget settings, and the bootstrap's `/tmp/tdx` and
 `/tmp/td.tgz`. If it cannot delete the weekly job it says so in its output, finishes

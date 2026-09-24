@@ -2,8 +2,11 @@
 # TopDevices widget uninstaller.
 #
 #   configctl topdevices uninstall              removes everything, for good
-#   configctl topdevices uninstall --dry-run    prints what that would do
+#   configctl topdevices uninstall dry-run      prints what that would do
 #   sh /usr/local/opnsense/scripts/topdevices/uninstall.sh [--dry-run]
+#
+# The bare word exists because configctl's own option parser rejects anything
+# that starts with a dash before the action ever sees it.
 #
 # It undoes install.sh: the weekly GUI cron job that would otherwise put it all
 # back, the keeper's cron file and the kept flow log, the widget, its backends and
@@ -37,9 +40,9 @@ else
 fi
 DRY=
 case "${1:-}" in
-    --dry-run) DRY=1 ;;
+    --dry-run|dry-run) DRY=1 ;;
     '') ;;
-    *) echo "usage: $0 [--dry-run]"; exit 2 ;;
+    *) echo "usage: $0 [dry-run|--dry-run]"; exit 2 ;;
 esac
 
 WIDGETS=/usr/local/opnsense/www/js/widgets
