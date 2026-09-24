@@ -546,7 +546,8 @@ It leaves the widget's slot in your dashboard layout (an empty tile until you re
 it there), the browser's saved widget settings, and the bootstrap's `/tmp/tdx` and
 `/tmp/td.tgz`. If it cannot delete the weekly job it says so in its output, finishes
 the rest, and exits 1: delete the job by hand then, or it fails every Sunday from
-then on, its action being gone. The `uninstall` action has no description on
+then on, its action being gone. Any other step it could not finish is reported the
+same way, with the exit status 1. The `uninstall` action has no description on
 purpose, so the GUI's cron command list never offers it.
 
 **By hand**, on an install older than 0.3.1: remove the weekly job under
