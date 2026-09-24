@@ -33,6 +33,12 @@
 # run through configctl or cron it installs everything but keep.py and its cron
 # file, until the next run (Yesterday is read from NetFlow's records meanwhile).
 # Use the bootstrap command once instead.
+# UPGRADING FROM 0.3.0: likewise, the 0.3.0 installer only knows its ten files:
+# run through configctl or cron it installs everything but uninstall.sh and its
+# action, until the next run. Nothing else changes in 0.3.1, so the second run
+# can wait for the next Sunday.
+#
+# REMOVING: configctl topdevices uninstall (see uninstall.sh).
 #
 # NOTE: OPNsense cron runs as root regardless - configd executes jobs as root.
 # Using cron avoids interactive SSH, not root privileges.
@@ -65,6 +71,7 @@ $P/scripts/topdevices/flows.py|$SCRIPTS/flows.py
 $P/mvc/app/controllers/OPNsense/TopDevices/Api/FlowsController.php|$MVC/controllers/OPNsense/TopDevices/Api/FlowsController.php
 $P/scripts/topdevices/keep.py|$SCRIPTS/keep.py
 src/etc/cron.d/topdevices|/usr/local/etc/cron.d/topdevices
+$P/scripts/topdevices/uninstall.sh|$SCRIPTS/uninstall.sh
 "
 
 HERE=$(dirname "$0")
@@ -152,6 +159,12 @@ command:$SCRIPTS/flows.py device
 parameters:%s %s %s
 type:script_output
 message:TopDevices flows device %s
+
+[uninstall]
+command:$SCRIPTS/uninstall.sh
+parameters:
+type:script_output
+message:Removing TopDevices widget
 ACT
     if cmp -s "$TMP2" "$ROOT$ACTIONS/actions_topdevices.conf" 2>/dev/null; then
         # Unchanged: no restart, so the weekly cron run never restarts configd.
