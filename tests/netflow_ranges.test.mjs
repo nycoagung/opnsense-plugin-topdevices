@@ -4,9 +4,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-// UTC+10 all year, like the reference firewall in September: a UTC-midnight
-// bucket starts at 10:00 local
-process.env.TZ = 'Australia/Brisbane';
+// The browser runs in another zone than the firewall, so nothing may depend on
+// it: the widget takes the firewall's own (spec 2026-09-24-keep-flow-log §7). The
+// firewall is on UTC+10 all year, like the reference one: a UTC-midnight bucket
+// starts at 10:00 there.
+process.env.TZ = 'America/New_York';
+let ZONE = 'Australia/Brisbane';          // the zone set on the firewall, as flows/zone answers it
 
 // --- what the dashboard provides, reduced to what the NetFlow path touches ---
 globalThis.BaseWidget = class {
@@ -90,6 +93,7 @@ function widget(range, scope = 'all') {
                                bcast: w._ip2int(a) | 0xff });
     w.networks = [net('192.168.1.0', 'lan'), net('192.168.20.0', 'opt1')];
     w.wanDevs = ['em0'];
+    w.tz = ZONE;
     return w;
 }
 const byIp = (w) => Object.fromEntries(w.state.rows.map(r => [r.ip, [r.down, r.up]]));
@@ -225,7 +229,7 @@ test('Internet only further back than the 62 days kept reads nothing, and says w
     assert.deepEqual(made, []);
     assert.deepEqual(w.state.rows, []);
     const c = w._windowCaption();
-    assert.match(c.text, /^Mon Jun 01 00:00:00 AEST 2026 {2}→ {2}Tue Jun 30 00:00:00 AEST 2026 · internet only/);
+    assert.match(c.text, /^Mon Jun 01 00:00:00 AEST 2026 {2}→ {2}Mon Jun 29 23:59:59 AEST 2026 · internet only/);
     assert.equal(c.note, 'No NetFlow data: only the last 62 days are kept');
 });
 
@@ -253,12 +257,12 @@ test('the device panel says when no peers are kept for the range', async () => {
     assert.equal(d.note, 'Peers and ports are only kept for 62 days');
 });
 
-// --- other time zones -----------------------------------------------------------
+// --- other time zones on the firewall ---------------------------------------------
 
 function inZone(zone, fn) {
     return async () => {
-        process.env.TZ = zone;
-        try { await fn(); } finally { process.env.TZ = 'Australia/Brisbane'; }
+        ZONE = zone;
+        try { await fn(); } finally { ZONE = 'Australia/Brisbane'; }
     };
 }
 
@@ -291,6 +295,66 @@ test('in UTC, Internet only · Last hour just after midnight still says it is ke
     const { w } = await load('1h', 'wan', S(0, 20));
     assert.equal(w._windowCaption().note,
         `${FALLBACK} · Internet only is kept per day (days start at 00:00): these cover 00:00 → 00:20`);
+}));
+
+// --- the firewall's time zone in the widget ------------------------------------------
+
+test('Today and Yesterday start at midnight on the firewall, not in the browser', () => {
+    const w = widget('today');                                      // the browser is on New York time
+    assert.deepEqual(w._window('today', NOW * 1000), [S(14, 0, 22), NOW]);
+    assert.deepEqual(w._window('yesterday', NOW * 1000), [S(14, 0, 21), S(14, 0, 22)]);
+});
+
+test('the custom fields are wall time on the firewall', () => {
+    const w = widget('custom');
+    assert.equal(w._localToEpoch('2026-09-23T17:00'), S(7, 0));
+    assert.equal(w._localToEpoch('2026-09-23T17:00:30'), S(7, 0) + 30);
+    assert.equal(w._epochToLocal(S(7, 0)), '2026-09-23T17:00');
+    assert.equal(w._localToEpoch('not a time'), null);
+});
+
+test('a caption ending on a midnight ends at 23:59:59', async () => {
+    const w = widget('custom');
+    w.state.customFrom = '2026-09-22T20:00';
+    w.state.customTo = '2026-09-23T00:00';
+    reply = flowsOnly(() => totalsAnswer(S(10, 0, 22), S(14, 0, 22)));
+    await w._load(NOW * 1000);
+    assert.deepEqual(w._windowCaption(), {
+        text: 'Tue Sep 22 20:00:00 AEST 2026  →  Tue Sep 22 23:59:59 AEST 2026 · all traffic', note: null });
+});
+
+test("in UTC, a note's span ending on a midnight ends the minute before", inZone('UTC', async () => {
+    const { w } = await loadCustom(local(2026, 7, 15), local(2026, 8, 1), 'wan');
+    assert.equal(w._windowCaption().note,
+        'Internet only is kept per day (days start at 00:00), for 62 days: these cover Fri 24 Jul 00:00 → Fri 31 Jul 23:59');
+}));
+
+test("the zone comes from the firewall; the browser's stays when it does not say", async () => {
+    const w = new TopDevices({});
+    const asked = [];
+    for (const [answer, zone] of [[{ timezone: 'Australia/Sydney' }, 'Australia/Sydney'],
+                                  [{ timezone: 'Mars/Olympus_Mons' }, undefined],       // a zone Intl does not know
+                                  [{ errorMessage: 'Endpoint not found' }, undefined],   // 0.2.0's endpoints
+                                  [null, undefined]]) {                                   // no answer at all
+        w.ajaxCall = async (url) => { asked.push(url); if (answer === null) throw new Error('timeout'); return answer; };
+        await w._loadZone();
+        assert.equal(w.tz, zone);
+    }
+    assert.deepEqual([...new Set(asked)], ['/api/topdevices/flows/zone']);
+});
+
+function inBrowserZone(zone, fn) {
+    return async () => {
+        process.env.TZ = zone;
+        try { await fn(); } finally { process.env.TZ = 'America/New_York'; }
+    };
+}
+
+test("with no zone from the firewall, the browser's own is used", inBrowserZone('Asia/Kolkata', () => {
+    const w = widget('today');
+    w.tz = undefined;
+    assert.deepEqual(w._window('today', S(6, 30) * 1000), [S(18, 30, 22), S(6, 30)]);     // 00:00 IST
+    assert.equal(w._dateStr(S(6, 30)), 'Wed Sep 23 12:00:00 IST 2026');
 }));
 
 // --- rows to download and upload ---------------------------------------------

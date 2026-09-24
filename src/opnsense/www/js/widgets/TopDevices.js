@@ -34,6 +34,11 @@
  * Figures are TOTAL traffic - internal plus internet. An NVR pulling camera
  * streams will dominate with traffic that never reaches the WAN.
  *
+ * TIME ZONE: midnights, the custom range fields and every caption use the zone
+ * set on the firewall (System: Settings: General), from /api/topdevices/flows/zone,
+ * whatever the browser's own; the browser's only when the firewall does not say.
+ * Design: docs/superpowers/specs/2026-09-24-keep-flow-log-design.md §7
+ *
  * LIVE: the "Live" range shows current rates instead, streamed once per
  * interval by the plugin's own sampler (scripts/topdevices/live.py) through
  * /api/topdevices/live/stream/{interval}. The sampler reads the pf state
@@ -414,6 +419,7 @@ export default class TopDevices extends BaseWidget {
         this.networks = [];
         this.ifaceNames = {};
         this.wanDevs = [];       // device names of the upstream interface(s)
+        this.tz = undefined;     // the firewall's time zone (_loadZone); undefined: the browser's
         this.names = {};
         this.cache = {};          // cacheKey -> parsed export rows
         this.ptrCache = {};       // peer ip -> reverse-DNS name ('' = none)
@@ -512,15 +518,13 @@ export default class TopDevices extends BaseWidget {
     }
 
     _window(key, nowMs = Date.now()) {
-        const now = new Date(nowMs);
-        // local midnights, from the calendar: a day with a clock change is 23 or 25 hours
-        const midnight = (back) => Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate() - back).getTime() / 1000);
-        const mid = midnight(0);
-        const s = Math.floor(now.getTime() / 1000);
+        const s = Math.floor(nowMs / 1000);
+        // midnights on the firewall, from its calendar: a day with a clock change is 23 or 25 hours
+        const mid = localMidnight(s, 0, this.tz);
         switch (key) {
             case '1h':        return [s - 3600, s];
             case 'today':     return [mid, s];
-            case 'yesterday': return [midnight(1), mid];
+            case 'yesterday': return [localMidnight(s, 1, this.tz), mid];
             case '7d':        return [s - (7 * DAY), s];
             case 'custom': {
                 const f = this._localToEpoch(this.state.customFrom);
@@ -533,47 +537,28 @@ export default class TopDevices extends BaseWidget {
         }
     }
 
+    // a datetime-local value, "2026-09-23T17:00", read as wall time on the firewall
     _localToEpoch(v) {
-        if (!v) return null;
-        const d = new Date(v);                       // datetime-local is parsed as local time
-        return isNaN(d.getTime()) ? null : Math.floor(d.getTime() / 1000);
+        const x = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(v || '');
+        return x ? wallToEpoch(+x[1], +x[2], +x[3], +x[4], +x[5], +(x[6] || 0), this.tz) : null;
     }
 
     _epochToLocal(ts) {
-        const d = new Date(ts * 1000);
+        const [y, mo, d, h, mi] = wallParts(ts, this.tz);
         const p = (x) => String(x).padStart(2, '0');
-        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+        return `${y}-${p(mo)}-${p(d)}T${p(h)}:${p(mi)}`;
     }
 
-    // OPNsense/Unix `date` format, e.g. "Tue Sep 22 12:08:17 AEST 2026"
+    // OPNsense/Unix `date` format on the firewall's clock, e.g. "Tue Sep 22 12:08:17 AEST 2026"
     _dateStr(ts) {
-        const d = new Date(ts * 1000);
+        const [y, mo, d, h, mi, s, dow] = wallParts(ts, this.tz);
         const p = (x) => String(x).padStart(2, '0');
-        const dow = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()];
-        const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
-        return `${dow} ${mon} ${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} `
-             + `${this._tzAbbr(d)} ${d.getFullYear()}`;
+        return `${WEEKDAYS[dow]} ${MONTHS[mo - 1]} ${p(d)} ${p(h)}:${p(mi)}:${p(s)} ${zoneAbbr(ts, this.tz)} ${y}`;
     }
 
-    // "Australian Eastern Standard Time" -> "AEST". Browsers differ here, so try
-    // the long name first, then Intl's short name, then the raw GMT offset.
-    _tzAbbr(d) {
-        const m = String(d.toTimeString()).match(/\(([^)]+)\)/);
-        if (m && m[1]) {
-            const words = m[1].split(/[\s-]+/).filter(w => /^[A-Za-z]/.test(w));
-            if (words.length > 1) return words.map(w => w[0].toUpperCase()).join('');
-            if (words.length === 1) return words[0];
-        }
-        try {
-            const parts = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' }).formatToParts(d);
-            const tz = parts.find(p => p.type === 'timeZoneName');
-            if (tz) return tz.value;
-        } catch (e) { /* fall through */ }
-        const off = -d.getTimezoneOffset();
-        const sg = off >= 0 ? '+' : '-';
-        return `GMT${sg}${String(Math.floor(Math.abs(off) / 60)).padStart(2, '0')}`
-             + String(Math.abs(off) % 60).padStart(2, '0');
+    // A span's end: one on a midnight prints as the second before, so a day reads 00:00:00 → 23:59:59
+    _endStr(ts) {
+        return this._dateStr(localMidnight(ts, 0, this.tz) === ts ? ts - 1 : ts);
     }
 
     /* ---------- helpers ---------- */
@@ -622,6 +607,21 @@ export default class TopDevices extends BaseWidget {
     }
 
     /* ---------- data ---------- */
+
+    // The time zone set on the firewall (System: Settings: General), once per page
+    // load, before anything is shown: every midnight, custom field and caption
+    // follows it (spec 2026-09-24-keep-flow-log §7). Through the dashboard's
+    // ajaxCall, as the networks are. No answer, or a zone this browser's Intl
+    // does not know, leaves the browser's own.
+    async _loadZone() {
+        let tz;
+        try {
+            const r = await this.ajaxCall('/api/topdevices/flows/zone');
+            tz = r && typeof r.timezone === 'string' ? r.timezone : undefined;
+            if (tz) new Intl.DateTimeFormat('en-US', { timeZone: tz });   // throws for a zone it does not know
+        } catch (e) { tz = undefined; }
+        this.tz = tz;
+    }
 
     async _loadNetworks() {
         const rfc1918 = [
@@ -814,12 +814,12 @@ export default class TopDevices extends BaseWidget {
         const tail = wan ? ` · internet only (via ${(r.wan || []).join(', ') || 'WAN'})` : ' · all traffic';
         const [a, b] = rawSpan(r, q.scope);
         if (wan && a >= b) {
-            return { text: `${this._dateStr(q.from)}  →  ${this._dateStr(q.to)}${tail}`,
+            return { text: `${this._dateStr(q.from)}  →  ${this._endStr(q.to)}${tail}`,
                      note: 'Internet only: no flows in the log for this range' };
         }
         const note = wan && a > q.from
             ? `Internet only covers the last ${fmtSpan(b - a)}: older flows are no longer in the log` : null;
-        return { text: `${this._dateStr(a)}  →  ${this._dateStr(b)}${tail}`, note };
+        return { text: `${this._dateStr(a)}  →  ${this._endStr(b)}${tail}`, note };
     }
 
     // The span the figures cover, and a note when the buckets are coarser than
@@ -832,11 +832,11 @@ export default class TopDevices extends BaseWidget {
             : ' · all traffic';
         const days = p.provider === DETAILS ? DETAILS_DAYS : TOTALS_DAYS;
         if (p.end <= p.start) {                  // nothing recorded, or nothing kept: say which
-            return { text: `${this._dateStr(q.from)}  →  ${this._dateStr(q.to)}${scopeTxt}`,
+            return { text: `${this._dateStr(q.from)}  →  ${this._endStr(q.to)}${scopeTxt}`,
                      note: p.clipped ? `No NetFlow data: only the last ${days} days are kept`
                                      : 'No NetFlow data for this range' };
         }
-        const text = `${this._dateStr(p.start)}  →  ${this._dateStr(p.end)}${scopeTxt}`;
+        const text = `${this._dateStr(p.start)}  →  ${this._endStr(p.end)}${scopeTxt}`;
         let note = null;
         // off by an hour, or by a tenth of a shorter range: 10:00 -> 10:05 is not the last hour
         const off = Math.max(Math.abs(p.start - q.from), Math.abs(p.end - q.to));
@@ -854,23 +854,25 @@ export default class TopDevices extends BaseWidget {
     }
 
     _hm(ts, secs = false) {
-        const d = new Date(ts * 1000);
+        const [, , , h, mi, s] = wallParts(ts, this.tz);
         const p = (x) => String(x).padStart(2, '0');
-        return `${p(d.getHours())}:${p(d.getMinutes())}` + (secs ? `:${p(d.getSeconds())}` : '');
+        return `${p(h)}:${p(mi)}` + (secs ? `:${p(s)}` : '');
+    }
+
+    // "Sat 19 Sep 10:00", on the firewall's clock
+    _dayTime(ts, secs = false) {
+        const [, mo, d, , , , dow] = wallParts(ts, this.tz);
+        return `${WEEKDAYS[dow]} ${d} ${MONTHS[mo - 1]} ${this._hm(ts, secs)}`;
     }
 
     // "10:00 → 19:08" within today, otherwise with the dates; in seconds when
-    // both ends fall in the same minute
+    // both ends fall in the same minute. An end on a midnight is the second before.
     _span(a, b, now) {
-        const day = (t) => new Date(t * 1000).toDateString();
+        if (b > a && localMidnight(b, 0, this.tz) === b) b -= 1;
+        const day = (t) => wallParts(t, this.tz).slice(0, 3).join('-');
         const secs = day(a) === day(b) && this._hm(a) === this._hm(b);
         if (day(a) === day(now) && day(b) === day(now)) return `${this._hm(a, secs)} → ${this._hm(b, secs)}`;
-        const full = (t) => {
-            const d = new Date(t * 1000);
-            const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
-            return `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]} ${d.getDate()} ${mon} ${this._hm(t, secs)}`;
-        };
-        return `${full(a)} → ${full(b)}`;
+        return `${this._dayTime(a, secs)} → ${this._dayTime(b, secs)}`;
     }
 
     // Reverse DNS for a peer address. The endpoint echoes the address back when
@@ -1031,6 +1033,7 @@ export default class TopDevices extends BaseWidget {
         this.state.livePick = cleanPick(this.state.livePick);
         if (!['line', 'bar', 'pie', 'none'].includes(this.state.liveChart)) this.state.liveChart = 'line';
 
+        await this._loadZone();
         await this._loadNetworks();
         this._fillNetworkSelect();
 
