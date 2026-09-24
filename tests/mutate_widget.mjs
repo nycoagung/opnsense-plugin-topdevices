@@ -140,15 +140,15 @@ const mutants = [
     ['the panel silent when no peers are kept', '        const note = plan.end <= plan.start ? `Peers and ports are only kept for ${DETAILS_DAYS} days`',
      '        const note = false ? `Peers and ports are only kept for ${DETAILS_DAYS} days`'],
     // recent ranges from the raw flow log
-    ['the raw log used for ranges older than a day', '    return fromS >= nowS - DAY && fromS < nowS;', '    return fromS < nowS;'],
-    ['the raw log asked for a range in the future', '    return fromS >= nowS - DAY && fromS < nowS;', '    return fromS >= nowS - DAY;'],
+    ['the raw log used for ranges older than 50 hours', '    return fromS >= nowS - RAW_REACH && fromS < nowS;', '    return fromS < nowS;'],
+    ['the raw log asked for a range in the future', '    return fromS >= nowS - RAW_REACH && fromS < nowS;', '    return fromS >= nowS - RAW_REACH;'],
     ['internet only read from the all-traffic columns', "    const k = scope === 'wan' ? 2 : 0;", '    const k = 0;'],
     ['devices without traffic in the scope listed', '        .filter(r => r.down + r.up > 0);', ';'],
     ['spans rounded to the nearest minute', '    const m = Math.floor(Math.max(0, seconds) / 60);', '    const m = Math.round(Math.max(0, seconds) / 60);'],
     ['a string taken for a raw answer', "                .done((r) => (r && typeof r === 'object' && !r.error && keys.every(k => r[k]) ? resolve(r)",
      '                .done((r) => (r ? resolve(r)'],
-    ['a stale raw answer lands', '            if (token !== this._loadToken) return false;\n            if (resp) {', '            if (resp) {'],
-    ['a failed raw read shows nothing', '            fallback = true;                     // say so', '            return false;                        // say so'],
+    ['a stale raw answer lands', '            if (token !== this._loadToken) return false;\n            if (resp && resp.all.from <= from) {', '            if (resp && resp.all.from <= from) {'],
+    ['a failed raw read shows nothing', '            fallback = !resp;', '            return false;'],
     ["no fallback note", '        if (this.state.fallback) c.note = c.note ? `${FALLBACK_NOTE} · ${c.note}` : FALLBACK_NOTE;\n', ''],
     ['a scope switch leaves the other scope\'s rows', '            if (q.raw) { this._applyRaw(this.state.scope); break; }', '            if (q.raw) break;'],
     ['the raw caption shows the range asked for', '        return { text: `${this._dateStr(a)}  →  ${this._endStr(b)}${tail}`, note };',
@@ -182,6 +182,9 @@ const mutants = [
     ["a note's span ending on the next midnight", "        if (b > a && localMidnight(b, 0, this.tz) === b) b -= 1;\n", ""],
     ["a zone Intl does not know kept", "            if (tz) new Intl.DateTimeFormat('en-US', { timeZone: tz });   // throws for a zone it does not know\n", ""],
     ["the zone never asked", "        await this._loadZone();\n", ""],
+    ['the raw reach left at a day', 'export const RAW_REACH = 50 * 3600;', 'export const RAW_REACH = DAY;'],
+    ['a short raw answer shown as if whole', '            if (resp && resp.all.from <= from) {', '            if (resp) {'],
+    ['a short raw answer called a failure', '            fallback = !resp;', '            fallback = true;'],
 ];
 
 let survivors = 0;

@@ -294,12 +294,15 @@ export function deviceTotals(rows, provider, keep) {
 
 /* ---------- recent ranges from the raw flow log (tests/netflow_ranges.test.mjs) ---------- */
 
-// A range that starts within the last day - and not in the future, where nothing
-// is recorded yet - is read from NetFlow's raw flow log through the plugin's flows
-// endpoints: exact to the second, both scopes in one answer (spec
-// 2026-09-23-raw-flow-ranges §4). Older ranges read NetFlow's records (nfPlan).
+// A range that starts within the last 50 hours - Yesterday at any hour, even on a
+// day with a clock change - and not in the future, where nothing is recorded yet,
+// is read from NetFlow's raw flow log, which keep.py keeps for two days, through
+// the plugin's flows endpoints: exact to the second, both scopes in one answer
+// (specs 2026-09-23-raw-flow-ranges §4, 2026-09-24-keep-flow-log §4). Older
+// ranges read NetFlow's records (nfPlan).
+export const RAW_REACH = 50 * 3600;
 export function rawRange(fromS, nowS) {
-    return fromS >= nowS - DAY && fromS < nowS;
+    return fromS >= nowS - RAW_REACH && fromS < nowS;
 }
 
 // One scope's rows from a flows/totals answer, whose devices hold
@@ -734,7 +737,7 @@ export default class TopDevices extends BaseWidget {
             let resp = null;
             try { resp = await this._flows(`totals/${from}/${end}`); } catch (e) { resp = null; }
             if (token !== this._loadToken) return false;
-            if (resp) {
+            if (resp && resp.all.from <= from) {
                 this.state.raw = resp;
                 this.state.plan = null;
                 this.state.fallback = false;
@@ -743,7 +746,10 @@ export default class TopDevices extends BaseWidget {
                 this._pruneCache(this.state.request);
                 return true;
             }
-            fallback = true;                     // say so, and read NetFlow's records instead
+            // A failed read says so. A short one - all traffic not reaching back to
+            // the range's start, as while the kept log fills or past a missing file -
+            // is simply a range for NetFlow's records (spec 2026-09-24-keep-flow-log §8).
+            fallback = !resp;
         }
         const plan = nfPlan(from, to, now, scope);
         const flows = await this._export(plan);
