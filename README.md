@@ -254,7 +254,10 @@ is exact.
   copied and nothing of core's is changed. The job is not in the GUI's cron list; the
   installer puts it in place, and the weekly job keeps it there.
 - **How long.** A kept file is deleted once it was last written to more than 51 hours ago, and the
-  directory never holds more than 1 GB, oldest first.
+  directory never holds more than 1 GB, oldest first, and never the last 512 MB free
+  on that filesystem (the root filesystem on a
+  single-partition install, RAM if /var/log is a RAM disk). Resetting NetFlow's data
+  (Reporting → Settings) also clears the kept log within 10 minutes.
 - **What it holds.** Raw flow records, readable by root only, as core's are.
 - **After install** the kept log starts with what core still holds, so Yesterday is
   exact from the first midnight after install, as long as the
@@ -492,6 +495,9 @@ System → Settings → Cron first, or it puts everything back. Then, as root:
            /usr/local/opnsense/mvc/app/models/OPNsense/TopDevices \
            /var/log/topdevices
     service configd restart
+
+Removing `keep.py` alone leaves the cron line failing silently every 10 minutes and up
+to 1 GB in `/var/log/topdevices`; remove all three together, as above.
 
 Rolling back to 0.0.1 with its bootstrap command leaves the live sampler, the
 controller and the ACL behind. They are inert without the `live` action, and the
