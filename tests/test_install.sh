@@ -30,6 +30,7 @@ src/opnsense/scripts/topdevices/flows.py|/usr/local/opnsense/scripts/topdevices/
 src/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/FlowsController.php|/usr/local/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/FlowsController.php|644
 src/opnsense/scripts/topdevices/keep.py|/usr/local/opnsense/scripts/topdevices/keep.py|755
 src/etc/cron.d/topdevices|/usr/local/etc/cron.d/topdevices|644
+src/opnsense/scripts/topdevices/uninstall.sh|/usr/local/opnsense/scripts/topdevices/uninstall.sh|755
 LIST
 
 A="$R/usr/local/opnsense/service/conf/actions.d/actions_topdevices.conf"
@@ -43,6 +44,12 @@ for a in 'flows.totals|totals|%s %s' 'flows.device|device|%s %s %s'; do
     echo "$block" | grep -qx "parameters:$params" || fail "[$name] parameters wrong"
     echo "$block" | grep -qx 'type:script_output' || fail "[$name] is not script_output"
 done
+# the uninstall action has no description on purpose: the GUI's cron command list
+# offers only actions whose description matches /(.){1,255}/ (core's Cron.xml)
+block=$(awk '$0 == "[uninstall]" {on = 1; next} /^\[/ {on = 0} on' "$A")
+echo "$block" | grep -qx 'command:/usr/local/opnsense/scripts/topdevices/uninstall.sh' || fail "[uninstall] command wrong"
+echo "$block" | grep -qx 'type:script_output' || fail "[uninstall] is not script_output"
+echo "$block" | grep -q '^description:' && fail "[uninstall] has a description, so the GUI's cron list would offer it"
 grep -q '<pattern>api/topdevices/flows/\*</pattern>' "$R/usr/local/opnsense/mvc/app/models/OPNsense/TopDevices/ACL/ACL.xml" \
     || fail "the ACL does not cover the flows endpoints"
 [ -z "$(find "$R" -name '*.tdnew' -o -name '.actions_topdevices.new')" ] || fail "staging files left behind"

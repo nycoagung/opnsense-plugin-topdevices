@@ -25,7 +25,7 @@ import struct
 import sys
 import time
 
-VERSION = '0.3.0'
+VERSION = '0.3.1'
 
 LOG = '/var/log/flowd.log'
 KEPT_DIR = 'topdevices'          # keep.py's links beside the log: rotated files core deleted, or will (2026-09-24 spec §5)

@@ -17,6 +17,12 @@ WWW: https://github.com/nycoagung/opnsense-plugin-topdevices
 Plugin Changelog
 ----------------
 
+0.3.1
+
+* configctl topdevices uninstall removes everything the installer put in
+  place, the weekly GUI cron job included, and touches nothing of core's;
+  --dry-run shows what it would do first. Eleven installed files
+
 0.3.0
 
 * Yesterday runs from 00:00:00 to 23:59:59, exactly, in both scopes: the

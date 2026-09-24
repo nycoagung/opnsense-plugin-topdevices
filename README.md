@@ -296,6 +296,11 @@ installer only knows its own eight files, so one run of `configctl topdevices in
 (or of the weekly job) installs everything but `keep.py` and its cron file; until a
 second run, Yesterday is read from NetFlow's records.
 
+**Upgrading from 0.3.0 to 0.3.1:** nothing to do. The 0.3.0 installer only knows its
+own ten files, so the first run of `configctl topdevices install` (or of the weekly
+job) installs everything but `uninstall.sh` and its action, and the next run adds
+them. Nothing else changes in 0.3.1.
+
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
 fail here — the **GitHub API** costs one rate-limited request per file (60/hour
@@ -507,6 +512,7 @@ and all ten of 0.3.0, byte-identically.
     OPNSENSE_CORE=<core checkout> python3 -m unittest tests.test_flows -v   # flows.py against core's parser and aggregators
     OPNSENSE_CORE=<core checkout> python3 -m unittest tests.test_keep -v    # keep.py against core's own rotation
     sh tests/test_install.sh                     # installer dry run into a scratch root
+    sh tests/test_uninstall.sh                   # uninstaller over such a root: rehearsal, real, repeat
     python3 tests/mutate.py                      # each planted sampler bug must fail the suite
     node tests/mutate_widget.mjs                 # the same for the widget
 
@@ -521,7 +527,28 @@ yesterday's midnight it also compares that whole day, which takes a few minutes.
 
 ## Removing
 
-Remove the weekly *Install/refresh TopDevices dashboard widget* job under
+Since 0.3.1, as root:
+
+    configctl topdevices uninstall
+
+It removes everything the installer put in place: the weekly *Install/refresh
+TopDevices dashboard widget* job under System → Settings → Cron (through core's own
+Cron model, then a cron reload), the keeper's cron file and `/var/log/topdevices`
+(each kept file is a second name for one of core's, so core's log is untouched), the
+widget and its metadata, the two controllers, the ACL, the scripts directory and the
+configd actions file, after which configd restarts by itself a second later. It
+touches nothing of core's, and running it twice is harmless. To see what it would do
+first:
+
+    sh /usr/local/opnsense/scripts/topdevices/uninstall.sh --dry-run
+
+It leaves the widget's slot in your dashboard layout (an empty tile until you remove
+it there), the browser's saved widget settings, and the bootstrap's `/tmp/tdx`. If it
+cannot read the cron jobs it says so, finishes the rest, and exits 1: delete the job
+by hand then, or it puts everything back next Sunday. The `uninstall` action has no
+description on purpose, so the GUI's cron command list never offers it.
+
+**By hand**, on an install older than 0.3.1: remove the weekly job under
 System → Settings → Cron first, or it puts everything back. Then, as root:
 
     rm -f /usr/local/opnsense/www/js/widgets/TopDevices.js \
