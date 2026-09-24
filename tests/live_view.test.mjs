@@ -774,48 +774,84 @@ test('_esc makes a name safe inside a quoted attribute as well', () => {
 
 /* ---------- the Live detail panel resizes the widget when it appears or grows ---------- */
 
+// dt: 3 (== LIVE_WINDOW_S) so every send is its own window: mergeLive keeps
+// only the newest event, and each assertion reads that event's numbers alone,
+// with no averaging carried over from the one before.
 test('Live refits the grid only when the row count or the detail panel shape changes', async (t) => {
     const { w, send } = await running(t);
     let fits = 0;
     w._fitHeight = () => { fits++; };
 
     // three devices, nothing selected: rows changed, 0 -> 3
-    send({ dt: 1, effective: 1, wan, devices: {
+    send({ dt: 3, effective: 1, wan, devices: {
         '192.168.1.10': dev([100, 0]), '192.168.1.11': dev([200, 0]), '192.168.1.12': dev([300, 0])
     } });
     assert.equal(fits, 1);
 
     // a steady tick, same three devices, still nothing selected: no nudge
-    send({ dt: 1, effective: 1, wan, devices: {
+    send({ dt: 3, effective: 1, wan, devices: {
         '192.168.1.10': dev([150, 0]), '192.168.1.11': dev([250, 0]), '192.168.1.12': dev([350, 0])
     } });
     assert.equal(fits, 1);
 
     // a device is selected and its event carries peers/ports: the panel appeared
     w.state.selected = '192.168.1.10';
-    send({ dt: 1, effective: 1, wan, devices: {
+    send({ dt: 3, effective: 1, wan, devices: {
         '192.168.1.10': dev([150, 0], [0, 0], [['203.0.113.7', 100, 0, 1]], { all: [[443, 100, 0]], inet: [] }),
         '192.168.1.11': dev([250, 0]), '192.168.1.12': dev([350, 0])
     } });
     assert.equal(fits, 2);
 
     // the same device set, and the same number of peers/ports for the selected one: no nudge
-    send({ dt: 1, effective: 1, wan, devices: {
+    send({ dt: 3, effective: 1, wan, devices: {
         '192.168.1.10': dev([160, 0], [0, 0], [['203.0.113.7', 110, 0, 1]], { all: [[443, 110, 0]], inet: [] }),
         '192.168.1.11': dev([250, 0]), '192.168.1.12': dev([350, 0])
     } });
     assert.equal(fits, 2);
 
     // the selected device now has more peers: the panel grew
-    send({ dt: 1, effective: 1, wan, devices: {
+    send({ dt: 3, effective: 1, wan, devices: {
         '192.168.1.10': dev([160, 0], [0, 0],
             [['203.0.113.7', 110, 0, 1], ['203.0.113.8', 20, 0, 1]], { all: [[443, 110, 0]], inet: [] }),
         '192.168.1.11': dev([250, 0]), '192.168.1.12': dev([350, 0])
     } });
     assert.equal(fits, 3);
 
+    // the selected device now has fewer peers: the panel shrank
+    send({ dt: 3, effective: 1, wan, devices: {
+        '192.168.1.10': dev([160, 0], [0, 0], [['203.0.113.7', 110, 0, 1]], { all: [[443, 110, 0]], inet: [] }),
+        '192.168.1.11': dev([250, 0]), '192.168.1.12': dev([350, 0])
+    } });
+    assert.equal(fits, 4);
+
     // clearing the selection closes the panel
     w.state.selected = null;
     w._renderLive();
-    assert.equal(fits, 4);
+    assert.equal(fits, 5);
+});
+
+// A device can be selected while live.view is still null - a click before the
+// first sample, or a restart/retry that resets live.view but leaves the
+// selection standing (neither _startLive() nor _liveTick() clears it). The
+// placeholder must count as its own shape: if it collided with a real panel
+// of the same line count, the first sample to land on that count would grow
+// the panel from "Measuring..." to the full card without a refit.
+test('the placeholder counts as its own shape, distinct from a same-sized real panel', async (t) => {
+    const { w, send } = await running(t);
+    w.state.livePick = ['192.168.1.10'];      // keeps the row listed before there is any data
+    let fits = 0;
+    w._fitHeight = () => { fits++; };
+
+    // selected before the first sample: live.view is still null, the placeholder renders
+    w.state.selected = '192.168.1.10';
+    w._renderLive();
+    assert.equal(fits, 1);
+
+    // the first sample gives the selected device exactly one peer and no ports -
+    // as many "lines" as the placeholder counts as - and must still be recognised
+    // as a real, different panel
+    send({ dt: 3, effective: 1, wan, devices: {
+        '192.168.1.10': dev([100, 0], [0, 0], [['203.0.113.7', 100, 0, 1]], { all: [], inet: [] })
+    } });
+    assert.equal(fits, 2);
 });
