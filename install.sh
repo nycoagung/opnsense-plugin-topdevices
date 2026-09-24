@@ -94,16 +94,19 @@ done
 # this script installs ITSELF, and sh reads a script incrementally, so a cp over
 # the running file shifts the shell's read offset and it dies mid-script. mv
 # gives the file a new inode and leaves the running descriptor untouched.
+# The staging name is dotted: for /usr/local/etc/cron.d/topdevices, cron reads
+# any file in cron.d not starting with a dot, so an undotted "topdevices.tdnew"
+# would be a live crontab for the cp's duration, or for good if left behind.
 for entry in $FILES; do
     [ -n "$entry" ] || continue
     s=${entry%%|*}; d=$ROOT${entry#*|}
     mkdir -p "$(dirname "$d")"
-    cp "$SRC/$s" "$d.tdnew"
+    cp "$SRC/$s" "$(dirname "$d")/.$(basename "$d").tdnew"
 done
 for entry in $FILES; do
     [ -n "$entry" ] || continue
     s=${entry%%|*}; d=$ROOT${entry#*|}
-    mv "$d.tdnew" "$d"
+    mv "$(dirname "$d")/.$(basename "$d").tdnew" "$d"
     case "$d" in *.sh|*.py) chmod 0755 "$d" ;; *) chmod 0644 "$d" ;; esac
     printf '  %-26s %6d bytes\n' "$(basename "$s")" "$(wc -c < "$d" | tr -d ' ')"
 done

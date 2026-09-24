@@ -253,7 +253,7 @@ is exact.
   core's renames leave it alone and its delete drops only core's name, so nothing is
   copied and nothing of core's is changed. The job is not in the GUI's cron list; the
   installer puts it in place, and the weekly job keeps it there.
-- **How long.** A kept file is deleted once its newest record is 51 hours old, and the
+- **How long.** A kept file is deleted once it was last written to more than 51 hours ago, and the
   directory never holds more than 1 GB, oldest first: about 250 MB on the reference
   install.
 - **What it holds.** Raw flow records, readable by root only, as core's are.
