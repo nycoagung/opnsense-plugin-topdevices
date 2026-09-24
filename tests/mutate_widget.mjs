@@ -168,6 +168,11 @@ const mutants = [
     ['a device answer without its lists kept', "path.startsWith('device/') ? ['peers', 'ports'] :", "path.startsWith('device/') ? [] :"],
     ['a custom range ending later asks the raw log for the future', '            const end = Math.min(to, now);', '            const end = to;'],
     ["the raw read given ajaxCall's 5 s", 'timeout: 60000', 'timeout: 5000'],
+    ["midnight read as hour 24", "hourCycle: 'h23'", "hourCycle: 'h24'"],
+    ["a doubled wall time taken as the later", "    if (names(before)) return before;\n", ""],
+    ["a missing wall time moved back", "    return names(after) ? after : before;", "    return after;"],
+    ["yesterday as 24 hours, not the calendar day", "    return wallToEpoch(day.getUTCFullYear(), day.getUTCMonth() + 1, day.getUTCDate(), 0, 0, 0, tz);", "    return wallToEpoch(y, mo, d, 0, 0, 0, tz) - back * 86400;"],
+    ["the long zone name not abbreviated", "    const words = named('long').split(/[\\s-]+/).filter(w => /^[A-Za-z]/.test(w));\n    if (words.length > 1) return words.map(w => w[0].toUpperCase()).join('');\n", "    const words = named('long').split(/[\\s-]+/).filter(w => /^[A-Za-z]/.test(w));\n"],
 ];
 
 let survivors = 0;
