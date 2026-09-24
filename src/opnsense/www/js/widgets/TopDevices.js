@@ -1788,13 +1788,16 @@ export default class TopDevices extends BaseWidget {
         if (shape !== l.shape) { l.shape = shape; this._fitHeight(); }
     }
 
-    // Returns the number of lines rendered - 1 for the placeholder, otherwise the
-    // peer and port counts - so _renderLive can tell whether the panel's shape
-    // changed and the grid needs refitting.
+    // Returns the number of lines rendered, so _renderLive can tell whether the
+    // panel's shape changed and the grid needs refitting: -2 for the placeholder
+    // (a device selected before the first sample, or while a restart/retry has
+    // reset live.view but left the selection standing) - never a real count,
+    // which is 0 or more, so a first sample landing on exactly one peer+port
+    // line still changes the shape - otherwise the peer and port counts.
     _renderLiveDetails(ip) {
         const $d = $('.td-details');
         const view = this.live.view;
-        if (!view) { $d.html('<small class="text-muted">Measuring\u2026</small>'); return 1; }
+        if (!view) { $d.html('<small class="text-muted">Measuring\u2026</small>'); return -2; }
         const scope = this.state.scope === 'wan' ? 'inet' : 'all';
         const rate = liveRates(view, scope)[ip] || { down: 0, up: 0 };
         const detail = liveDetail(view, ip, scope);

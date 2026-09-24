@@ -205,6 +205,9 @@ const mutants = [
      '        const shape = `${rows.length}`;'],
     ['Live refits on every tick', '        if (shape !== l.shape) { l.shape = shape; this._fitHeight(); }',
      '        if (true) { l.shape = shape; this._fitHeight(); }'],
+    ['the placeholder collides with a same-sized real panel',
+     "$d.html('<small class=\"text-muted\">Measuring\\u2026</small>'); return -2; }",
+     "$d.html('<small class=\"text-muted\">Measuring\\u2026</small>'); return 1; }"],
 ];
 
 let survivors = 0;
