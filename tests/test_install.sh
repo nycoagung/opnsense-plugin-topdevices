@@ -26,6 +26,8 @@ src/opnsense/mvc/app/models/OPNsense/TopDevices/ACL/ACL.xml|/usr/local/opnsense/
 install.sh|/usr/local/opnsense/scripts/topdevices/install.sh|755
 src/opnsense/scripts/topdevices/flows.py|/usr/local/opnsense/scripts/topdevices/flows.py|755
 src/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/FlowsController.php|/usr/local/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/FlowsController.php|644
+src/opnsense/scripts/topdevices/keep.py|/usr/local/opnsense/scripts/topdevices/keep.py|755
+src/etc/cron.d/topdevices|/usr/local/etc/cron.d/topdevices|644
 LIST
 
 A="$R/usr/local/opnsense/service/conf/actions.d/actions_topdevices.conf"
@@ -42,6 +44,11 @@ done
 grep -q '<pattern>api/topdevices/flows/\*</pattern>' "$R/usr/local/opnsense/mvc/app/models/OPNsense/TopDevices/ACL/ACL.xml" \
     || fail "the ACL does not cover the flows endpoints"
 [ -z "$(find "$R" -name '*.tdnew' -o -name '.actions_topdevices.new')" ] || fail "staging files left behind"
+# the keep job: every 10 minutes as root; a dry run never runs it, nor creates the kept log
+grep -qxF "$(printf '*/10\t*\t*\t*\t*\troot\t/usr/local/opnsense/scripts/topdevices/keep.py >/dev/null 2>&1')" \
+    "$R/usr/local/etc/cron.d/topdevices" || fail "the cron line is wrong"
+echo "$first" | grep -q 'keep.py not run (ROOT=' || fail "the dry run did not say it skipped keep.py"
+[ ! -e "$R/var/log/topdevices" ] || fail "the dry run created the kept log"
 # A download that fails must not leave the installer's scratch directory behind.
 F="$R/fetchfail"; mkdir -p "$F"
 cp install.sh "$F/install.sh"                      # no source tree beside it: the fetch path runs
