@@ -492,6 +492,20 @@ Not verified: non-root users; IPv6; multiple WANs; a zone with daylight saving o
 the firewall (unit tests only: the reference zone has none); a NetFlow reset, a gap
 in the kept log, the 1 GB cap and the free-space floor (unit tests only).
 
+**Uninstall (0.3.1)**, on the reference install on 2026-09-25: installed from the
+branch (eleven files, configd restarted for the new action), `configctl topdevices
+uninstall dry-run` named the eight paths it would remove, the weekly job and the
+configd restart, exited 0, and changed nothing: the widget, its endpoints and the
+weekly job were all still there afterwards. The cron page's command list offered
+41 commands, `topdevices install` among them and `topdevices uninstall` not. The
+uninstaller's tests run it over an installed scratch root as a rehearsal, for real
+from its own installed copy, again with nothing left, and with stand-ins for php,
+configctl and daemon; ten planted bugs were all caught.
+
+Not verified: a real uninstall on the firewall, and so the deletion of the weekly
+job through core's Cron model (the PHP runs only for real; its filters were read
+against core's model and the job's stored fields).
+
 **Automated tests** cover the live sampler, the widget's live logic, since 0.1.2
 the NetFlow ranges, since 0.2.0 the raw flow log reader, run against core's own
 parser and aggregators, and since 0.3.0 the keeper, run against core's own
