@@ -540,13 +540,14 @@ configd actions file, after which configd restarts by itself a second later. It
 touches nothing of core's, and running it twice is harmless. To see what it would do
 first:
 
-    sh /usr/local/opnsense/scripts/topdevices/uninstall.sh --dry-run
+    configctl topdevices uninstall --dry-run
 
 It leaves the widget's slot in your dashboard layout (an empty tile until you remove
-it there), the browser's saved widget settings, and the bootstrap's `/tmp/tdx`. If it
-cannot read the cron jobs it says so, finishes the rest, and exits 1: delete the job
-by hand then, or it puts everything back next Sunday. The `uninstall` action has no
-description on purpose, so the GUI's cron command list never offers it.
+it there), the browser's saved widget settings, and the bootstrap's `/tmp/tdx` and
+`/tmp/td.tgz`. If it cannot delete the weekly job it says so in its output, finishes
+the rest, and exits 1: delete the job by hand then, or it fails every Sunday from
+then on, its action being gone. The `uninstall` action has no description on
+purpose, so the GUI's cron command list never offers it.
 
 **By hand**, on an install older than 0.3.1: remove the weekly job under
 System → Settings → Cron first, or it puts everything back. Then, as root:

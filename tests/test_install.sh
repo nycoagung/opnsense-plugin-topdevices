@@ -50,6 +50,11 @@ block=$(awk '$0 == "[uninstall]" {on = 1; next} /^\[/ {on = 0} on' "$A")
 echo "$block" | grep -qx 'command:/usr/local/opnsense/scripts/topdevices/uninstall.sh' || fail "[uninstall] command wrong"
 echo "$block" | grep -qx 'type:script_output' || fail "[uninstall] is not script_output"
 echo "$block" | grep -q '^description:' && fail "[uninstall] has a description, so the GUI's cron list would offer it"
+# configd drops arguments an action's parameters line has no %s for, which would
+# turn "configctl topdevices uninstall --dry-run" into the real thing
+echo "$block" | grep -qx 'parameters:%s' || fail "[uninstall] does not pass one parameter through"
+# a non-zero exit would otherwise come back as "Execute error" without the output
+echo "$block" | grep -qx 'errors:no' || fail "[uninstall] does not disable configd's exit-status check"
 grep -q '<pattern>api/topdevices/flows/\*</pattern>' "$R/usr/local/opnsense/mvc/app/models/OPNsense/TopDevices/ACL/ACL.xml" \
     || fail "the ACL does not cover the flows endpoints"
 [ -z "$(find "$R" -name '*.tdnew' -o -name '.actions_topdevices.new')" ] || fail "staging files left behind"
