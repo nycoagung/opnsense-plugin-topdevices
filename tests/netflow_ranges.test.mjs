@@ -357,6 +357,37 @@ test("with no zone from the firewall, the browser's own is used", inBrowserZone(
     assert.equal(w._dateStr(S(6, 30)), 'Wed Sep 23 12:00:00 IST 2026');
 }));
 
+// --- what NetFlow's records actually hold ------------------------------------------
+
+test("a bucket's start is read back as core prints it: its UTC time plus the firewall's offset now", () => {
+    assert.equal(m.exportStart('2026/09/19 10:00:00', NOW, 'Australia/Brisbane'), Date.UTC(2026, 8, 19) / 1000);
+    assert.equal(m.exportStart('', NOW, 'Australia/Brisbane'), null);
+    // core applies today's offset to every row (export_details.py): after Sydney's
+    // clock change a September bucket prints an hour late, and still reads back right
+    assert.equal(m.exportStart('2026/09/19 11:00:00', U(10, 5, 1), 'Australia/Sydney'), Date.UTC(2026, 8, 19) / 1000);
+});
+
+test('a range reaching back before NetFlow began starts at the oldest bucket, and says so', async () => {
+    // NetFlow began collecting on the day starting Sat 19 Sep 10:00: nothing older comes back
+    const days = [19, 20, 21, 22, 23].map(d => `2026/09/${d} 10:00:00`);
+    const w = widget('7d');
+    reply = (url) => (url.includes('/FlowSourceAddrTotals/')
+        ? csv(totalsRows(FLOWS).flatMap(r => days.map(t => ({ ...r, start_time: t }))), TOTALS_HEAD) : null);
+    await w._load(NOW * 1000);
+    assert.deepEqual(w._windowCaption(), {
+        text: 'Sat Sep 19 10:00:00 AEST 2026  →  Wed Sep 23 19:08:54 AEST 2026 · all traffic',
+        note: 'History older than a day is kept per day (days start at 10:00) · NetFlow has no records before Sat 19 Sep 10:00' });
+});
+
+test('an export with no rows at all says there is no NetFlow data', async () => {
+    const w = widget('7d');
+    reply = (url) => (url.includes('/FlowSourceAddrTotals/') ? csv([], TOTALS_HEAD) : null);
+    await w._load(NOW * 1000);
+    assert.deepEqual(w._windowCaption(), {
+        text: 'Wed Sep 16 19:08:54 AEST 2026  →  Wed Sep 23 19:08:54 AEST 2026 · all traffic',
+        note: 'No NetFlow data for this range' });
+});
+
 // --- rows to download and upload ---------------------------------------------
 
 test('both aggregates give every device the same download and upload', () => {
