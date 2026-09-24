@@ -118,6 +118,12 @@ class Keeping(Scratch):
         self.assertEqual(self.kept_data(), sorted([b'file %d' % n for n in range(1, 11)] + [b'current']))
 
     def test_a_file_renamed_or_linked_meanwhile_is_skipped_and_kept_next_time(self):
+        # F1: the FileExistsError stub below never creates a real file at `dst`
+        # (unlike a genuine second pass, which would), so the post-link identity
+        # check run() now does after catching FileExistsError finds no file
+        # there at all and takes the FileNotFoundError branch of that check -
+        # still a skip, still kept next time, so the pass's return values are
+        # unchanged; only that is different from before F1.
         self.write('flowd.log.000001', b'b', T0 - H)
         real_link, calls = os.link, []
 
@@ -133,6 +139,102 @@ class Keeping(Scratch):
             self.assertEqual(self.keep(T0), (0, 0))
             self.assertEqual(self.keep(T0 + 600), (0, 0))
             self.assertEqual(self.keep(T0 + 1200), (1, 0))
+
+    def test_a_rotation_between_the_stat_and_the_link_keeps_the_right_file(self):
+        # F1: core's rotation renames every file one number up. Landing here
+        # makes `path` (.000001, holding A) name a different file (B, renamed
+        # from flowd.log) by the time os.link runs, so the link succeeds on B
+        # under the name A's stat built - the bug this fix closes.
+        self.write('flowd.log.000001', b'A', T0 - H)
+        self.write('flowd.log', b'B', T0)
+        real_link, calls = os.link, []
+
+        def racing(src, dst):
+            calls.append(src)
+            if len(calls) == 1:
+                self.rotate(b'C', T0 + 5)                         # core's rotation lands mid-link
+            return real_link(src, dst)
+
+        with unittest.mock.patch('os.link', racing):
+            self.keep(T0)
+        self.assertEqual(self.kept_data(), [])                    # nothing wrongly kept under A's name
+        self.assertEqual(self.keep(T0 + 600), (2, 0))
+        self.assertEqual(self.kept_data(), [b'A', b'B'])
+
+    def test_a_kept_name_holding_the_wrong_file_is_replaced(self):
+        # F1: a FileExistsError where the existing name holds a different id -
+        # an earlier pass linked the wrong file under it (as above) - is the
+        # stale name being unlinked so the next pass can link the right file.
+        path = self.write('flowd.log.000001', b'A', T0 - H)
+        st = os.stat(path)
+        name = os.path.join(self.kept, 'flowd.%d.%d' % (st.st_mtime, st.st_ino))
+        os.makedirs(self.kept)
+        other = self.write('other', b'X', T0)
+        os.link(other, name)                                      # an earlier pass linked the wrong file here
+        self.assertEqual(self.keep(T0), (0, 0))
+        self.assertEqual(self.kept_names(), [])                   # the stale name is gone
+        self.assertEqual(self.keep(T0 + 600), (1, 0))              # the next pass keeps the right file
+        self.assertEqual(self.kept_data(), [b'A'])
+
+    def test_an_unexpected_link_error_does_not_skip_pruning(self):
+        # F2: any OSError other than FileNotFound/FileExists from os.link
+        # (ENOSPC, EMLINK ...) must not turn the 51h/1GB guards off - exactly
+        # when the disk is full and pruning matters most.
+        self.write('flowd.log.000001', b'new', T0 - H)
+        os.makedirs(self.kept)
+        old = self.write('topdevices/flowd.1.1', b'too old', T0 - 51 * H - 1)
+        with unittest.mock.patch('os.link', side_effect=OSError(28, 'No space left on device')):
+            with self.assertRaises(OSError):
+                self.keep(T0)
+        self.assertFalse(os.path.exists(old))
+
+    def test_a_rotated_file_removed_before_its_stat_is_skipped(self):
+        # F4: a file core rotated away right after the glob, before run() gets
+        # to stat it.
+        path = self.write('flowd.log.000001', b'b', T0 - H)
+        real_stat = os.stat
+
+        def vanishing(p, *a, **kw):
+            if p == path:
+                os.remove(path)                                   # core renamed it away just now
+            return real_stat(p, *a, **kw)
+
+        with unittest.mock.patch('os.stat', vanishing):
+            self.assertEqual(self.keep(T0), (0, 0))
+        self.assertEqual(self.kept_names(), [])
+
+    def test_a_kept_file_removed_before_its_unlink_is_skipped(self):
+        # F4: a kept file another pass already deleted, between this pass's
+        # kept_files() listing and its own os.unlink of the same file.
+        os.makedirs(self.kept)
+        old = self.write('topdevices/flowd.1.1', b'too old', T0 - 51 * H - 1)
+        real_unlink = os.unlink
+
+        def vanishing(p, *a, **kw):
+            real_unlink(p)                                        # another pass deleted it first
+            return real_unlink(p, *a, **kw)
+
+        with unittest.mock.patch('os.unlink', vanishing):
+            self.assertEqual(self.keep(T0), (0, 1))
+        self.assertFalse(os.path.exists(old))
+
+    def test_kept_files_skips_one_removed_before_its_stat(self):
+        # F4: kept_files() lists a kept file that is gone by the time it is
+        # stat()ed - deleted by another pass between the glob and the stat -
+        # and simply returns the rest.
+        os.makedirs(self.kept)
+        keep_path = self.write('topdevices/flowd.1.1', b'a', T0 - H)
+        gone_path = self.write('topdevices/flowd.2.2', b'b', T0 - 2 * H)
+        real_stat = os.stat
+
+        def vanishing(p, *a, **kw):
+            if p == gone_path:
+                os.remove(gone_path)
+            return real_stat(p, *a, **kw)
+
+        with unittest.mock.patch('os.stat', vanishing):
+            out = keep.kept_files(self.kept)
+        self.assertEqual([p for p, _ in out], [keep_path])
 
     def test_files_past_the_reach_are_pruned_and_never_linked(self):
         os.makedirs(self.kept)
