@@ -185,6 +185,11 @@ const mutants = [
     ['the raw reach left at a day', 'export const RAW_REACH = 50 * 3600;', 'export const RAW_REACH = DAY;'],
     ['a short raw answer shown as if whole', '            if (resp && resp.all.from <= from) {', '            if (resp) {'],
     ['a short raw answer called a failure', '            fallback = !resp;', '            fallback = true;'],
+    ["the caption starts where the plan did, before any data", "        const start = this.state.first > p.start ? this.state.first : p.start;", "        const start = p.start;"],
+    ["no word that NetFlow began later", "            const none = `NetFlow has no records before ${this._dayTime(start)}`;\n            note = note ? `${note} · ${none}` : none;\n", ""],
+    ["an empty export shown as a span", "        if (this.state.first === null) {", "        if (false) {"],
+    ["bucket starts read with the offset of their own day", " / 1000 - offsetAt(nowS, tz) : null;", " / 1000 - offsetAt(Date.UTC(+x[1], +x[2] - 1, +x[3], +x[4], +x[5], +x[6]) / 1000, tz) : null;"],
+    ["the newest bucket taken for the oldest", "dated.reduce((a, b) => Math.min(a, b))", "dated.reduce((a, b) => Math.max(a, b))"],
 ];
 
 let survivors = 0;

@@ -405,6 +405,14 @@ export function zoneAbbr(ts, tz) {
     return `GMT${sg}${String(Math.floor(Math.abs(off) / 60)).padStart(2, '0')}${String(Math.abs(off) % 60).padStart(2, '0')}`;
 }
 
+// A bucket's start as core's export prints it - its UTC time plus the offset the
+// firewall has at the moment of the export (export_details.py applies today's
+// offset to every row) - in epoch seconds; null for anything else.
+export function exportStart(text, nowS, tz) {
+    const x = /^(\d{4})\/(\d{2})\/(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(text || '');
+    return x ? Date.UTC(+x[1], +x[2] - 1, +x[3], +x[4], +x[5], +x[6]) / 1000 - offsetAt(nowS, tz) : null;
+}
+
 export default class TopDevices extends BaseWidget {
 
     constructor(config) {
@@ -700,7 +708,7 @@ export default class TopDevices extends BaseWidget {
         const head = (lines.shift() || '').split(',').map(h => h.trim());
         const ix = {};
         head.forEach((h, i) => { ix[h] = i; });
-        const rows = [];
+        const rows = [], now = Date.now() / 1000;
         lines.forEach((line) => {
             if (!line) return;
             const c = line.split(',');
@@ -708,7 +716,8 @@ export default class TopDevices extends BaseWidget {
                 src: c[ix.src_addr], dst: c[ix.dst_addr],
                 port: c[ix.service_port], dir: c[ix.direction],
                 iface: c[ix['if']],
-                octets: parseFloat(c[ix.octets]) || 0
+                octets: parseFloat(c[ix.octets]) || 0,
+                start: exportStart(c[ix.start_time], now, this.tz)
             });
         });
         this.cache[key] = rows;
@@ -761,6 +770,9 @@ export default class TopDevices extends BaseWidget {
         }));
         this.state.window = [plan.start, plan.end];          // what the figures cover
         this.state.plan = plan;
+        // the oldest bucket that came back: null when nothing did, undefined when none is dated
+        const dated = flows.map(r => r.start).filter(t => t !== null);
+        this.state.first = !flows.length ? null : dated.length ? dated.reduce((a, b) => Math.min(a, b)) : undefined;
         this.state.request = { from, to, now, scope };        // what the range asked for
         this.state.raw = null;
         this.state.fallback = fallback;
@@ -842,7 +854,13 @@ export default class TopDevices extends BaseWidget {
                      note: p.clipped ? `No NetFlow data: only the last ${days} days are kept`
                                      : 'No NetFlow data for this range' };
         }
-        const text = `${this._dateStr(p.start)}  →  ${this._endStr(p.end)}${scopeTxt}`;
+        // from the oldest bucket that came back: NetFlow may have begun collecting later
+        const start = this.state.first > p.start ? this.state.first : p.start;
+        if (this.state.first === null) {         // the export came back empty: nothing recorded then
+            return { text: `${this._dateStr(q.from)}  →  ${this._endStr(q.to)}${scopeTxt}`,
+                     note: 'No NetFlow data for this range' };
+        }
+        const text = `${this._dateStr(start)}  →  ${this._endStr(p.end)}${scopeTxt}`;
         let note = null;
         // off by an hour, or by a tenth of a shorter range: 10:00 -> 10:05 is not the last hour
         const off = Math.max(Math.abs(p.start - q.from), Math.abs(p.end - q.to));
@@ -851,10 +869,14 @@ export default class TopDevices extends BaseWidget {
             const first = this._hm(p.start), last = this._hm(Math.floor((p.end - 1) / DAY) * DAY);
             const starts = first === last ? first : `${first}, then ${last}`;
             const perDay = `kept per day (days start at ${starts})${p.clipped ? `, for ${days} days` : ''}`;
-            const span = this._span(p.start, p.end, q.now);
+            const span = this._span(start, p.end, q.now);
             note = q.scope === 'wan'
                 ? `Internet only is ${perDay}: these cover ${span}`
                 : `History older than a day is ${perDay}${p.clipped ? `: these cover ${span}` : ''}`;
+        }
+        if (start > p.start) {
+            const none = `NetFlow has no records before ${this._dayTime(start)}`;
+            note = note ? `${note} · ${none}` : none;
         }
         return { text, note };
     }
