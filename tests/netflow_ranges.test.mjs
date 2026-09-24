@@ -570,9 +570,9 @@ async function loadRaw(range, answer, now = NOW, scope = 'all') {
     return { w, made: requests.slice(before) };
 }
 
-test('a range starting within the last day, and not in the future, is read from the raw log', () => {
-    assert.equal(m.rawRange(NOW - 86400, NOW), true);
-    assert.equal(m.rawRange(NOW - 86401, NOW), false);
+test('a range starting within the last 50 hours, and not in the future, is read from the raw log', () => {
+    assert.equal(m.rawRange(NOW - 180000, NOW), true);
+    assert.equal(m.rawRange(NOW - 180001, NOW), false);
     assert.equal(m.rawRange(NOW, NOW), false);
 });
 
@@ -599,12 +599,29 @@ test('Today and Last 24 hours read the raw log from local midnight and from a da
     assert.deepEqual(r.made, [`${FLOWS_API}/totals/${NOW - 86400}/${NOW}`]);
 });
 
-test('Yesterday and Last 7 days still read NetFlow\'s records', async () => {
-    for (const range of ['yesterday', '7d']) {
-        const before = requests.length;
-        await load(range);
-        assert.ok(!requests.slice(before).some(u => u.startsWith(`${FLOWS_API}/`)), range);
-    }
+test('Last 7 days still reads NetFlow\'s records', async () => {
+    const before = requests.length;
+    await load('7d');
+    assert.ok(!requests.slice(before).some(u => u.startsWith(`${FLOWS_API}/`)));
+});
+
+test('Yesterday reads the raw log for exactly the day, 00:00:00 to 23:59:59', async () => {
+    const { w, made } = await loadRaw('yesterday', () => totalsAnswer(S(14, 0, 21), S(14, 0, 22)));
+    assert.deepEqual(made, [`${FLOWS_API}/totals/${S(14, 0, 21)}/${S(14, 0, 22)}`]);
+    assert.deepEqual(w._windowCaption(), {
+        text: 'Tue Sep 22 00:00:00 AEST 2026  →  Tue Sep 22 23:59:59 AEST 2026 · all traffic', note: null });
+});
+
+test("a raw answer short of the range's start is read from NetFlow's records instead, with no note", async () => {
+    // the kept log is still filling: all traffic only from Tue 12:51
+    const w = widget('yesterday');
+    reply = (url) => (url.startsWith(`${FLOWS_API}/`) ? totalsAnswer(S(2, 51, 22), S(14, 0, 22)) : serve(url));
+    const before = requests.length;
+    await w._load(NOW * 1000);
+    assert.deepEqual(requests.slice(before), [`${FLOWS_API}/totals/${S(14, 0, 21)}/${S(14, 0, 22)}`,
+                                              `${EXPORT}/FlowSourceAddrTotals/${S(0, 0, 22)}/${S(0, 0, 23)}/86400`]);
+    assert.equal(w.state.request.raw, undefined);
+    assert.equal(w._windowCaption().note, 'History older than a day is kept per day (days start at 10:00)');
 });
 
 test('both scopes come from one answer: switching scope sends no request', async () => {
