@@ -377,13 +377,14 @@ behind a traffic-shaper pipe.
 **Recent ranges (0.2.0)**, measured on the reference install (Python 3.13)
 on 2026-09-24 (VST), installed with the bootstrap command from the branch:
 
-- **Equal to core's own code**: `flows.py` against core's parser and aggregators
-  run once over the live log agreed for every device to the
+- **Matches core's own code**: `flows.py` against core's parser and aggregators
+  run once over the live log matched every device to within a
   byte - all traffic for the whole hour 07:00-08:00, internet only
   for 07:15-07:45. The largest gap, 0.49 B, is the answer's rounding
-  to whole bytes. The unit tests pass on the firewall against its own core library.
-- **Speed** through configd: Last hour 0.33 s, Today 0.59 s, Last
-  24 hours 1.20 s, reading all 11 log files.
+  to whole bytes, well inside the under-1-byte pass mark. The unit tests pass on
+  the firewall against its own core library.
+- **Speed** through configd: Last hour 0.33 s (2 files), Today 0.59 s
+  (5 files), Last 24 hours 1.20 s (11 files).
 - **Reach**: the log held under 24 hours at the time, so Last 24 hours' internet only
   started at the log, with its note, and all traffic took the hours before it
   from the hourly records. Every record carried ports (9,567 of 9,567 in the
