@@ -172,7 +172,9 @@ const mutants = [
     ["a doubled wall time taken as the later", "    if (names(before)) return before;\n", ""],
     ["a missing wall time moved back", "    return names(after) ? after : before;", "    return after;"],
     ["yesterday as 24 hours, not the calendar day", "    return wallToEpoch(day.getUTCFullYear(), day.getUTCMonth() + 1, day.getUTCDate(), 0, 0, 0, tz);", "    return wallToEpoch(y, mo, d, 0, 0, 0, tz) - back * 86400;"],
-    ["the long zone name not abbreviated", "    const words = named('long').split(/[\\s-]+/).filter(w => /^[A-Za-z]/.test(w));\n    if (words.length > 1) return words.map(w => w[0].toUpperCase()).join('');\n", "    const words = named('long').split(/[\\s-]+/).filter(w => /^[A-Za-z]/.test(w));\n"],
+    ["the long zone name not abbreviated", "    const words = long.split(/[\\s-]+/).filter(w => /^[A-Za-z]/.test(w));\n    if (words.length > 1) return words.map(w => w[0].toUpperCase()).join('');\n", "    const words = long.split(/[\\s-]+/).filter(w => /^[A-Za-z]/.test(w));\n"],
+    ["UTC's long name abbreviated to its initials (CUT) instead of UTC",
+     "    if (long === 'Coordinated Universal Time') return 'UTC';    // its initials would be CUT\n", ''],
     ["midnights in the browser's zone", "        const mid = localMidnight(s, 0, this.tz);", "        const mid = localMidnight(s, 0);"],
     ["yesterday from the browser's calendar", "            case 'yesterday': return [localMidnight(s, 1, this.tz), mid];", "            case 'yesterday': return [localMidnight(s, 1), mid];"],
     ["custom fields read in the browser's zone", "+(x[6] || 0), this.tz) : null;", "+(x[6] || 0)) : null;"],
@@ -181,6 +183,9 @@ const mutants = [
     ["a day's end shown as the next midnight", "        return this._dateStr(localMidnight(ts, 0, this.tz) === ts ? ts - 1 : ts);", "        return this._dateStr(ts);"],
     ["a note's span ending on the next midnight", "        if (b > a && localMidnight(b, 0, this.tz) === b) b -= 1;\n", ""],
     ["a zone Intl does not know kept", "            if (tz) new Intl.DateTimeFormat('en-US', { timeZone: tz });   // throws for a zone it does not know\n", ""],
+    ["an empty zone string stored instead of the browser's",
+     "            tz = (r && typeof r.timezone === 'string' ? r.timezone : undefined) || undefined;   // '' is not a zone\n",
+     "            tz = r && typeof r.timezone === 'string' ? r.timezone : undefined;\n"],
     ["the zone never asked", "        await this._loadZone();\n", ""],
     ['the raw reach left at a day', 'export const RAW_REACH = 50 * 3600;', 'export const RAW_REACH = DAY;'],
     ['a short raw answer shown as if whole', '            if (resp && resp.all.from <= from) {', '            if (resp) {'],
@@ -190,6 +195,9 @@ const mutants = [
     ["an empty export shown as a span", "        if (this.state.first === null) {", "        if (false) {"],
     ["bucket starts read with the offset of their own day", " / 1000 - offsetAt(nowS, tz) : null;", " / 1000 - offsetAt(Date.UTC(+x[1], +x[2] - 1, +x[3], +x[4], +x[5], +x[6]) / 1000, tz) : null;"],
     ["the newest bucket taken for the oldest", "dated.reduce((a, b) => Math.min(a, b))", "dated.reduce((a, b) => Math.max(a, b))"],
+    ["with the zone unknown, a bucket's start is read with the browser's offset anyway",
+     'start: this.tz === undefined ? null : exportStart(c[ix.start_time], now, this.tz)',
+     'start: exportStart(c[ix.start_time], now, this.tz)'],
 ];
 
 let survivors = 0;

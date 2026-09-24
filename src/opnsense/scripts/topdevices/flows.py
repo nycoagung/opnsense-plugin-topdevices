@@ -381,8 +381,10 @@ def answer_totals(frm, to, now, opened, net, hourly_rows, workers):
     if L is None:
         raise ValueError('the NetFlow flow log holds no flows yet')
     # all traffic is complete from the log's start, or through the hourly records
-    # within their day: an earlier start is answered from there (2026-09-24 spec §4)
-    frm = max(frm, min(L, now - DAY - SLACK))
+    # within their day: an earlier start is answered from there (2026-09-24 spec §4).
+    # Clamped to `to` as well: a range wholly before that start is answered as an
+    # empty span at `to`, not one with frm pushed past it.
+    frm = min(to, max(frm, min(L, now - DAY - SLACK)))
     p = plan(frm, to, L)
     (a_lo, a_hi), (i_lo, i_hi) = p['raw_all'], p['inet']
     jobs = [(fd, a_lo, a_hi, i_lo, i_hi, net) for fd, _, _ in files_for(opened, min(a_lo, i_lo))]

@@ -214,6 +214,12 @@ test("the zone is named as the firewall's own date command names it", () => {
     assert.equal(m.zoneAbbr(NOW, 'Asia/Kolkata'), 'IST');
 });
 
+test("UTC (OPNsense's default zone) names as UTC, not Intl's initials for its long name", () => {
+    // Intl's long name is "Coordinated Universal Time", whose initials would be CUT
+    assert.equal(m.zoneAbbr(NOW, 'UTC'), 'UTC');
+    assert.equal(m.zoneAbbr(NOW, 'Etc/UTC'), 'UTC');
+});
+
 async function loadCustom(from, to, scope) {
     const w = widget('custom', scope);
     w.state.customFrom = from;
@@ -334,6 +340,7 @@ test("the zone comes from the firewall; the browser's stays when it does not say
     const asked = [];
     for (const [answer, zone] of [[{ timezone: 'Australia/Sydney' }, 'Australia/Sydney'],
                                   [{ timezone: 'Mars/Olympus_Mons' }, undefined],       // a zone Intl does not know
+                                  [{ timezone: '' }, undefined],                        // stored as '', wallFormat('') throws
                                   [{ errorMessage: 'Endpoint not found' }, undefined],   // 0.2.0's endpoints
                                   [null, undefined]]) {                                   // no answer at all
         w.ajaxCall = async (url) => { asked.push(url); if (answer === null) throw new Error('timeout'); return answer; };
@@ -377,6 +384,25 @@ test('a range reaching back before NetFlow began starts at the oldest bucket, an
     assert.deepEqual(w._windowCaption(), {
         text: 'Sat Sep 19 10:00:00 AEST 2026  →  Wed Sep 23 19:08:54 AEST 2026 · all traffic',
         note: 'History older than a day is kept per day (days start at 10:00) · NetFlow has no records before Sat 19 Sep 10:00' });
+});
+
+test('with the zone unknown, the caption starts at the plan, not shifted by the browser reading the firewall\'s offset as its own', async () => {
+    // same fixture as above, but the firewall did not say (this.tz undefined): exportStart()
+    // would subtract the BROWSER's offset from a string core printed with the FIREWALL's, so
+    // every row is left undated instead (F3) and the caption falls back to the plan's start -
+    // no false "NetFlow has no records before" on every range read from NetFlow's records.
+    const days = [19, 20, 21, 22, 23].map(d => `2026/09/${d} 10:00:00`);
+    const w = widget('7d');
+    w.tz = undefined;
+    reply = (url) => (url.includes('/FlowSourceAddrTotals/')
+        ? csv(totalsRows(FLOWS).flatMap(r => days.map(t => ({ ...r, start_time: t }))), TOTALS_HEAD) : null);
+    await w._load(NOW * 1000);
+    assert.equal(w.state.first, undefined);           // undated, not the (wrongly shifted) oldest bucket
+    const c = w._windowCaption();
+    const p = w.state.plan;
+    assert.equal(p.start, S(0, 0, 16));                // the plan's start, unaffected by the zone
+    assert.equal(c.text, `${w._dateStr(p.start)}  →  ${w._endStr(p.end)} · all traffic`);
+    assert.doesNotMatch(c.note, /NetFlow has no records before/);
 });
 
 test('an export with no rows at all says there is no NetFlow data', async () => {
