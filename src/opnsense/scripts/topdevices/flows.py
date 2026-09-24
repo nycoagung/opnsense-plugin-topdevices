@@ -32,6 +32,7 @@ NETFLOW_LIB = '/usr/local/opnsense/scripts/netflow'  # core's parser, interface 
 HOUR = 3600
 DAY = 86400
 SLACK = 300              # the browser's clock may be a few minutes off the firewall's
+REACH = 50 * HOUR        # a raw-log range starts at most this far back: Yesterday at any hour (2026-09-24 spec §4)
 TOP = 100                # the device panel lists at most 100 rows
 MAX_FILE = 40 * 1024 * 1024  # core rotates the log at 10 MB (flowd_aggregate.py): far past that, nothing rotates it
 GAP = 900                # more than this between two files, and one is missing between them (2026-09-24 spec §4)
@@ -378,6 +379,9 @@ def answer_totals(frm, to, now, opened, net, hourly_rows, workers):
     L = log_from(opened)
     if L is None:
         raise ValueError('the NetFlow flow log holds no flows yet')
+    # all traffic is complete from the log's start, or through the hourly records
+    # within their day: an earlier start is answered from there (2026-09-24 spec §4)
+    frm = max(frm, min(L, now - DAY - SLACK))
     p = plan(frm, to, L)
     (a_lo, a_hi), (i_lo, i_hi) = p['raw_all'], p['inet']
     jobs = [(fd, a_lo, a_hi, i_lo, i_hi, net) for fd, _, _ in files_for(opened, min(a_lo, i_lo))]
@@ -481,8 +485,8 @@ def parse_args(args, now):
         raise ValueError('FROM must be before TO')
     # Totals only: a device panel asks for its table's window, which ages while
     # the table is on screen, and its lists cover what the log holds (answer_device)
-    if mode == 'totals' and frm < now - DAY - SLACK:
-        raise ValueError("FROM is more than a day ago: that range is read from NetFlow's records")
+    if mode == 'totals' and frm < now - REACH - SLACK:
+        raise ValueError("FROM is more than 50 hours ago: that range is read from NetFlow's records")
     if to > now + SLACK:
         raise ValueError('TO is in the future')
     to = min(to, now)
