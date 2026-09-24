@@ -21,13 +21,17 @@ Plugin Changelog
 
 * Yesterday runs from 00:00:00 to 23:59:59, exactly, in both scopes: the
   plugin keeps NetFlow's raw flow log for two days (hard links to the files
-  core rotates out, about 250 MB here), and ranges starting within the last
+  core rotates out, about 240 MB here), and ranges starting within the last
   50 hours are read from it
 * Midnights, the custom range fields and every caption follow the time zone
   set under System: Settings: General, not the browser's (which is used only
   when the firewall does not say)
 * Internet only for Today and Last 24 hours no longer falls short late in the
   evening, when the day outgrew core's own log
+* In Live, the widget grows when a device's peers and ports appear or lengthen,
+  so a short table no longer clips the detail column
+* An oversized log file left by an aggregator outage blocks only the ranges
+  that would read it
 * A range reaching back before NetFlow began collecting starts its caption
   at the oldest bucket NetFlow returned, and says so
 
