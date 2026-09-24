@@ -58,4 +58,25 @@ before=$(ls -d /tmp/tdinst.* 2>/dev/null | wc -l)
 PATH="$F:$PATH" ROOT="$R" sh "$F/install.sh" >/dev/null 2>&1 && fail "install succeeded without a source"
 after=$(ls -d /tmp/tdinst.* 2>/dev/null | wc -l)
 [ "$before" = "$after" ] || fail "a failed fetch left /tmp/tdinst.* behind"
+
+# The staging names are dot-prefixed (so cron never reads one mid-copy): a cp
+# that fails partway through must leave only dotted *.tdnew files behind, never
+# an undotted one. A fake cp fails only on the cron file's staging name and
+# copies through to the real cp for everything else.
+CP=$(mktemp -d "${TMPDIR:-/tmp}/tdcp.XXXXXX")
+cat > "$CP/cp" <<'SH'
+#!/bin/sh
+case "$2" in
+    */.topdevices.tdnew) exit 1 ;;
+esac
+exec /bin/cp "$@"
+SH
+chmod 755 "$CP/cp"
+R2=$(mktemp -d "${TMPDIR:-/tmp}/tdroot2.XXXXXX")
+mkdir -p "$R2/usr/local/opnsense/www/js/widgets/Metadata" "$R2/usr/local/opnsense/service/conf/actions.d"
+PATH="$CP:$PATH" ROOT="$R2" sh install.sh >/dev/null 2>&1 && fail "install succeeded despite cp failing on the cron file"
+[ -n "$(find "$R2" -name '.*.tdnew')" ] || fail "no staged files found after the partial failure"
+[ -z "$(find "$R2" -name '[!.]*.tdnew')" ] || fail "an undotted staging file was created"
+rm -rf "$R2" "$CP"
+
 echo "install dry run: OK"

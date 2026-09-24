@@ -172,7 +172,10 @@ stays in core's set about 20 hours here, so a job every 10 minutes has a wide ma
 
 - **Files.** `open_log` lists both places. A file seen under two names is opened once,
   by device and inode. The rotation re-check (0.2.0 §5.2) compares both listings. The
-  40 MB guard applies to every file.
+  40 MB guard is now two checks: on the current log (the newest by last write), it is
+  "is the aggregator running?"; on the files an answer must actually read (a totals or
+  device answer's `files_for` result), a file over it cannot be read exactly, and that
+  range falls back to NetFlow's records (second review, G1).
 - **L** follows §4. Each file's first record is read, from at most 64 KB, to find the
   newest unbroken run.
 - **Command line.** For totals, `FROM ≥ now − 180000 − 300`, where it was 86400. The
@@ -346,8 +349,11 @@ during the test.
 
 ## 15. Risks
 
-- **The job stops.** The kept files age out within two days, and Yesterday is read
-  from NetFlow's records again. Nothing wrong is shown.
+- **The job stops.** Nothing prunes `/var/log/topdevices` any more: only keep.py does
+  that. The kept files stay exactly as they are until keep.py runs again or they are
+  removed by hand - they do not age out on their own. Yesterday is read from NetFlow's
+  records again only once they are older than the reach; nothing wrong is shown
+  either way (second review, G4).
 - **A traffic surge** reaches the cap sooner and shortens the reach. Ranges past it
   are read from NetFlow's records.
 - **Core changes its rotation,** its names or its pattern. Nothing is kept, and the
