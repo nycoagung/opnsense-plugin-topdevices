@@ -17,6 +17,19 @@ WWW: https://github.com/nycoagung/opnsense-plugin-topdevices
 Plugin Changelog
 ----------------
 
+0.3.0
+
+* Yesterday runs from 00:00:00 to 23:59:59, exactly, in both scopes: the
+  plugin keeps NetFlow's raw flow log for two days (hard links to the files
+  core rotates out, about 250 MB here), and ranges starting within the last
+  50 hours are read from it
+* Midnights, the custom range fields and every caption follow the time zone
+  set under System: Settings: General, not the browser's
+* Internet only for Today and Last 24 hours no longer falls short late in the
+  evening, when the day outgrew core's own log
+* A range reaching back before NetFlow began collecting starts its caption
+  at the oldest bucket NetFlow returned, and says so
+
 0.2.0
 
 * Last hour, Today, Last 24 hours and custom ranges starting within the last

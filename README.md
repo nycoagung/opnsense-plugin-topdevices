@@ -8,9 +8,10 @@ NetFlow/Insight aggregator. No extra collector required.
 - **Live** — each device's current download and upload, updated every second,
   from the firewall's connection table (see *Live traffic*)
 - **Date range** — last hour, 24 hours, today, yesterday, 7 days, or a custom
-  from/to range. One starting within the last day is exact to the second, read from
-  NetFlow's raw flow log; older ones snap to the buckets NetFlow keeps. The caption
-  shows the exact span (see *Upstream API limitations*)
+  from/to range. One starting within the last 50 hours, Yesterday included, is exact
+  to the second, read from NetFlow's raw flow log, which the plugin keeps for two days
+  (see *Keeping the flow log*); older ones snap to the buckets NetFlow keeps. The
+  caption shows the exact span (see *Upstream API limitations*)
 - **Download / upload split** per device, plus the combined total
 - **All traffic or internet only** — the latter counts flows at the WAN,
   so purely local traffic is excluded
@@ -31,7 +32,10 @@ NetFlow/Insight aggregator. No extra collector required.
 - **Configurable** — rows to show, default range, default chart, refresh interval
 
 The active window is shown in OPNsense's own date format, to the second and with
-the timezone, e.g. `Tue Sep 22 12:11:42 AEST 2026`.
+the timezone, e.g. `Tue Sep 22 12:11:42 AEST 2026`. Midnights, the custom range
+fields and every caption follow the time zone set under **System → Settings →
+General**, whatever the browser's own; the browser's is used only when the firewall
+does not say (before 0.3.0 it always was). A day reads `00:00:00 → 23:59:59`.
 
 Nothing is hardcoded. Local networks are derived from the firewall's own
 interface configuration (anything outside RFC1918 is treated as upstream, so a
@@ -50,7 +54,7 @@ camera streams dominates the list with bytes that never reach the WAN.
 *Internet only* counts a flow just once, on the upstream interface, so purely local
 traffic disappears entirely. The upstream device is derived from the interface
 configuration, never hardcoded: for Live and for ranges starting within the last
-day, every interface with a default route or a public address; for older ranges,
+50 hours, every interface with a default route or a public address; for older ranges,
 the one addressed outside RFC1918, excluding loopback and link-local. On the
 reference install the difference is dramatic: an NVR showing 53.4 GB of total
 traffic is 16.1 MB of internet, and cameras showing 16.3 GB of upload are ~5 MB.
@@ -139,8 +143,8 @@ way core's own Traffic Graph streams interface counters.
   how many connections that is.
 - **Behind an ISP router.** The WAN is found by its default route as well as by
   its address, so a WAN with a private address (double NAT) works. Since 0.2.0
-  so do NetFlow ranges starting within the last day; older ranges still use the
-  address-only rule.
+  so do NetFlow ranges starting within the last day, and since 0.3.0 within the last
+  50 hours; older ranges still use the address-only rule.
 - **Cost.** One sampler per open dashboard, only while Live is on screen and the
   tab is visible. It measures its own CPU and slows down rather than use more
   than 10% of one core, and says so (*throttled to N s*). It restarts itself every
@@ -206,30 +210,58 @@ Both were measured against a live firewall, not assumed:
    a year. A range reaching further back is cut to what is kept, and the note
    says so, or says there is no data at all. The drill-down's peers and ports
    come from the daily details. When those cover more than the table's window,
-   the panel says so, and its download and upload stay the table's.
+   the panel says so, and its download and upload stay the table's. A range
+   reaching back before NetFlow began collecting starts at the oldest bucket that
+   came back, with the note *"NetFlow has no records before Sat 19 Sep 10:00"*; one
+   with nothing at all says *"No NetFlow data for this range"*.
 
    Each scope reads its own export. Switching scope reloads at the moment already
    on screen, so both scopes describe the same span, and switching back is served
    from the cache.
 
 3. **Since 0.2.0, recent ranges read the raw flow log instead.** A range that starts
-   within the last day - Last hour, Today, Last 24 hours, or a custom one - is read by
-   the plugin's `flows.py` from `/var/log/flowd.log` and its rotations, which hold
-   every flow with its interfaces. It is exact to the second in both scopes, and
-   agrees to the byte with core's own parser and aggregators run over the same log.
-   A read takes about a second on up to half the firewall's cores (three on the
-   reference install), and there is no rate limit: the widget refreshes slowly, and
-   only while a dashboard is open. Core keeps that log by size, not time: about 110
-   MB, which is roughly a day on the reference install and less on a busy network.
-   Where a range reaches further back, all traffic is filled in from core's hourly
-   records (the oldest hour counted in proportion), and internet only says how much
-   it covers. The table above still applies to older ranges, and to recent ones when
-   the raw log cannot be read (the caption says so). NetFlow reports a long
+   within the last 50 hours - Last hour, Today, Last 24 hours, Yesterday, or a custom
+   one (the last day only, before 0.3.0) - is read by the plugin's `flows.py` from
+   `/var/log/flowd.log`, its rotations and the files the plugin keeps (see *Keeping
+   the flow log*), which hold every flow with its interfaces. It is exact to the
+   second in both scopes, and agrees to the byte with core's own parser and
+   aggregators run over the same files. A read takes about a second on up to half the
+   firewall's cores (three on the reference install), and there is no rate limit: the
+   widget refreshes slowly, and only while a dashboard is open. Core keeps that log by
+   size, not time: about 110 MB, which is roughly a day on the reference install and
+   less on a busy network; the plugin keeps it for two days. Where the log does not
+   reach back to a range's start, all traffic is filled in from core's hourly records
+   within their day (the oldest hour counted in proportion), and internet only says
+   how much it covers; a range reaching back past both is read from NetFlow's records
+   instead, with no note. The table above still applies to older ranges, and to recent
+   ones when the raw log cannot be read (the caption says so). NetFlow reports a long
    connection every 30 minutes (`activeTimeout`), so the most recent half hour can
    under-count a long download. One known edge: while core holds rows stamped in the
    future (after the firewall's clock jumped back), its cleanup can drop the oldest
    hourly record early, and Last 24 hours can then be short by up to that hour's part
    of the range, with no note.
+
+## Keeping the flow log
+
+Core rotates `/var/log/flowd.log` at 10 MB and keeps ten rotated files: about a day
+on the reference install. Since 0.3.0 the plugin keeps them for two days, so Yesterday
+is exact.
+
+- **How.** Every 10 minutes `/usr/local/etc/cron.d/topdevices` runs
+  `/usr/local/opnsense/scripts/topdevices/keep.py`, which hard-links each file core has
+  rotated into `/var/log/topdevices/`. A hard link is a second name for the same file:
+  core's renames leave it alone and its delete drops only core's name, so nothing is
+  copied and nothing of core's is changed. The job is not in the GUI's cron list; the
+  installer puts it in place, and the weekly job keeps it there.
+- **How long.** A kept file is deleted once its newest record is 51 hours old, and the
+  directory never holds more than 1 GB, oldest first: about 250 MB on the reference
+  install.
+- **What it holds.** Raw flow records, readable by root only, as core's are.
+- **After install** the kept log starts with what core still holds, about 22 hours
+  here, so Yesterday is exact from the first midnight after install, as long as the
+  install day's first records were still in core's log. Until then, and wherever the
+  kept log has a gap (the job stopped for most of a day, or the cap was reached), a
+  range reaching back past it is read from NetFlow's records, as before.
 
 ## Install without building
 
@@ -256,6 +288,11 @@ The 0.1.x installer only knows its own six files, so one run of
 installs the new widget and installer but not `flows.py`, its controller or its
 configd actions. Until a second run completes the upgrade, recent ranges fall
 back to NetFlow's records, with the widget's note.
+
+**Upgrading from 0.2.0 to 0.3.0:** run the bootstrap command once, too. The 0.2.0
+installer only knows its own eight files, so one run of `configctl topdevices install`
+(or of the weekly job) installs everything but `keep.py` and its cron file; until a
+second run, Yesterday is read from NetFlow's records.
 
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
@@ -301,7 +338,7 @@ Requires a FreeBSD host matching the target ABI (26.7 / amd64 / FreeBSD 15.1):
     cp -R opnsense-plugin-topdevices plugins/net-mgmt/topdevices
     cd plugins/net-mgmt/topdevices && make package
 
-That builds `os-topdevices-0.2.0.pkg`; `pkg add` it on the firewall, or run
+That builds `os-topdevices-0.3.0.pkg`; `pkg add` it on the firewall, or run
 `make upgrade` instead of `make package` to build and install in one step.
 GitHub releases carry source only - no prebuilt package is published.
 
@@ -428,6 +465,7 @@ against the live repo and installed all six files of 0.1.x, and all eight of
     node --test tests/live_view.test.mjs         # widget: averaging, lifecycle, watchdog
     node --test tests/netflow_ranges.test.mjs    # widget: NetFlow exports, buckets, windows, captions
     OPNSENSE_CORE=<core checkout> python3 -m unittest tests.test_flows -v   # flows.py against core's parser and aggregators
+    OPNSENSE_CORE=<core checkout> python3 -m unittest tests.test_keep -v    # keep.py against core's own rotation
     sh tests/test_install.sh                     # installer dry run into a scratch root
     python3 tests/mutate.py                      # each planted sampler bug must fail the suite
     node tests/mutate_widget.mjs                 # the same for the widget
@@ -438,7 +476,8 @@ its `states.py`. On the firewall, `python3 tests/parity_live.py` does the same
 over the live state table.
 
 On the firewall, `python3 tests/parity_flows.py` compares `flows.py` with core's
-own code over the live log and times it through configd.
+own code over the live log and times it through configd. Once the kept log reaches
+yesterday's midnight it also compares that whole day, which takes a few minutes.
 
 ## Removing
 
@@ -447,10 +486,12 @@ System → Settings → Cron first, or it puts everything back. Then, as root:
 
     rm -f /usr/local/opnsense/www/js/widgets/TopDevices.js \
           /usr/local/opnsense/www/js/widgets/Metadata/TopDevices.xml \
-          /usr/local/opnsense/service/conf/actions.d/actions_topdevices.conf
+          /usr/local/opnsense/service/conf/actions.d/actions_topdevices.conf \
+          /usr/local/etc/cron.d/topdevices
     rm -rf /usr/local/opnsense/scripts/topdevices \
            /usr/local/opnsense/mvc/app/controllers/OPNsense/TopDevices \
-           /usr/local/opnsense/mvc/app/models/OPNsense/TopDevices
+           /usr/local/opnsense/mvc/app/models/OPNsense/TopDevices \
+           /var/log/topdevices
     service configd restart
 
 Rolling back to 0.0.1 with its bootstrap command leaves the live sampler, the
@@ -464,6 +505,11 @@ refuses a source without `flows.py`, so `configctl topdevices install` cannot
 go back. `flows.py` and `Api/FlowsController.php` stay behind, inert without
 the `flows` actions, which the earlier installer's actions file does not list,
 and the commands above remove them.
+
+Rolling back from 0.3.0 works the same way, with that release's tag. `keep.py` and its
+cron file stay behind and keep running, harmless: an earlier `flows.py` reads only
+core's files. Remove them with `rm /usr/local/etc/cron.d/topdevices
+/usr/local/opnsense/scripts/topdevices/keep.py && rm -r /var/log/topdevices`.
 
 ## Requirements
 

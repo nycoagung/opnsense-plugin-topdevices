@@ -8,7 +8,8 @@ NetFlow's raw flow log (/var/log/flowd.log and its rotations). Run by configd:
 FROM and TO are epoch seconds. It prints one JSON object and exits 0, errors
 included ({"error": "..."}): configd returns stdout as the answer, and turns a
 failing exit into "Execute error". Design:
-docs/superpowers/specs/2026-09-23-raw-flow-ranges-design.md
+docs/superpowers/specs/2026-09-23-raw-flow-ranges-design.md, and for the kept log
+beside it and the 50-hour reach, docs/superpowers/specs/2026-09-24-keep-flow-log-design.md
 """
 import calendar
 import datetime
@@ -24,7 +25,7 @@ import struct
 import sys
 import time
 
-VERSION = '0.2.0'
+VERSION = '0.3.0'
 
 LOG = '/var/log/flowd.log'
 KEPT_DIR = 'topdevices'          # keep.py's links beside the log: rotated files core deleted, or will (2026-09-24 spec §5)
