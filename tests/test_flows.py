@@ -505,6 +505,34 @@ class Totals(unittest.TestCase):
         self.assertEqual(a['devices'], {'192.168.1.10': [3600 + 1000, 0, 500 + 1000, 0],
                                         '192.168.1.11': [0, 0, 1, 0]})
 
+    # --- all traffic is complete from C = min(L, now - 86400 - 300) (2026-09-24 spec §4) ---
+
+    def test_a_range_before_the_log_and_the_hourly_records_is_answered_from_where_they_begin(self):
+        # the log begins at L, core's hourly records reach back a day from now: all
+        # traffic is complete from the earlier of the two, and the answer starts there
+        L = flows.log_from(self.opened)
+        now, to = L + 86400 - 3600, L + 600
+        asked = []
+        a = flows.answer_totals(L - 2 * 86400, to, now, self.opened, NET, lambda lo, hi: asked.append((lo, hi)) or [], 1)
+        C = now - 86400 - 300
+        self.assertEqual((a['all']['from'], asked), (C, [(C, min(-(-L // 3600) * 3600, to))]))
+        self.assertEqual(a['inet'], {'from': L, 'to': to})
+
+    def test_a_short_log_answers_all_traffic_from_where_it_begins(self):
+        # the kept log still filling, or a file missing: the log begins at L, after
+        # the hourly records' day, so all traffic starts at L
+        L = flows.log_from(self.opened)
+        a = flows.answer_totals(L - 3600, L + 900, L + 86400 + 7200, self.opened, NET,
+                                lambda lo, hi: self.fail('no fill-in'), 1)
+        self.assertEqual((a['all']['from'], a['inet']['from']), (L, L))
+
+    def test_a_log_reaching_back_past_a_day_answers_alone(self):
+        # the kept log: a range starting 40 hours back, inside it, needs no hourly records
+        L = flows.log_from(self.opened)
+        a = flows.answer_totals(L + 100, L + 700, L + 40 * 3600, self.opened, NET,
+                                lambda lo, hi: self.fail('no fill-in'), 2)
+        self.assertEqual(a['all'], {'from': L + 100, 'to': L + 700, 'hourly_until': None})
+
 
 class Device(unittest.TestCase):
     def setUp(self):
@@ -578,7 +606,7 @@ class CommandLine(unittest.TestCase):
         cases = [(['totals', '1'], 'usage'), (['bogus', '1', '2'], 'usage'),
                  (['totals', 'abc', now], 'whole epoch seconds'), (['totals', '\u0661', now], 'whole epoch seconds'),
                  (['totals', '', now], 'whole epoch seconds'), (['totals', now, now], 'before TO'),
-                 (['totals', str(self.NOW - 86400 - 301), now], 'more than a day ago'),
+                 (['totals', str(self.NOW - 180000 - 301), now], 'more than 50 hours ago'),
                  (['totals', str(self.NOW - 60), str(self.NOW + 301)], 'in the future'),
                  (['device', 'fd00::1', str(self.NOW - 60), now], 'IPv4'),
                  (['device', '192.168.01.10', str(self.NOW - 60), now], 'IPv4')]
@@ -587,20 +615,20 @@ class CommandLine(unittest.TestCase):
                 self.assertIn(reason, self.reject(args))
 
     def test_the_clocks_may_differ_by_minutes(self):
-        req = flows.parse_args(['totals', str(self.NOW - 86400 - 299), str(self.NOW + 299)], self.NOW)
-        self.assertEqual((req['from'], req['to']), (self.NOW - 86400 - 299, self.NOW))
+        req = flows.parse_args(['totals', str(self.NOW - 180000 - 299), str(self.NOW + 299)], self.NOW)
+        self.assertEqual((req['from'], req['to']), (self.NOW - 180000 - 299, self.NOW))
 
     def test_the_clock_slack_includes_its_edges(self):
-        req = flows.parse_args(['totals', str(self.NOW - 86400 - 300), str(self.NOW + 300)], self.NOW)
-        self.assertEqual((req['from'], req['to']), (self.NOW - 86400 - 300, self.NOW))
+        req = flows.parse_args(['totals', str(self.NOW - 180000 - 300), str(self.NOW + 300)], self.NOW)
+        self.assertEqual((req['from'], req['to']), (self.NOW - 180000 - 300, self.NOW))
 
     def test_a_range_that_has_not_begun_is_refused(self):
         self.assertIn('not begun', self.reject(['totals', str(self.NOW + 10), str(self.NOW + 200)]))
 
-    def test_a_device_panel_may_ask_for_a_window_that_began_over_a_day_ago(self):
+    def test_a_device_panel_may_ask_for_a_window_that_began_over_50_hours_ago(self):
         # the panel asks for its table's window, which ages while the table is on screen
-        req = flows.parse_args(['device', '192.168.1.10', str(self.NOW - 86400 - 900), str(self.NOW - 900)], self.NOW)
-        self.assertEqual((req['from'], req['to']), (self.NOW - 86400 - 900, self.NOW - 900))
+        req = flows.parse_args(['device', '192.168.1.10', str(self.NOW - 180000 - 900), str(self.NOW - 900)], self.NOW)
+        self.assertEqual((req['from'], req['to']), (self.NOW - 180000 - 900, self.NOW - 900))
 
     def run_main(self, argv, log, now=None, system=lambda: NET):
         out = io.StringIO()
