@@ -136,10 +136,43 @@ KEEP_MUTANTS = [
     ('no size cap', '        if st.st_mtime < now - keep_s or total > cap:', '        if st.st_mtime < now - keep_s:'),
     ('the newest go first over the cap', 'key=lambda kv: kv[1].st_mtime)', 'key=lambda kv: -kv[1].st_mtime)'),
     ('the directory left as it was', '    os.chmod(kept, 0o700)\n', ''),
-    ('a file renamed meanwhile stops the pass', '        except (FileNotFoundError, FileExistsError):', '        except FileExistsError:'),
-    ('a file linked meanwhile stops the pass', '        except (FileNotFoundError, FileExistsError):', '        except FileNotFoundError:'),
+    ('a file renamed just before the link stops the pass',
+     '        except FileNotFoundError:\n            continue                              # renamed before the link: the next pass finds it under its new name\n',
+     ''),
+    ('a file linked meanwhile treated as an unexpected error, raised after pruning',
+     '        except FileExistsError:\n            try:\n                held = (os.stat(name).st_dev, os.stat(name).st_ino)\n'
+     '            except FileNotFoundError:\n                continue                          # gone already: the next pass links it fresh\n'
+     '            if held == (st.st_dev, st.st_ino):\n                have.add((st.st_dev, st.st_ino))  # another pass already linked it under this name\n'
+     '            else:\n                try:\n                    os.unlink(name)               # an earlier pass linked the wrong file under this name\n'
+     '                except FileNotFoundError:\n                    pass\n            continue\n',
+     ''),
     ('an error reported as success', '        return 1\n', '        return 0\n'),
     ('a cap of 10 GB', 'CAP = 1 << 30', 'CAP = 10 << 30'),
+    # F1: a rotation lands between the stat and the link
+    ('the post-link identity is not checked, so the wrong file can be kept under the right name',
+     '        try:\n            held = (os.stat(name).st_dev, os.stat(name).st_ino)\n'
+     '        except FileNotFoundError:\n            continue                              # renamed again right after the link: the next pass finds it\n'
+     '        if held != (st.st_dev, st.st_ino):\n            try:\n                os.unlink(name)                   # the rotation landed between the stat and the link: wrong file\n'
+     '            except FileNotFoundError:\n                pass\n            continue\n',
+     ''),
+    ('a kept name holding the wrong file is never replaced',
+     '            else:\n                try:\n                    os.unlink(name)               # an earlier pass linked the wrong file under this name\n'
+     '                except FileNotFoundError:\n                    pass\n',
+     ''),
+    # F2: an os.link error other than FileNotFound/FileExists must not skip pruning
+    ('a persistent link error skips pruning',
+     '        except OSError as exc:\n            if link_error is None:\n                link_error = exc\n            continue\n',
+     '        except OSError as exc:\n            raise exc\n'),
+    # F4: races the reviewer's ad-hoc mutants found untested
+    ('a rotated file gone before its stat crashes the pass instead of being skipped',
+     '        try:\n            st = os.stat(path)\n        except FileNotFoundError:\n            continue                              # renamed since the listing: the next pass finds it\n',
+     '        st = os.stat(path)\n'),
+    ('a kept file gone before its unlink crashes the pass instead of being skipped',
+     '            try:\n                os.unlink(path)\n            except FileNotFoundError:\n                pass                              # another pass deleted it\n',
+     '            os.unlink(path)\n'),
+    ('kept_files crashes on a file gone before its stat instead of skipping it',
+     '        try:\n            out.append((path, os.stat(path)))\n        except FileNotFoundError:\n            pass\n',
+     '        out.append((path, os.stat(path)))\n'),
 ]
 
 

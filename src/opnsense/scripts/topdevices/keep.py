@@ -47,11 +47,23 @@ def kept_files(kept):
 def run(now, log, kept, keep_s=KEEP_S, cap=CAP):
     """One pass (spec §5): link each file core has rotated out since the last
     pass, then delete the kept files past the reach, and the oldest while they
-    total more than the cap. Returns (linked, removed)."""
+    total more than the cap. Returns (linked, removed).
+
+    Core's rotation - every rotated file renamed one number up, flowd.log
+    itself becoming .000001 - can land between any two of the operations
+    below; each `except` here is one place that can happen. Landing between
+    the stat and the link is the awkward one: `path` then names a different
+    file, and os.link happily links THAT file under the name built from the
+    first file's identity, so the name is checked again after a successful
+    link and undone if it no longer matches. An os.link error that is
+    neither of those (ENOSPC, EMLINK ...) is remembered, not raised here, so
+    a persistent error on one file cannot turn the pruning below off; it is
+    raised after pruning runs, so main() still syslogs it and exits 1."""
     os.makedirs(kept, mode=0o700, exist_ok=True)
     os.chmod(kept, 0o700)
     have = {(st.st_dev, st.st_ino) for _, st in kept_files(kept)}
     linked = removed = 0
+    link_error = None
     for path in rotated(log):
         try:
             st = os.stat(path)
@@ -59,10 +71,38 @@ def run(now, log, kept, keep_s=KEEP_S, cap=CAP):
             continue                              # renamed since the listing: the next pass finds it
         if (st.st_dev, st.st_ino) in have or st.st_mtime < now - keep_s:
             continue
+        name = os.path.join(kept, 'flowd.%d.%d' % (st.st_mtime, st.st_ino))
         try:
-            os.link(path, os.path.join(kept, 'flowd.%d.%d' % (st.st_mtime, st.st_ino)))
-        except (FileNotFoundError, FileExistsError):
-            continue                              # renamed meanwhile, or another pass linked it
+            os.link(path, name)
+        except FileNotFoundError:
+            continue                              # renamed before the link: the next pass finds it under its new name
+        except FileExistsError:
+            try:
+                held = (os.stat(name).st_dev, os.stat(name).st_ino)
+            except FileNotFoundError:
+                continue                          # gone already: the next pass links it fresh
+            if held == (st.st_dev, st.st_ino):
+                have.add((st.st_dev, st.st_ino))  # another pass already linked it under this name
+            else:
+                try:
+                    os.unlink(name)               # an earlier pass linked the wrong file under this name
+                except FileNotFoundError:
+                    pass
+            continue
+        except OSError as exc:
+            if link_error is None:
+                link_error = exc
+            continue
+        try:
+            held = (os.stat(name).st_dev, os.stat(name).st_ino)
+        except FileNotFoundError:
+            continue                              # renamed again right after the link: the next pass finds it
+        if held != (st.st_dev, st.st_ino):
+            try:
+                os.unlink(name)                   # the rotation landed between the stat and the link: wrong file
+            except FileNotFoundError:
+                pass
+            continue
         have.add((st.st_dev, st.st_ino))
         linked += 1
     files = kept_files(kept)
@@ -75,6 +115,8 @@ def run(now, log, kept, keep_s=KEEP_S, cap=CAP):
                 pass                              # another pass deleted it
             total -= st.st_size
             removed += 1
+    if link_error is not None:
+        raise link_error
     return linked, removed
 
 
