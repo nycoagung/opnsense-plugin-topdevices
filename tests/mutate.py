@@ -194,6 +194,10 @@ KEEP_MUTANTS = [
      '    if current_id is not None:\n        _write_marker(kept, current_id)\n', ''),
     # G3: the kept files are blind to how little space is left on their filesystem
     ('the free-space floor is disabled', '    while remaining and _free(kept) < floor:', '    while False:'),
+    # G5c: a stray file beside the log (a manual backup, a leftover naming
+    # scheme) must not be mistaken for one of core's own rotated files
+    ('a stray file beside the log mistaken for one of cores rotated ones',
+     "ROTATED = re.compile(r'\\.[0-9]+')", "ROTATED = re.compile(r'\\..+')"),
 ]
 
 
