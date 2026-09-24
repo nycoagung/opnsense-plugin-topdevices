@@ -70,8 +70,11 @@ def day_parity(flows, net, now):
     try:
         L = flows.log_from(opened)
         if L is None or L > start:
-            print("whole day: the log is complete only from %s, after yesterday's midnight: nothing to compare yet"
-                  % (time.ctime(L) if L else 'nowhere'))
+            if L is None:
+                print("whole day: the log holds no flows yet: nothing to compare")
+            else:
+                print("whole day: the log is complete only from %s, after yesterday's midnight: nothing to compare yet"
+                      % (time.ctime(L)))
             return None
         # core's buckets are UTC hours; where this zone's midnights fall between them, 5-minute ones
         res = 3600 if start % 3600 == 0 and end % 3600 == 0 else 300

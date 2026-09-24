@@ -51,7 +51,7 @@ flows = _load('flows', FLOWS_PY)
 FMT = {'tag': 'I', 'recv_time': '>II', 'proto_flags_tos': 'BBBB', 'srcdst_port': '>HH', 'packets': '>Q',
        'octets': '>Q', 'if_indices': '>II', 'agent_info': '>IIIHH', 'flow_times': '>II',
        'as_info': 'IIBBH', 'flow_engine_info': 'HHII'}
-T0 = 1_790_000_000               # Mon 21 Sep 2026 12:53:20 UTC
+T0 = 1_790_000_000               # Mon 21 Sep 2026 14:13:20 UTC
 UPTIME0 = 500_000_000            # the exporter's uptime (ms) at T0
 
 
