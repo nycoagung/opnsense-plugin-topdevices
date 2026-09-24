@@ -478,8 +478,9 @@ with the bootstrap command from the branch:
   panel answered in one request.
 - **The endpoints** answered the zone and refused a range starting 50 h 6 min ago
   with the 50-hour message.
-- **On the dashboard**, the Live detail panel grows the widget as a device's peers
-  appear.
+- **On the dashboard**, Yesterday, Today, Last 24 hours and Last hour read as
+  above in both scopes, with no note, and the Live detail panel grows the widget as
+  a device's peers appear.
 - **Installed files**: all ten, byte-identical to a dry run of the branch.
 
 Not verified: non-root users; IPv6; multiple WANs; a zone with daylight saving on
