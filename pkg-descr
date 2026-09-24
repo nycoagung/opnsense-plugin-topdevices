@@ -21,7 +21,8 @@ Plugin Changelog
 
 * configctl topdevices uninstall removes everything the installer put in
   place, the weekly GUI cron job included, and touches nothing of core's;
-  --dry-run shows what it would do first. Eleven installed files
+  "configctl topdevices uninstall dry-run" shows what it would do first.
+  Eleven installed files
 
 0.3.0
 

@@ -135,7 +135,8 @@ ROOT="$R" STUBS=1 PHP="$S/php" sh "$R$U/scripts/topdevices/uninstall.sh" --dry-r
 
 # 5a. two jobs found: deleted, cron reloaded, ACL cleared before configd is scheduled, exit 0
 R=$(fresh)
-out=$(onbox 2 --dry-run) || fail "stubbed --dry-run exited non-zero: $out"
+# the bare word is what configctl can pass through (its own parser eats --dry-run)
+out=$(onbox 2 dry-run) || fail "stubbed dry-run exited non-zero: $out"
 [ ! -s "$LOG" ] || fail "--dry-run called a tool: $(cat "$LOG")"
 echo "$out" | grep -q "would delete the weekly" || fail "stubbed --dry-run did not say it would delete the job"
 echo "$out" | grep -q "would restart configd" || fail "stubbed --dry-run did not say it would restart configd"
