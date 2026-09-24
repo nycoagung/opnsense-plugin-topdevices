@@ -10,7 +10,7 @@
 #
 # WHY codeload AND NOT THE API OR raw:
 #   - the API costs one rate-limited request per file (60/hour per IP, and it is
-#     the firewall's own public IP that counts). Eight files is survivable, but
+#     the firewall's own public IP that counts). Ten files is survivable, but
 #     it is the same flaw that locked the sibling parentalcontrol plugin out
 #     entirely at fifteen.
 #   - raw.githubusercontent is CDN-cached, lags pushes by minutes and is cached
@@ -29,6 +29,10 @@
 # not flows.py, its controller or the flows actions, until the next run (the
 # widget falls back to NetFlow's records meanwhile). Use the bootstrap command
 # once instead.
+# UPGRADING FROM 0.2.0: likewise, the 0.2.0 installer only knows its eight files:
+# run through configctl or cron it installs everything but keep.py and its cron
+# file, until the next run (Yesterday is read from NetFlow's records meanwhile).
+# Use the bootstrap command once instead.
 #
 # NOTE: OPNsense cron runs as root regardless - configd executes jobs as root.
 # Using cron avoids interactive SSH, not root privileges.
@@ -59,6 +63,8 @@ $P/mvc/app/models/OPNsense/TopDevices/ACL/ACL.xml|$MVC/models/OPNsense/TopDevice
 install.sh|$SCRIPTS/install.sh
 $P/scripts/topdevices/flows.py|$SCRIPTS/flows.py
 $P/mvc/app/controllers/OPNsense/TopDevices/Api/FlowsController.php|$MVC/controllers/OPNsense/TopDevices/Api/FlowsController.php
+$P/scripts/topdevices/keep.py|$SCRIPTS/keep.py
+src/etc/cron.d/topdevices|/usr/local/etc/cron.d/topdevices
 "
 
 HERE=$(dirname "$0")
@@ -102,6 +108,18 @@ for entry in $FILES; do
     printf '  %-26s %6d bytes\n' "$(basename "$s")" "$(wc -c < "$d" | tr -d ' ')"
 done
 echo "widget installed"
+
+# --- keep NetFlow's flow log from now on: cron runs keep.py every 10 minutes ---
+# Once now, so the kept log starts with core's current files (spec 2026-09-24 §9).
+if [ -z "$ROOT" ]; then
+    if "$SCRIPTS/keep.py"; then
+        echo "flow log kept in /var/log/topdevices (cron: every 10 minutes)"
+    else
+        echo "WARNING: keep.py failed (see the system log); cron tries again every 10 minutes" >&2
+    fi
+else
+    echo "keep.py not run (ROOT=$ROOT)"
+fi
 
 # --- register the configd actions (idempotent) ---
 if [ -d "$ROOT$ACTIONS" ]; then
