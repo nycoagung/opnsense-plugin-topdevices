@@ -396,7 +396,9 @@ export function zoneAbbr(ts, tz) {
             return p ? p.value : '';
         } catch (e) { return ''; }
     };
-    const words = named('long').split(/[\s-]+/).filter(w => /^[A-Za-z]/.test(w));
+    const long = named('long');
+    if (long === 'Coordinated Universal Time') return 'UTC';    // its initials would be CUT
+    const words = long.split(/[\s-]+/).filter(w => /^[A-Za-z]/.test(w));
     if (words.length > 1) return words.map(w => w[0].toUpperCase()).join('');
     if (words.length === 1) return words[0];
     const short = named('short');
@@ -628,7 +630,7 @@ export default class TopDevices extends BaseWidget {
         let tz;
         try {
             const r = await this.ajaxCall('/api/topdevices/flows/zone');
-            tz = r && typeof r.timezone === 'string' ? r.timezone : undefined;
+            tz = (r && typeof r.timezone === 'string' ? r.timezone : undefined) || undefined;   // '' is not a zone
             if (tz) new Intl.DateTimeFormat('en-US', { timeZone: tz });   // throws for a zone it does not know
         } catch (e) { tz = undefined; }
         this.tz = tz;
@@ -709,6 +711,10 @@ export default class TopDevices extends BaseWidget {
         const ix = {};
         head.forEach((h, i) => { ix[h] = i; });
         const rows = [], now = Date.now() / 1000;
+        // exportStart() undoes the firewall's own offset (core prints it, not UTC):
+        // with no firewall zone there is nothing to undo it with, and guessing the
+        // browser's would shift the caption's start by however far apart they are -
+        // so every row is left undated, and the caption falls back to the plan's start.
         lines.forEach((line) => {
             if (!line) return;
             const c = line.split(',');
@@ -717,7 +723,7 @@ export default class TopDevices extends BaseWidget {
                 port: c[ix.service_port], dir: c[ix.direction],
                 iface: c[ix['if']],
                 octets: parseFloat(c[ix.octets]) || 0,
-                start: exportStart(c[ix.start_time], now, this.tz)
+                start: this.tz === undefined ? null : exportStart(c[ix.start_time], now, this.tz)
             });
         });
         this.cache[key] = rows;
@@ -732,7 +738,7 @@ export default class TopDevices extends BaseWidget {
     }
 
     // Load the table for the range at `nowMs`. A range starting within the last
-    // day reads the raw flow log, both scopes in one answer (see rawRange), and
+    // 50 hours reads the raw flow log, both scopes in one answer (see rawRange), and
     // falls back to NetFlow's exports; an export holds one scope, read once here.
     // Resolves false when a newer load started meanwhile - its result stands, and
     // its caller renders it.

@@ -533,6 +533,24 @@ class Totals(unittest.TestCase):
                                 lambda lo, hi: self.fail('no fill-in'), 2)
         self.assertEqual(a['all'], {'from': L + 100, 'to': L + 700, 'hourly_until': None})
 
+    def test_a_range_wholly_before_c_answers_an_empty_span_at_to(self):
+        # C = min(L, now - DAY - SLACK): clamping frm up to C without also clamping
+        # it to `to` can push frm past to when the whole range asked for is earlier
+        # than C. Clamped to `to` as well, the answer is an empty span at `to`, not
+        # an inverted one (frm > to).
+        L = flows.log_from(self.opened)
+        now = L + 2 * flows.DAY          # C works out to L here: L < now - DAY - SLACK
+        to = L - 3600
+        asked = []
+        a = flows.answer_totals(to - 600, to, now, self.opened, NET,
+                                lambda lo, hi: asked.append((lo, hi)) or [], 1)
+        # frm == to (not clamped past it); the hourly branch still runs (frm < L),
+        # over an empty span, so hourly_until is `to` rather than None
+        self.assertEqual(a['all'], {'from': to, 'to': to, 'hourly_until': to})
+        self.assertLessEqual(a['all']['from'], a['all']['to'])
+        self.assertEqual(a['devices'], {})
+        self.assertEqual(asked, [(to, to)])
+
 
 class Device(unittest.TestCase):
     def setUp(self):
