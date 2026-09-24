@@ -27,12 +27,14 @@ import time
 VERSION = '0.2.0'
 
 LOG = '/var/log/flowd.log'
+KEPT_DIR = 'topdevices'          # keep.py's links beside the log: rotated files core deleted, or will (2026-09-24 spec §5)
 NETFLOW_LIB = '/usr/local/opnsense/scripts/netflow'  # core's parser, interface map, aggregates
 HOUR = 3600
 DAY = 86400
 SLACK = 300              # the browser's clock may be a few minutes off the firewall's
 TOP = 100                # the device panel lists at most 100 rows
 MAX_FILE = 40 * 1024 * 1024  # core rotates the log at 10 MB (flowd_aggregate.py): far past that, nothing rotates it
+GAP = 900                # more than this between two files, and one is missing between them (2026-09-24 spec §4)
 DIGITS = re.compile(r'[0-9]+')
 
 # core's lib/flowparser.py: the fields a record may carry, in order of appearance
@@ -220,23 +222,35 @@ def hourly_fill(rows, lo, hi, now, net):
 # ---------------------------------------------------------------- the log
 
 
+def _names(log):
+    """Every name the flow log has now: core's files, then keep.py's links in the
+    directory beside them (2026-09-24 spec §4)."""
+    kept = os.path.join(glob.escape(os.path.dirname(log)), KEPT_DIR, 'flowd.*')
+    return glob.glob(glob.escape(log) + '*') + glob.glob(kept)
+
+
 def open_log(log=LOG):
-    """Every flow log file, opened now, oldest first: [(fd, last write, size)].
+    """Every flow log file - core's and the kept ones - opened now, once each
+    however many names it has, oldest first: [(fd, last write, size)].
     Reading through descriptors keeps a rotation - which renames every file and
     deletes the oldest - from mixing up which is which once they are open. One
     that lands while they are being opened is caught by listing them again: if
     any name now leads to another file, they are all opened afresh."""
     for _ in range(5):                            # a rotation takes milliseconds
-        opened, ids = [], {}
+        opened, ids, seen = [], {}, set()
         try:
-            for path in glob.glob(glob.escape(log) + '*'):
+            for path in _names(log):
                 try:
                     fd = os.open(path, os.O_RDONLY)
                 except FileNotFoundError:
-                    continue                      # rotated away since the listing
+                    continue                      # rotated or pruned away since the listing
                 st = os.fstat(fd)
-                opened.append((fd, st.st_mtime, st.st_size))
                 ids[path] = (st.st_dev, st.st_ino)
+                if ids[path] in seen:
+                    os.close(fd)                  # a kept name for a file already open
+                    continue
+                seen.add(ids[path])
+                opened.append((fd, st.st_mtime, st.st_size))
         except BaseException:
             close_log(opened)
             raise
@@ -248,9 +262,9 @@ def open_log(log=LOG):
 
 
 def _files_now(log):
-    """{path: (device, inode)} of every flow log file at this moment."""
+    """{path: (device, inode)} of every name the flow log has at this moment."""
     now = {}
-    for path in glob.glob(glob.escape(log) + '*'):
+    for path in _names(log):
         try:
             st = os.stat(path)
         except FileNotFoundError:
@@ -280,13 +294,28 @@ def _read(fd):
     return b''.join(chunks)
 
 
-def log_from(opened):
-    """When the log becomes complete (spec §4): the receive time of the oldest IPv4
-    record still in it. None when it holds none."""
-    for fd, _, _ in opened:
-        for r in records(os.pread(fd, 65536, 0)):
-            return r[0]
+def _first_recv(fd):
+    """The receive time of the first IPv4 record in a file's first 64 KB, or None."""
+    for r in records(os.pread(fd, 65536, 0)):
+        return r[0]
     return None
+
+
+def log_from(opened):
+    """When the log becomes complete (2026-09-24 spec §4): the receive time of the
+    first record of the oldest file in the newest unbroken run. More than GAP
+    between one file's last write and the next one's first record means a file
+    is missing between them. A file with no IPv4 record in its first 64 KB leaves
+    the boundary before it unjudged. None when the log holds no IPv4 record."""
+    L = later = None                      # later: the first record of the next newer file
+    for fd, mtime, _ in reversed(opened):
+        first = _first_recv(fd)
+        if later is not None and later - mtime > GAP:
+            break
+        if first is not None:
+            L = first
+        later = first
+    return L
 
 
 def files_for(opened, lo):

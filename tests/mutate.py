@@ -91,8 +91,8 @@ FLOW_MUTANTS = [
      '            acc[ip] = [down, up, 0.0, 0.0]\n'),
     ('a rotation while the files are opened accepted', '        if _files_now(log) == ids:', '        if True:'),
     ('any open error taken for a rotation',
-     '                except FileNotFoundError:\n                    continue                      # rotated away since the listing',
-     '                except OSError:\n                    continue                      # rotated away since the listing'),
+     '                except FileNotFoundError:\n                    continue                      # rotated or pruned away since the listing',
+     '                except OSError:\n                    continue                      # rotated or pruned away since the listing'),
     ('an upstream device missing from the map ignored', '    if missing:\n        raise', '    if False:\n        raise'),
     ('only ValueError answered', '    except Exception as exc:', '    except ValueError as exc:'),
     ('the day bound applied to device panels', "    if mode == 'totals' and frm < now - DAY - SLACK:", '    if frm < now - DAY - SLACK:'),
@@ -107,6 +107,14 @@ FLOW_MUTANTS = [
      "    if mode == 'totals' and frm <= now - DAY - SLACK:"),
     ('the future bound excluding its edge', '    if to > now + SLACK:', '    if to >= now + SLACK:'),
     ('no upstream interface ignored', '    if not upstream_devs:\n        raise', '    if False:\n        raise'),
+    ('kept files not read', "    return glob.glob(glob.escape(log) + '*') + glob.glob(kept)", "    return glob.glob(glob.escape(log) + '*')"),
+    ('a file with two names read twice', '                if ids[path] in seen:', '                if False:'),
+    ('a missing file not noticed', '        if later is not None and later - mtime > GAP:', '        if False:'),
+    ('a gap of exactly 900 s taken for a missing file', '        if later is not None and later - mtime > GAP:',
+     '        if later is not None and later - mtime >= GAP:'),
+    ('a file without an IPv4 record breaking the run', '        later = first\n', '        later = first if first is not None else mtime\n'),
+    ('the rotation re-check blind to kept names', '    for path in _names(log):\n        try:\n            st = os.stat(path)',
+     "    for path in glob.glob(glob.escape(log) + '*'):\n        try:\n            st = os.stat(path)"),
 ]
 
 KEEP_MUTANTS = [

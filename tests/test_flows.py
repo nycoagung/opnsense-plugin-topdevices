@@ -368,6 +368,60 @@ class Reading(unittest.TestCase):
         with unittest.mock.patch('os.open', refuse_one), self.assertRaises(PermissionError):
             flows.open_log(log)
 
+    # --- the kept log: keep.py's links in topdevices/ beside the log (2026-09-24 spec §4) ---
+
+    def kept(self, files):
+        """keep.py's directory beside the scratch log, holding [(name, bytes, mtime)]."""
+        d = os.path.join(self.tmp.name, 'topdevices')
+        os.makedirs(d, exist_ok=True)
+        write_log(d, files)
+        return d
+
+    def test_kept_files_are_read_too_and_a_file_with_two_names_once(self):
+        log = write_log(self.tmp.name, [('flowd.log.000001', b'a', T0 + 100), ('flowd.log', b'c', T0 + 300)])
+        kept = self.kept([('flowd.%d.1' % T0, b'old', T0)])                        # core has deleted this one
+        os.link(log + '.000001', os.path.join(kept, 'flowd.%d.2' % (T0 + 100)))   # keep.py's second name for .000001
+        opened = flows.open_log(log)
+        self.addCleanup(flows.close_log, opened)
+        self.assertEqual([flows._read(fd) for fd, _, _ in opened], [b'old', b'a', b'c'])
+
+    def gapped(self, gap):
+        """A kept file, then core's flowd.log whose first record comes `gap` s after the kept one's last write."""
+        self.kept([('flowd.1.1', flow('8.8.8.8', '192.168.1.10', 1, recv=T0, start=T0, end=T0), T0 + 100)])
+        first = T0 + 100 + gap
+        return self.opened([('flowd.log', flow('8.8.8.8', '192.168.1.10', 1, recv=first, start=first, end=first),
+                             first + 50)])
+
+    def test_the_log_is_complete_from_the_newest_unbroken_run_of_files(self):
+        self.assertEqual(flows.log_from(self.gapped(900)), T0)
+
+    def test_a_missing_file_ends_the_run(self):
+        self.assertEqual(flows.log_from(self.gapped(901)), T0 + 1001)
+
+    def test_a_file_without_an_ipv4_record_does_not_break_the_run(self):
+        # between the oldest file's last write and the newest one's first record lie
+        # 4900 s, but the file between them covers them, with IPv6 records only
+        opened = self.opened([
+            ('flowd.log.000002', EARLY, T0 + 100),
+            ('flowd.log.000001', flow('8.8.8.8', '192.168.1.10', 1, recv=T0 + 4000, start=T0, end=T0, v6=True), T0 + 5000),
+            ('flowd.log', flow('8.8.8.8', '192.168.1.10', 1, recv=T0 + 5001, start=T0 + 5001, end=T0 + 5001), T0 + 5100)])
+        self.assertEqual(flows.log_from(opened), T0)
+
+    def test_a_kept_file_pruned_while_the_files_are_opened_is_simply_gone(self):
+        log = write_log(self.tmp.name, [('flowd.log', KINDS[0], T0 + 300)])
+        kept = self.kept([('flowd.1.1', EARLY, T0), ('flowd.2.2', KINDS[1], T0 + 100)])
+        pruned, real_open = os.path.join(kept, 'flowd.1.1'), os.open
+
+        def prune_first(path, *args, **kwargs):
+            if path == pruned and os.path.exists(path):
+                os.remove(path)                   # keep.py prunes it between the listing and the open
+            return real_open(path, *args, **kwargs)
+
+        with unittest.mock.patch('os.open', prune_first):
+            opened = flows.open_log(log)
+        self.addCleanup(flows.close_log, opened)
+        self.assertEqual([flows._read(fd) for fd, _, _ in opened], [KINDS[1], KINDS[0]])
+
 
 class Attribution(unittest.TestCase):
     def scan(self, data, a, i):
@@ -598,6 +652,15 @@ class CommandLine(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertIn('whole epoch seconds', json.loads(proc.stdout)['error'])
         self.assertEqual(proc.stderr, '')
+
+    def test_a_kept_file_nobody_rotates_is_an_error_answer_too(self):
+        # the 40 MB guard holds for every file read, the kept ones too (2026-09-24 spec §6)
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.object(flows, 'MAX_FILE', 200):
+            log = write_log(d, [('flowd.log', KINDS[0], T0 + 100)])             # 116 bytes: under the guard
+            os.mkdir(os.path.join(d, 'topdevices'))
+            write_log(os.path.join(d, 'topdevices'), [('flowd.1.1', b''.join(KINDS), T0)])   # 464 bytes: over it
+            a = self.run_main(['flows.py', 'totals', str(T0 + 100), str(T0 + 200)], log, now=T0 + 300)
+        self.assertIn('aggregator running', a['error'])
 
 
 CORE_NETFLOW = next((p for p in (os.environ.get('CORE_NETFLOW'),
