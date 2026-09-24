@@ -451,6 +451,18 @@ test('picks are remembered across a reload, without anything that is not a devic
     assert.deepEqual(JSON.parse(store.get('opnsense.topdevices.view')).livePick, ['192.168.1.7']);
 });
 
+test('the page load asks the firewall for its time zone before anything else', async (t) => {
+    store.clear();
+    store.set('opnsense.topdevices.view', JSON.stringify({ range: 'live' }));
+    const w = new TopDevices({ widget: {} });
+    t.after(() => { w._stopLive(); store.clear(); });
+    const asked = [];
+    w.ajaxCall = async (url) => { asked.push(url); return url.endsWith('/flows/zone') ? { timezone: 'Australia/Sydney' } : {}; };
+    await w.onMarkupRendered();
+    assert.equal(asked[0], '/api/topdevices/flows/zone');
+    assert.equal(w.tz, 'Australia/Sydney');
+});
+
 test('the picker offers named devices and anything Live saw, never the firewall or a broadcast address', async (t) => {
     const { w, send } = await running(t);
     networks(w);

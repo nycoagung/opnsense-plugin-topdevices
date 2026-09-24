@@ -61,4 +61,14 @@ class FlowsController extends ApiControllerBase
         }
         return $this->answer('topdevices flows device', [(string)$ip, (string)$from, (string)$to]);
     }
+
+    /**
+     * GET /api/topdevices/flows/zone: the time zone set under System: Settings:
+     * General, which core writes into PHP's date.timezone. The widget draws its
+     * midnights and captions in it (spec 2026-09-24-keep-flow-log §7.1).
+     */
+    public function zoneAction()
+    {
+        return ['timezone' => date_default_timezone_get()];
+    }
 }
