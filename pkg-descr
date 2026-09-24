@@ -28,6 +28,10 @@ Plugin Changelog
   when the firewall does not say)
 * Internet only for Today and Last 24 hours no longer falls short late in the
   evening, when the day outgrew core's own log
+* In Live, the widget grows when a device's peers and ports appear or lengthen,
+  so a short table no longer clips the detail column
+* An oversized log file left by an aggregator outage blocks only the ranges
+  that would read it
 * A range reaching back before NetFlow began collecting starts its caption
   at the oldest bucket NetFlow returned, and says so
 

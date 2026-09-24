@@ -450,16 +450,53 @@ WANs; a log that nothing rotates (unit tests only); and the headless-browser run
 of 0.1.2, replaced here by the widget's code against the live endpoints and the
 dashboard itself.
 
+**Kept log and time zone (0.3.0)**, measured on the reference install
+(Python 3.13) on 2026-09-24 and 25, installed
+with the bootstrap command from the branch:
+
+- **A whole day matches core's own code**: for Thu 24 Sep, 00:00:00 to 23:59:59,
+  `flows.py` against core's parser and aggregators run once over the same files,
+  core's and the kept ones (14 files), agreed for every
+  device to within a byte in both scopes:
+  largest gap 0.500 B, the answer's rounding to whole bytes. The hourly comparison
+  of 0.2.0 agreed as before (largest gap 0.490 B). The unit
+  tests pass on the firewall against its own core library, core's rotation code
+  included.
+- **Speed** through configd: Yesterday 1.29 s (14 files), read from the
+  log alone; Last hour 0.20 s, Today 0.38 s, Last 24 hours 1.14 s.
+- **Keeping**: at install, each of core's ten rotated files was linked into
+  `/var/log/topdevices/` (same inode, link count 2). Core's next rotation was kept
+  within 10 minutes, and the log's start stayed where it was. When the log reached
+  back 37 hours (core's reach at install, plus the night), its rate of growth put
+  its full 51 hours well under the 1 GB cap.
+- **The time zone**: the widget's own code, run on New York time against the live
+  endpoints, read `Asia/Vladivostok` from the firewall and captioned Yesterday
+  `Thu Sep 24 00:00:00 VST 2026  →  Thu Sep 24 23:59:59 VST 2026` in both
+  scopes, with no note, in one request, its rows equal to the answer. Today started
+  at 00:00:00 VST, Last 24 hours read the log, and Last 7 days started at NetFlow's
+  oldest daily bucket, Sat 19 Sep 10:00, with a note saying so. Yesterday's device
+  panel answered in one request.
+- **The endpoints** answered the zone and refused a range starting 50 h 6 min ago
+  with the 50-hour message.
+- **On the dashboard**, the Live detail panel grows the widget as a device's peers
+  appear.
+- **Installed files**: all ten, byte-identical to a dry run of the branch.
+
+Not verified: non-root users; IPv6; multiple WANs; a zone with daylight saving on
+the firewall (unit tests only: the reference zone has none); a NetFlow reset, a gap
+in the kept log, the 1 GB cap and the free-space floor (unit tests only).
+
 **Automated tests** cover the live sampler, the widget's live logic, since 0.1.2
-the NetFlow ranges, and since 0.2.0 the raw flow log reader, run against core's
-own parser and aggregators (see *Tests*).
+the NetFlow ranges, since 0.2.0 the raw flow log reader, run against core's own
+parser and aggregators, and since 0.3.0 the keeper, run against core's own
+rotation (see *Tests*).
 
 **The installer was ported to codeload** after the GitHub API's per-file rate
 limit locked the sibling `os-parentalcontrol` plugin out entirely. No GitHub API
 request is made at all now, and no hop goes through raw's per-edge cache — both
 of which silently served stale files here before. The codeload path was dry-run
-against the live repo and installed all six files of 0.1.x, and all eight of
-0.2.0, byte-identically.
+against the live repo and installed all six files of 0.1.x, all eight of 0.2.0,
+and all ten of 0.3.0, byte-identically.
 
 ## Tests
 
