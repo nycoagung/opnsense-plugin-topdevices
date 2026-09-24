@@ -18,6 +18,7 @@ import sys
 import syslog
 import tempfile
 import time
+import types
 import unittest
 import unittest.mock
 import warnings
@@ -97,6 +98,17 @@ class Keeping(Scratch):
         self.assertEqual(self.keep(T0 + 600), (0, 0))       # the same file: kept once, under its first name
         self.assertEqual(len(self.kept_names()), 2)
 
+    def test_a_file_with_extra_suffixes_beside_the_log_is_never_linked(self):
+        # ROTATED matches ".<digits>" exactly (fullmatch): a stray file such as a
+        # manual backup or a leftover from an old rotation scheme must not be
+        # mistaken for one of core's own rotated files.
+        self.write('flowd.log.000001', b'a', T0 - H)
+        self.write('flowd.log.bak', b'stray', T0 - H)
+        self.write('flowd.log.000001.old', b'stray too', T0 - H)
+        self.write('flowd.log', b'c', T0)
+        self.assertEqual(self.keep(T0), (1, 0))
+        self.assertEqual(self.kept_data(), [b'a'])
+
     def test_kept_files_survive_core_renaming_and_deleting_them(self):
         self.write('flowd.log.000001', b'old flows', T0 - H)
         self.write('flowd.log', b'new', T0)
@@ -118,12 +130,12 @@ class Keeping(Scratch):
         self.assertEqual(self.kept_data(), sorted([b'file %d' % n for n in range(1, 11)] + [b'current']))
 
     def test_a_file_renamed_or_linked_meanwhile_is_skipped_and_kept_next_time(self):
-        # F1: the FileExistsError stub below never creates a real file at `dst`
-        # (unlike a genuine second pass, which would), so the post-link identity
-        # check run() now does after catching FileExistsError finds no file
-        # there at all and takes the FileNotFoundError branch of that check -
-        # still a skip, still kept next time, so the pass's return values are
-        # unchanged; only that is different from before F1.
+        # F1: the stub now creates the real link (as a genuine concurrent pass
+        # would) before raising FileExistsError, so the post-link identity check
+        # finds a file there that matches, and takes the "another pass already
+        # linked it" branch (have.add()) instead of the FileNotFoundError one.
+        # Still a skip, still kept - the pass's return values are unchanged - but
+        # the kept name now exists for real, once, without a second link.
         self.write('flowd.log.000001', b'b', T0 - H)
         real_link, calls = os.link, []
 
@@ -132,13 +144,45 @@ class Keeping(Scratch):
             if len(calls) == 1:                                  # core renamed it between the listing and the link
                 raise FileNotFoundError(2, 'No such file or directory', src)
             if len(calls) == 2:                                  # a pass running at the same time linked it
+                real_link(src, dst)
                 raise FileExistsError(17, 'File exists', dst)
             return real_link(src, dst)
 
         with unittest.mock.patch('os.link', meanwhile):
             self.assertEqual(self.keep(T0), (0, 0))
             self.assertEqual(self.keep(T0 + 600), (0, 0))
-            self.assertEqual(self.keep(T0 + 1200), (1, 0))
+        self.assertEqual(len(self.kept_names()), 1)
+
+    def test_a_file_confirmed_kept_by_that_branch_is_not_linked_again_this_same_pass(self):
+        # Mutant: have.add() removed from the "another pass already linked it"
+        # branch. Two rotated names momentarily resolving to the same identity -
+        # a rename core's own rotation cannot produce, but a second keep.py pass
+        # racing this one can, by linking the file under this pass's own listing
+        # in between - are stood in for here with a stat stub, so both are seen
+        # in the same run() call. The first hits FileExistsError and have.add()s
+        # it; without that, the second would try os.link again for what is
+        # already kept.
+        first = self.write('flowd.log.000001', b'b', T0 - H)
+        second = self.write('flowd.log.000002', b'b', T0 - H)
+        identity = os.stat(first)                              # the one identity both names are made to share
+        real_stat, real_link = os.stat, os.link
+
+        def same_identity(path, *a, **kw):
+            return identity if path in (first, second) else real_stat(path, *a, **kw)
+
+        calls = []
+
+        def racing_link(src, dst):
+            calls.append(src)
+            if len(calls) == 1:
+                real_link(first, dst)                           # a concurrent pass links it for real
+                raise FileExistsError(17, 'File exists', dst)
+            raise AssertionError('os.link called a second time for the same identity: %r' % calls)
+
+        with unittest.mock.patch('os.stat', same_identity), unittest.mock.patch('os.link', racing_link):
+            self.assertEqual(self.keep(T0), (0, 0))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(self.kept_names()), 1)
 
     def test_a_rotation_between_the_stat_and_the_link_keeps_the_right_file(self):
         # F1: core's rotation renames every file one number up. Landing here
@@ -251,6 +295,70 @@ class Keeping(Scratch):
             self.write('topdevices/flowd.%d.%d' % (T0 - age * H, i), b'x' * 100, T0 - age * H)
         self.assertEqual(self.keep(T0, cap=250), (0, 1))
         self.assertEqual(self.kept_names(), ['flowd.%d.1' % (T0 - 2 * H), 'flowd.%d.2' % (T0 - H)])
+
+    def test_the_floor_keeps_512_mb_free_on_the_filesystem(self):
+        self.assertEqual(keep.FLOOR, 512 * 1024 * 1024)               # spec §5 / G3
+        os.makedirs(self.kept)
+        for i, age in enumerate((3, 2, 1)):
+            self.write('topdevices/flowd.%d.%d' % (T0 - age * H, i), b'x' * 100, T0 - age * H)
+        low = types.SimpleNamespace(f_bavail=100 * 1024 * 1024, f_frsize=1)     # under the floor
+        high = types.SimpleNamespace(f_bavail=2 * 1024 * 1024 * 1024, f_frsize=1)  # over it, after one deletion
+        with unittest.mock.patch('os.statvfs', side_effect=[low, high]):
+            self.assertEqual(self.keep(T0), (0, 1))
+        self.assertEqual(self.kept_names(), ['flowd.%d.1' % (T0 - 2 * H), 'flowd.%d.2' % (T0 - H)])
+
+    def test_the_floor_is_not_checked_once_nothing_is_kept(self):
+        # an empty (or just-created) kept directory never calls statvfs: nothing
+        # left to delete even if free space is still short.
+        with unittest.mock.patch('os.statvfs', side_effect=AssertionError('should not be called')):
+            self.assertEqual(self.keep(T0), (0, 0))
+
+    def test_a_reset_of_netflows_data_drops_every_kept_file_and_logs_once(self):
+        # flush_all.sh deletes /var/log/flowd.log* (current and rotated) without
+        # rotating it: the marker the first pass left then names an id found
+        # nowhere in the second pass's listing - a reset (G2).
+        self.write('flowd.log.000001', b'old', T0 - H)
+        self.write('flowd.log', b'current', T0)
+        self.assertEqual(self.keep(T0), (1, 0))
+        self.assertEqual(len(self.kept_names()), 1)
+        for p in glob.glob(glob.escape(self.log) + '*'):
+            os.remove(p)
+        self.write('flowd.log', b'after the reset', T0 + 600)
+        with unittest.mock.patch('syslog.syslog') as logged:
+            self.assertEqual(self.keep(T0 + 600), (0, 1))
+        self.assertEqual(self.kept_names(), [])
+        logged.assert_called_once_with(
+            syslog.LOG_NOTICE, "topdevices keep: NetFlow's flow log was reset: dropped 1 kept files")
+
+    def test_a_normal_rotation_between_passes_drops_nothing_kept(self):
+        self.write('flowd.log.000001', b'old', T0 - H)
+        self.write('flowd.log', b'current', T0)
+        self.keep(T0)                                       # keeps 'old'; marks 'current' as of this pass
+        with unittest.mock.patch('syslog.syslog') as logged:
+            self.rotate(b'next', T0 + 600)                  # core: 'current' becomes .000001, a new flowd.log begins
+            self.assertEqual(self.keep(T0 + 600), (1, 0))
+        logged.assert_not_called()
+        self.assertEqual(self.kept_data(), sorted([b'old', b'current']))
+
+    def test_flowd_log_absent_at_pass_start_skips_the_check_and_keeps_the_marker(self):
+        self.write('flowd.log', b'c', T0)
+        self.keep(T0)
+        marker = os.path.join(self.kept, '.current')
+        self.assertTrue(os.path.exists(marker))
+        with open(marker, 'rb') as f:
+            before = f.read()
+        os.remove(self.log)                                 # NetFlow capture disabled, say
+        with unittest.mock.patch('syslog.syslog') as logged:
+            self.assertEqual(self.keep(T0 + 600), (0, 0))
+        logged.assert_not_called()
+        with open(marker, 'rb') as f:
+            self.assertEqual(f.read(), before)                # untouched, for when it returns
+
+    def test_the_marker_is_never_a_name_flows_py_would_read(self):
+        self.write('flowd.log', b'c', T0)
+        self.keep(T0)
+        self.assertTrue(os.path.exists(os.path.join(self.kept, '.current')))
+        self.assertNotIn('.current', [os.path.basename(p) for p in glob.glob(os.path.join(self.kept, 'flowd.*'))])
 
     def test_no_kept_name_is_one_core_reads_rotates_or_cleans(self):
         self.write('flowd.log.000001', b'b', T0 - H)

@@ -176,6 +176,19 @@ KEEP_MUTANTS = [
     ('kept_files crashes on a file gone before its stat instead of skipping it',
      '        try:\n            out.append((path, os.stat(path)))\n        except FileNotFoundError:\n            pass\n',
      '        out.append((path, os.stat(path)))\n'),
+    # G5a: within one pass, a file already confirmed kept under this branch must
+    # not be linked again if another rotated name resolves to the same identity
+    ('a file confirmed kept by that branch is not remembered, so it can be linked again this same pass',
+     '                have.add((st.st_dev, st.st_ino))  # another pass already linked it under this name\n',
+     '                pass\n'),
+    # G2: a NetFlow data reset (flush_all.sh) deletes flowd.log* without
+    # rotating it; the marker lets the next pass notice and drop what it kept
+    ('a NetFlow data reset is not detected, so the stale kept log outlives it',
+     '            if marker not in rotated_ids:', '            if False:'),
+    ('the marker is never written, so a reset is never noticed next time',
+     '    if current_id is not None:\n        _write_marker(kept, current_id)\n', ''),
+    # G3: the kept files are blind to how little space is left on their filesystem
+    ('the free-space floor is disabled', '    while remaining and _free(kept) < floor:', '    while False:'),
 ]
 
 
