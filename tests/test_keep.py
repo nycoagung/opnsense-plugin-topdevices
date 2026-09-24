@@ -37,7 +37,7 @@ def _load(name, path):
 
 keep = _load('keep', KEEP_PY)
 
-T0 = 1_790_000_000               # Mon 21 Sep 2026 12:53:20 UTC
+T0 = 1_790_000_000               # Mon 21 Sep 2026 14:13:20 UTC
 H = 3600
 
 

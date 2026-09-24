@@ -2,8 +2,10 @@
 # Dry-run the installer twice into a scratch root and check what it leaves.
 # Run from the repository root:  sh tests/test_install.sh
 set -eu
+R2=
+CP=
 R=$(mktemp -d "${TMPDIR:-/tmp}/tdroot.XXXXXX")
-trap 'rm -rf "$R"' EXIT
+trap 'rm -rf "$R" "$R2" "$CP"' EXIT
 mkdir -p "$R/usr/local/opnsense/www/js/widgets/Metadata" "$R/usr/local/opnsense/service/conf/actions.d"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
