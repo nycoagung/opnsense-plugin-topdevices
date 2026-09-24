@@ -200,6 +200,11 @@ const mutants = [
     ["with the zone unknown, a bucket's start is read with the browser's offset anyway",
      'start: this.tz === undefined ? null : exportStart(c[ix.start_time], now, this.tz)',
      'start: exportStart(c[ix.start_time], now, this.tz)'],
+    // the Live detail panel resizes the widget when it appears or grows
+    ['Live refits only when the row count changes', '        const shape = `${rows.length}|${lines}`;',
+     '        const shape = `${rows.length}`;'],
+    ['Live refits on every tick', '        if (shape !== l.shape) { l.shape = shape; this._fitHeight(); }',
+     '        if (true) { l.shape = shape; this._fitHeight(); }'],
 ];
 
 let survivors = 0;

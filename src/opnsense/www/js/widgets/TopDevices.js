@@ -440,10 +440,11 @@ export default class TopDevices extends BaseWidget {
         this.loading = false;
         this.live = {
             interval: 1, view: null, last: null, lastAt: 0, retryAt: 0, status: 'off', token: 0,
-            watchdog: null, hover: false, order: [], rowsShown: -1, ptrPending: new Set(), closed: false,
+            watchdog: null, hover: false, order: [], ptrPending: new Set(), closed: false,
             known: new Set(),      // every device address this Live session has seen, for the picker
             picker: false,         // the Devices picker is up (bootstrap-select was available)
             rowsKey: null,         // liveRowsKey() of the rows on screen; null forces a rebuild
+            shape: null,           // `${rows.length}|${lines}` of the last render; null forces a refit
             dynOrder: null,        // with nothing picked: the listed IPs, in order (dynamicOrder)
             yMax: 0,               // the Live chart's axis top; only grows until a view change
             lastSeen: { all: {}, inet: {} },     // ip -> ms of the last traffic, per scope
@@ -1540,7 +1541,7 @@ export default class TopDevices extends BaseWidget {
         if (token !== this.live.token || this.state.range !== 'live') return;
         this._fillPicker();                  // the names have just loaded
         this._resetLiveView();
-        Object.assign(this.live, { view: null, last: null, lastAt: Date.now(), status: 'connecting', rowsShown: -1 });
+        Object.assign(this.live, { view: null, last: null, lastAt: Date.now(), status: 'connecting', shape: null });
         this.eventSourceRetryCount = 0;
         this.openEventSource(`/api/topdevices/live/stream/${this.live.interval}`, (ev) => this._onLiveEvent(ev));
         this.live.watchdog = setInterval(() => this._liveTick(), 1000);
@@ -1780,16 +1781,20 @@ export default class TopDevices extends BaseWidget {
             $('.td-window small').append(`<span class="text-muted"> \u00b7 chart: ${picked ? 'first' : 'top'} `
                                          + `${CHART_MAX} of ${rows.length}</span>`);
         }
-        if (this.state.selected) this._renderLiveDetails(this.state.selected);
-        else $('.td-details').empty();
+        const lines = this.state.selected ? this._renderLiveDetails(this.state.selected) : -1;
+        if (!this.state.selected) $('.td-details').empty();
         this._applyLayout();
-        if (rows.length !== l.rowsShown) { l.rowsShown = rows.length; this._fitHeight(); }
+        const shape = `${rows.length}|${lines}`;
+        if (shape !== l.shape) { l.shape = shape; this._fitHeight(); }
     }
 
+    // Returns the number of lines rendered - 1 for the placeholder, otherwise the
+    // peer and port counts - so _renderLive can tell whether the panel's shape
+    // changed and the grid needs refitting.
     _renderLiveDetails(ip) {
         const $d = $('.td-details');
         const view = this.live.view;
-        if (!view) { $d.html('<small class="text-muted">Measuring\u2026</small>'); return; }
+        if (!view) { $d.html('<small class="text-muted">Measuring\u2026</small>'); return 1; }
         const scope = this.state.scope === 'wan' ? 'inet' : 'all';
         const rate = liveRates(view, scope)[ip] || { down: 0, up: 0 };
         const detail = liveDetail(view, ip, scope);
@@ -1830,6 +1835,7 @@ export default class TopDevices extends BaseWidget {
                     </div>
                 </div>
             </div>`);
+        return detail.peers.length + detail.ports.length;
     }
 
     async renderDetails(ip) {
