@@ -305,7 +305,9 @@ class CoreRotation(Scratch):
             sys.path.remove(CORE_NETFLOW)
         written = []
         # rotate at any size, and never signal the real flowd (/var/run/flowd.pid on the firewall)
-        with unittest.mock.patch.object(agg, 'MAX_FILE_SIZE_MB', 0), unittest.mock.patch('os.kill'):
+        with unittest.mock.patch.object(agg, 'MAX_FILE_SIZE_MB', 0), unittest.mock.patch('os.kill'), \
+                warnings.catch_warnings():
+            warnings.simplefilter('ignore', ResourceWarning)  # core's check_rotate() opens /var/run/flowd.pid without closing it
             for i in range(14):                                   # more rotations than core keeps files
                 written.append(b'flows %d' % i)
                 self.write('flowd.log', written[-1], T0 + i * H)
