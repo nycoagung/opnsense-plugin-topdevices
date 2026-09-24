@@ -381,6 +381,8 @@ class Reading(unittest.TestCase):
         log = write_log(self.tmp.name, [('flowd.log.000001', b'a', T0 + 100), ('flowd.log', b'c', T0 + 300)])
         kept = self.kept([('flowd.%d.1' % T0, b'old', T0)])                        # core has deleted this one
         os.link(log + '.000001', os.path.join(kept, 'flowd.%d.2' % (T0 + 100)))   # keep.py's second name for .000001
+        with open(os.path.join(kept, '.current'), 'w') as f:      # keep.py's marker (2026-09-24 §5 G2): not a flowd.* name
+            f.write('1 2')
         opened = flows.open_log(log)
         self.addCleanup(flows.close_log, opened)
         self.assertEqual([flows._read(fd) for fd, _, _ in opened], [b'old', b'a', b'c'])
@@ -406,6 +408,14 @@ class Reading(unittest.TestCase):
             ('flowd.log.000001', flow('8.8.8.8', '192.168.1.10', 1, recv=T0 + 4000, start=T0, end=T0, v6=True), T0 + 5000),
             ('flowd.log', flow('8.8.8.8', '192.168.1.10', 1, recv=T0 + 5001, start=T0 + 5001, end=T0 + 5001), T0 + 5100)])
         self.assertEqual(flows.log_from(opened), T0)
+
+    def test_an_ipv6_only_oldest_file_does_not_erase_the_newer_ones_start(self):
+        # the oldest file itself has no IPv4 record at all: L must still be the
+        # newer file's first record, not None.
+        v6_only = flow('8.8.8.8', '192.168.1.10', 1, recv=T0, start=T0, end=T0, v6=True)
+        newer = flow('8.8.8.8', '192.168.1.10', 1, recv=T0 + 100, start=T0 + 100, end=T0 + 100)
+        opened = self.opened([('flowd.log.000001', v6_only, T0 + 50), ('flowd.log', newer, T0 + 150)])
+        self.assertEqual(flows.log_from(opened), T0 + 100)
 
     def test_a_kept_file_pruned_while_the_files_are_opened_is_simply_gone(self):
         log = write_log(self.tmp.name, [('flowd.log', KINDS[0], T0 + 300)])
@@ -699,14 +709,29 @@ class CommandLine(unittest.TestCase):
         self.assertIn('whole epoch seconds', json.loads(proc.stdout)['error'])
         self.assertEqual(proc.stderr, '')
 
-    def test_a_kept_file_nobody_rotates_is_an_error_answer_too(self):
-        # the 40 MB guard holds for every file read, the kept ones too (2026-09-24 spec §6)
+    def test_a_big_kept_file_outside_the_range_gives_a_normal_answer(self):
+        # G1: the aggregator-running guard covers only the current log; a big
+        # kept file the range never reads is no reason to refuse the answer.
         with tempfile.TemporaryDirectory() as d, unittest.mock.patch.object(flows, 'MAX_FILE', 200):
             log = write_log(d, [('flowd.log', KINDS[0], T0 + 100)])             # 116 bytes: under the guard
             os.mkdir(os.path.join(d, 'topdevices'))
-            write_log(os.path.join(d, 'topdevices'), [('flowd.1.1', b''.join(KINDS), T0)])   # 464 bytes: over it
+            write_log(os.path.join(d, 'topdevices'),
+                     [('flowd.1.1', b''.join(KINDS), T0 - 100000)])            # 464 bytes, but well outside the range
             a = self.run_main(['flows.py', 'totals', str(T0 + 100), str(T0 + 200)], log, now=T0 + 300)
-        self.assertIn('aggregator running', a['error'])
+        self.assertNotIn('error', a)
+
+    def test_a_big_file_in_the_range_is_the_new_error_not_the_aggregator_one(self):
+        # G1: files_for's own guard, in the answer that reads them, not the
+        # "is the aggregator running?" one - and it must not be tripped by a
+        # kept file the answer does not even open.
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.object(flows, 'MAX_FILE', 200):
+            log = write_log(d, [('flowd.log', KINDS[0], T0 + 300)])             # 116 bytes: under the guard, newest
+            os.mkdir(os.path.join(d, 'topdevices'))
+            write_log(os.path.join(d, 'topdevices'),
+                     [('flowd.1.1', b''.join(KINDS), T0 + 150)])               # 464 bytes, mtime inside the range
+            a = self.run_main(['flows.py', 'totals', str(T0 + 100), str(T0 + 200)], log, now=T0 + 300)
+        self.assertIn('cannot be read exactly', a['error'])
+        self.assertNotIn('aggregator', a['error'])
 
 
 CORE_NETFLOW = next((p for p in (os.environ.get('CORE_NETFLOW'),

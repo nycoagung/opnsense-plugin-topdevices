@@ -386,6 +386,23 @@ test('a range reaching back before NetFlow began starts at the oldest bucket, an
         note: 'History older than a day is kept per day (days start at 10:00) · NetFlow has no records before Sat 19 Sep 10:00' });
 });
 
+test('a 7-day export whose dated rows start exactly at the plan\'s start has no false "no records before" note', async () => {
+    // NetFlow's dated rows reach back to the plan's own start (S(0, 0, 16)): the
+    // caption must start there without a spurious "NetFlow has no records
+    // before" - that note belongs only when the data starts LATER than the plan.
+    const days = [16, 17, 18, 19, 20, 21, 22, 23].map(d => `2026/09/${d} 10:00:00`);
+    const w = widget('7d');
+    reply = (url) => (url.includes('/FlowSourceAddrTotals/')
+        ? csv(totalsRows(FLOWS).flatMap(r => days.map(t => ({ ...r, start_time: t }))), TOTALS_HEAD) : null);
+    await w._load(NOW * 1000);
+    const p = w.state.plan;
+    assert.equal(p.start, S(0, 0, 16));
+    assert.equal(w.state.first, p.start);
+    const c = w._windowCaption();
+    assert.equal(c.text, `${w._dateStr(p.start)}  →  ${w._endStr(p.end)} · all traffic`);
+    assert.doesNotMatch(c.note || '', /NetFlow has no records before/);
+});
+
 test('with the zone unknown, the caption starts at the plan, not shifted by the browser reading the firewall\'s offset as its own', async () => {
     // same fixture as above, but the firewall did not say (this.tz undefined): exportStart()
     // would subtract the BROWSER's offset from a string core printed with the FIREWALL's, so

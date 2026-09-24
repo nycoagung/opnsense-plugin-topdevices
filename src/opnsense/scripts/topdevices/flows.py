@@ -35,7 +35,8 @@ DAY = 86400
 SLACK = 300              # the browser's clock may be a few minutes off the firewall's
 REACH = 50 * HOUR        # a raw-log range starts at most this far back: Yesterday at any hour (2026-09-24 spec §4)
 TOP = 100                # the device panel lists at most 100 rows
-MAX_FILE = 40 * 1024 * 1024  # core rotates the log at 10 MB (flowd_aggregate.py): far past that, nothing rotates it
+MAX_FILE = 40 * 1024 * 1024  # core rotates the log at 10 MB (flowd_aggregate.py): far past that, the current log
+                              # means no aggregator, and any other file a range needs cannot be read exactly
 GAP = 900                # more than this between two files, and one is missing between them (2026-09-24 spec §4)
 DIGITS = re.compile(r'[0-9]+')
 
@@ -374,6 +375,18 @@ def run_parallel(fn, jobs, workers):
         return pool.map(fn, jobs, chunksize=1)
 
 
+def _refuse_if_too_big(files):
+    """Raise ValueError if any of these opened files (a files_for() result) is
+    over MAX_FILE: core would have rotated it long before it reached that size,
+    so it cannot be read exactly - unlike the "is the aggregator running?"
+    check in main(), this covers only the files an answer must actually read,
+    so a big file outside the range asked for is no reason to refuse it."""
+    for _, _, size in files:
+        if size > MAX_FILE:
+            raise ValueError('a %d MB flow log file lies in this range, far past the 10 MB core rotates '
+                             'at: it cannot be read exactly' % (size // (1024 * 1024)))
+
+
 def answer_totals(frm, to, now, opened, net, hourly_rows, workers):
     """The totals answer (spec §5.1) for [frm, to) at now. hourly_rows(lo, hi) gives
     core's hourly FlowSourceAddrTotals rows for buckets starting in [lo, hi)."""
@@ -387,7 +400,9 @@ def answer_totals(frm, to, now, opened, net, hourly_rows, workers):
     frm = min(to, max(frm, min(L, now - DAY - SLACK)))
     p = plan(frm, to, L)
     (a_lo, a_hi), (i_lo, i_hi) = p['raw_all'], p['inet']
-    jobs = [(fd, a_lo, a_hi, i_lo, i_hi, net) for fd, _, _ in files_for(opened, min(a_lo, i_lo))]
+    files = files_for(opened, min(a_lo, i_lo))
+    _refuse_if_too_big(files)
+    jobs = [(fd, a_lo, a_hi, i_lo, i_hi, net) for fd, _, _ in files]
     acc = merge_totals(run_parallel(scan_totals, jobs, workers))
     if p['hourly']:
         h_lo, h_hi = p['hourly']
@@ -459,7 +474,9 @@ def answer_device(ip, frm, to, now, opened, net, workers):
     lo = max(frm, L)
     peers, ports, jobs = {}, {}, []
     if lo < to:
-        jobs = [(fd, lo, to, ip, net) for fd, _, _ in files_for(opened, lo)]
+        files = files_for(opened, lo)
+        _refuse_if_too_big(files)
+        jobs = [(fd, lo, to, ip, net) for fd, _, _ in files]
         for p, q in run_parallel(scan_device, jobs, workers):
             _merge2(peers, p)
             _merge2(ports, q)
@@ -561,10 +578,10 @@ def main(argv, now=None, log=LOG, system=None, hourly=None):
         opened = open_log(log)
         if not opened:
             raise ValueError('no NetFlow flow log: is NetFlow capture enabled?')
-        biggest = max(size for _, _, size in opened)
-        if biggest > MAX_FILE:            # only core's aggregator rotates the log
+        newest_size = opened[-1][2]       # opened is oldest to newest; the newest is flowd.log while flowd writes
+        if newest_size > MAX_FILE:        # only core's aggregator rotates the log
             raise ValueError("the NetFlow flow log has a %d MB file, far past the 10 MB core rotates at: "
-                             "is NetFlow's aggregator running?" % (biggest // (1024 * 1024)))
+                             "is NetFlow's aggregator running?" % (newest_size // (1024 * 1024)))
         workers = max(1, (os.cpu_count() or 2) // 2)
         if req['mode'] == 'totals':
             out = answer_totals(req['from'], req['to'], now, opened, net, hourly or core_hourly, workers)
