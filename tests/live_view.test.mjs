@@ -771,3 +771,51 @@ test('_esc makes a name safe inside a quoted attribute as well', () => {
     assert.equal(w._esc('a"b<c&d'), 'a&quot;b&lt;c&amp;d');
     assert.equal(w._esc(null), '');
 });
+
+/* ---------- the Live detail panel resizes the widget when it appears or grows ---------- */
+
+test('Live refits the grid only when the row count or the detail panel shape changes', async (t) => {
+    const { w, send } = await running(t);
+    let fits = 0;
+    w._fitHeight = () => { fits++; };
+
+    // three devices, nothing selected: rows changed, 0 -> 3
+    send({ dt: 1, effective: 1, wan, devices: {
+        '192.168.1.10': dev([100, 0]), '192.168.1.11': dev([200, 0]), '192.168.1.12': dev([300, 0])
+    } });
+    assert.equal(fits, 1);
+
+    // a steady tick, same three devices, still nothing selected: no nudge
+    send({ dt: 1, effective: 1, wan, devices: {
+        '192.168.1.10': dev([150, 0]), '192.168.1.11': dev([250, 0]), '192.168.1.12': dev([350, 0])
+    } });
+    assert.equal(fits, 1);
+
+    // a device is selected and its event carries peers/ports: the panel appeared
+    w.state.selected = '192.168.1.10';
+    send({ dt: 1, effective: 1, wan, devices: {
+        '192.168.1.10': dev([150, 0], [0, 0], [['203.0.113.7', 100, 0, 1]], { all: [[443, 100, 0]], inet: [] }),
+        '192.168.1.11': dev([250, 0]), '192.168.1.12': dev([350, 0])
+    } });
+    assert.equal(fits, 2);
+
+    // the same device set, and the same number of peers/ports for the selected one: no nudge
+    send({ dt: 1, effective: 1, wan, devices: {
+        '192.168.1.10': dev([160, 0], [0, 0], [['203.0.113.7', 110, 0, 1]], { all: [[443, 110, 0]], inet: [] }),
+        '192.168.1.11': dev([250, 0]), '192.168.1.12': dev([350, 0])
+    } });
+    assert.equal(fits, 2);
+
+    // the selected device now has more peers: the panel grew
+    send({ dt: 1, effective: 1, wan, devices: {
+        '192.168.1.10': dev([160, 0], [0, 0],
+            [['203.0.113.7', 110, 0, 1], ['203.0.113.8', 20, 0, 1]], { all: [[443, 110, 0]], inet: [] }),
+        '192.168.1.11': dev([250, 0]), '192.168.1.12': dev([350, 0])
+    } });
+    assert.equal(fits, 3);
+
+    // clearing the selection closes the panel
+    w.state.selected = null;
+    w._renderLive();
+    assert.equal(fits, 4);
+});
