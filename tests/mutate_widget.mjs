@@ -191,6 +191,8 @@ const mutants = [
     ['a short raw answer shown as if whole', '            if (resp && resp.all.from <= from) {', '            if (resp) {'],
     ['a short raw answer called a failure', '            fallback = !resp;', '            fallback = true;'],
     ["the caption starts where the plan did, before any data", "        const start = this.state.first > p.start ? this.state.first : p.start;", "        const start = p.start;"],
+    ["a false 'no records before' note when the data starts exactly at the plan",
+     "        if (start > p.start) {", "        if (this.state.first != null) {"],
     ["no word that NetFlow began later", "            const none = `NetFlow has no records before ${this._dayTime(start)}`;\n            note = note ? `${note} · ${none}` : none;\n", ""],
     ["an empty export shown as a span", "        if (this.state.first === null) {", "        if (false) {"],
     ["bucket starts read with the offset of their own day", " / 1000 - offsetAt(nowS, tz) : null;", " / 1000 - offsetAt(Date.UTC(+x[1], +x[2] - 1, +x[3], +x[4], +x[5], +x[6]) / 1000, tz) : null;"],
