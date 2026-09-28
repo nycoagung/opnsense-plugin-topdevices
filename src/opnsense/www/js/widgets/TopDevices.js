@@ -1125,7 +1125,7 @@ export default class TopDevices extends BaseWidget {
             <div class="td-window" style="margin-bottom:4px;"><small class="text-muted"></small></div>
             <div class="td-chartbox" style="height:175px;margin:4px 0;"><canvas class="td-canvas"></canvas></div>
             <div class="td-main" style="display:flex;gap:12px;align-items:flex-start;">
-                <div class="td-tablewrap" style="flex:1 1 0;min-width:0;max-height:420px;overflow-y:auto;">
+                <div class="td-tablewrap" style="flex:1 1 0;min-width:0;">
                     <table class="table table-condensed table-hover" style="margin-bottom:4px;table-layout:fixed;width:100%;">
                         <thead style="position:sticky;top:0;z-index:2;background:inherit;box-shadow:inset 0 -1px 0 #ddd;"><tr>
                             <th class="td-sort" data-key="name"  style="cursor:pointer;text-align:left;width:38%;">Device</th>
@@ -2080,7 +2080,9 @@ export default class TopDevices extends BaseWidget {
             maxHeight: narrow ? '' : '420px',
             overflowY: narrow ? '' : 'auto'
         });
-        $('.td-tablewrap').css({ maxHeight: narrow ? '' : '420px' });
+        // The table itself has no height (since 0.3.3): it is as tall as its rows, and
+        // the widget as tall as the user makes it; below that, the widget's own content
+        // box scrolls (gridstack's size-to-content-max) and the header sticks to its top.
 
         // A sticky header inside a scrolling box needs an opaque background or the
         // rows scroll through it. 'inherit' resolves to transparent, so walk up to
