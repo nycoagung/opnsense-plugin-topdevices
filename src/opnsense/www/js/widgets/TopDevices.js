@@ -37,7 +37,7 @@
  * TIME ZONE: midnights, the custom range fields and every caption use the zone
  * set on the firewall (System: Settings: General), from /api/topdevices/flows/zone,
  * whatever the browser's own; the browser's only when the firewall does not say,
- * which the caption then states, and the zone is asked for again at each refresh.
+ * which the caption then states, and the zone is asked for again at later refreshes.
  * Design: docs/superpowers/specs/2026-09-24-keep-flow-log-design.md §7
  *
  * REFRESH: the widget keeps its own timer (nextRefreshAt) instead of the dashboard's
@@ -338,6 +338,7 @@ export function fmtSpan(seconds) {
 }
 
 const FALLBACK_NOTE = "The raw flow log could not be read: showing NetFlow's records";
+const ZONE_RETRY_MS = 10000;   // a refresh asks for an unknown zone again once this long has passed since the last ask
 
 // the browser's own time zone, by name, as Intl has it
 function browserZone() {
@@ -434,20 +435,30 @@ export function exportStart(text, nowS, tz) {
 /* ---------- when to refresh next: a pure helper (tests/netflow_ranges.test.mjs) ---------- */
 
 // Today and Yesterday change at midnight on the firewall. An open widget reads them
-// again this many seconds after it: a browser clock a little ahead of the firewall's
-// would otherwise ask flows.py for a day that has not begun there yet.
+// again this many seconds after it.
 export const MIDNIGHT_DELAY = 5;
 
-// When to refresh next, in epoch seconds, after one at nowS: a refresh interval on,
-// and for Today and Yesterday no later than just past the next midnight in tz. Live
-// streams its own updates: null.
-export function nextRefreshAt(nowS, intervalS, range, tz) {
+// When to refresh next, in epoch seconds of the browser's clock, after one at nowS: a
+// refresh interval on, and for Today and Yesterday no later than just past the next
+// midnight in tz on the firewall's clock - aheadS later, when the browser's clock runs
+// that far ahead of it, since flows.py answers a day not begun on its own clock with an
+// error. Live streams its own updates: null.
+export function nextRefreshAt(nowS, intervalS, range, tz, aheadS = 0) {
     if (range === 'live') return null;
     const next = nowS + intervalS;
     if (range !== 'today' && range !== 'yesterday') return next;
-    const soon = localMidnight(nowS, 0, tz) + MIDNIGHT_DELAY;        // in the day's first seconds, its own
-    const midnight = soon > nowS ? soon : localMidnight(nowS, -1, tz) + MIDNIGHT_DELAY;
+    const late = MIDNIGHT_DELAY + aheadS;
+    const soon = localMidnight(nowS, 0, tz) + late;                   // in the day's first seconds, its own
+    const midnight = soon > nowS ? soon : localMidnight(nowS, -1, tz) + late;
     return Math.min(next, midnight);
+}
+
+// How far the browser's clock runs ahead of the firewall's, in seconds, from a flows
+// answer's own clock and the browser's when it asked: 0 when it does not, or when the
+// gap is more than flows.py's own slack, which no real answer can show (it refuses the range).
+export function clockAhead(askedS, answerNowS) {
+    const ahead = askedS - answerNowS;
+    return ahead > 0 && ahead <= 300 ? ahead : 0;
 }
 
 export default class TopDevices extends BaseWidget {
@@ -474,6 +485,8 @@ export default class TopDevices extends BaseWidget {
         this.chartObj = null;
         this.loading = false;
         this.refreshTimer = null;  // the next refresh (_schedule)
+        this.clockAhead = 0;       // seconds the browser's clock runs ahead of the firewall's (clockAhead)
+        this.zoneAskedAt = 0;      // when the zone was last asked for (_loadZone), ms
         this.live = {
             interval: 1, view: null, last: null, lastAt: 0, retryAt: 0, status: 'off', token: 0,
             watchdog: null, hover: false, order: [], ptrPending: new Set(), closed: false,
@@ -619,7 +632,7 @@ export default class TopDevices extends BaseWidget {
         if (!n || n < 1) return '-';
         const u = ['B', 'KB', 'MB', 'GB', 'TB'];
         let i = 0;
-        while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
+        while (n >= 999.95 && i < u.length - 1) { n /= 1000; i++; }    // 999.96 MB reads 1.0 GB, not 1000.0 MB
         return `${n.toFixed(1)} ${u[i]}`;
     }
 
@@ -660,19 +673,27 @@ export default class TopDevices extends BaseWidget {
 
     /* ---------- data ---------- */
 
-    // The time zone set on the firewall (System: Settings: General), once per page
-    // load, before anything is shown: every midnight, custom field and caption
-    // follows it (spec 2026-09-24-keep-flow-log §7). Through the dashboard's
-    // ajaxCall, as the networks are. No answer, or a zone this browser's Intl
-    // does not know, leaves the browser's own.
+    // The time zone set on the firewall (System: Settings: General), at each page load
+    // before anything is shown, and again at later refreshes until it answers (refresh):
+    // every midnight, custom field and caption follows it (spec 2026-09-24-keep-flow-log
+    // §7). Through the dashboard's ajaxCall, as the networks are. No answer, or a zone
+    // this browser's Intl does not know, leaves the browser's own; a zone it does not
+    // know is kept by name (tzUnknown), since asking again cannot change that.
     async _loadZone() {
-        let tz;
+        let tz, unknown;
         try {
             const r = await this.ajaxCall('/api/topdevices/flows/zone');
             tz = (r && typeof r.timezone === 'string' ? r.timezone : undefined) || undefined;   // '' is not a zone
-            if (tz) new Intl.DateTimeFormat('en-US', { timeZone: tz });   // throws for a zone it does not know
         } catch (e) { tz = undefined; }
+        if (tz) {
+            try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); }   // throws for a zone it does not know
+            catch (e) { unknown = tz; tz = undefined; }
+        }
+        this.zoneAskedAt = Date.now();
+        // exports read without the zone have undated rows (_export): none is kept once it is known
+        if (this.tz === undefined && tz !== undefined) this.cache = {};
         this.tz = tz;
+        this.tzUnknown = unknown;
     }
 
     async _loadNetworks() {
@@ -792,10 +813,11 @@ export default class TopDevices extends BaseWidget {
             try { resp = await this._flows(`totals/${from}/${end}`); } catch (e) { resp = null; }
             if (token !== this._loadToken) return false;
             if (resp && resp.all.from <= from) {
+                this.clockAhead = clockAhead(now, resp.now);
                 this.state.raw = resp;
                 this.state.plan = null;
                 this.state.fallback = false;
-                this.state.request = { from, to: end, now, scope, raw: true };
+                this.state.request = { from, to: end, now, scope, raw: true, tz: this.tz };
                 this._applyRaw(scope);
                 this._pruneCache(this.state.request);
                 return true;
@@ -818,7 +840,7 @@ export default class TopDevices extends BaseWidget {
         // the oldest bucket that came back: null when nothing did, undefined when none is dated
         const dated = flows.map(r => r.start).filter(t => t !== null);
         this.state.first = !flows.length ? null : dated.length ? dated.reduce((a, b) => Math.min(a, b)) : undefined;
-        this.state.request = { from, to, now, scope };        // what the range asked for
+        this.state.request = { from, to, now, scope, tz: this.tz };   // what the range asked for, in which zone
         this.state.raw = null;
         this.state.fallback = fallback;
         this._pruneCache(this.state.request);
@@ -859,10 +881,12 @@ export default class TopDevices extends BaseWidget {
         this.state.selected = null;
         $('.td-details').empty();
         this._applyLayout();
+        this._fitHeight();          // the dashboard's tick no longer follows a refresh (_schedule)
     }
 
     // What the caption says: the raw answer's span, or the export's (spec §4) - and,
-    // first, when every day and time in it is the browser's, not the firewall's.
+    // first, when the rows on screen were read with the browser's days, not the
+    // firewall's (the zone of their request: a reload may be under way).
     _windowCaption() {
         let c;
         if (this.state.request.raw) {
@@ -871,8 +895,10 @@ export default class TopDevices extends BaseWidget {
             c = this._exportCaption();
             if (this.state.fallback) c.note = c.note ? `${FALLBACK_NOTE} · ${c.note}` : FALLBACK_NOTE;
         }
-        if (this.tz === undefined) {
-            const zone = `Could not read the firewall's time zone: days follow this browser's (${browserZone()})`;
+        if (this.state.request.tz === undefined) {
+            const why = this.tzUnknown ? `This browser does not know the firewall's time zone (${this.tzUnknown})`
+                                       : "Could not read the firewall's time zone";
+            const zone = `${why}: days follow this browser's (${browserZone()})`;
             c.note = c.note ? `${zone} · ${c.note}` : zone;
         }
         return c;
@@ -1235,19 +1261,17 @@ export default class TopDevices extends BaseWidget {
     }
 
     async refresh(force) {
-        // Live restarts its stream: the header refresh button and an options change land
-        // here. It updates itself, so no refresh stays pending.
-        if (this.state.range === 'live') { this._schedule(); await this._startLive(); return; }
+        // Live restarts its stream: the header refresh button and an options change land here
+        if (this.state.range === 'live') { await this._startLive(); return; }
         if (this.loading) return;
         this.loading = true;
         this._busy(true);
         if (force) { this.cache = {}; this._device = null; }   // an explicit refresh reads everything again
         try {
-            // the firewall's zone, asked for again until it answers (_loadZone); exports
-            // read without it are undated (_export), so none is kept once it has
-            if (this.tz === undefined) {
+            // the firewall's zone, asked for again until it answers (_loadZone) - not
+            // straight after the page load's own ask, nor for a zone this browser does not know
+            if (this.tz === undefined && this.tzUnknown === undefined && Date.now() - this.zoneAskedAt >= ZONE_RETRY_MS) {
                 await this._loadZone();
-                if (this.tz !== undefined) this.cache = {};
             }
             await this._loadNames();
             if (await this._load()) {
@@ -1266,7 +1290,8 @@ export default class TopDevices extends BaseWidget {
         this.refreshTimer = null;
         if (this.live.closed) return;                 // the widget is gone
         const now = Math.floor(Date.now() / 1000);
-        const at = nextRefreshAt(now, this.tickTimeout > 0 ? this.tickTimeout : 900, this.state.range, this.tz);
+        const at = nextRefreshAt(now, this.tickTimeout > 0 ? this.tickTimeout : 900, this.state.range, this.tz,
+                                 this.clockAhead);
         if (at === null) return;
         this.refreshTimer = setTimeout(() => { this.refreshTimer = null; this.refresh(); }, (at - now) * 1000);
     }
@@ -1599,6 +1624,10 @@ export default class TopDevices extends BaseWidget {
     /* ---------- live ---------- */
 
     async _startLive() {
+        // Live updates itself: no refresh stays pending, however it was entered (the
+        // range select, refresh, its own retry)
+        clearTimeout(this.refreshTimer);
+        this.refreshTimer = null;
         this._stopLive();
         const token = this.live.token;
         const cfg = await this.getWidgetConfig() || {};
@@ -1969,7 +1998,7 @@ export default class TopDevices extends BaseWidget {
         this._applyLayout();
         let d;
         try { d = await this._detailsData(ip); }
-        catch (e) { $d.html('<small class="text-danger">Detail unavailable for this range</small>'); return; }
+        catch (e) { $d.html('<small class="text-danger">Detail unavailable for this range</small>'); this._fitHeight(); return; }
         if (this.state.selected !== ip) return;
 
         const { peers, ports, down, up } = d;
