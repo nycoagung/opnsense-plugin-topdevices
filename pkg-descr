@@ -19,13 +19,14 @@ Plugin Changelog
 
 0.3.2
 
-* Byte counts are decimal (1 GB = 10^9 bytes), as the dashboard's own widgets
-  and an ISP's meter count them: a figure in GB reads about 7% higher than
-  before (5% in MB, 10% in TB)
-* Today and Yesterday move on to the new day 5 seconds after the firewall's
-  midnight on its own clock, whatever the refresh interval, and a changed
-  refresh interval applies at once: the widget keeps its own refresh timer,
-  and opening it reads once, not twice
+* Byte counts are decimal (1 GB = 10^9 bytes), as core's dashboard widget
+  code and an ISP's meter count them: a figure in GB reads about 7% higher
+  than before (5% in MB, 10% in TB)
+* Today and Yesterday move on to the new day 5 seconds after midnight, by
+  whichever of the browser's and the firewall's clocks reaches it last,
+  whatever the refresh interval, and a changed refresh interval applies at
+  once: the widget keeps its own refresh timer, and opening it reads once,
+  not twice
 * In a day's first second, Today reads nothing and says the day has only just
   begun: its caption ran backwards, and internet only read the day before
 * When the firewall's time zone cannot be read, or this browser does not know
