@@ -22,8 +22,9 @@ Plugin Changelog
 * The table is as tall as its rows, so the widget can be made as tall as
   every row it shows (Rows to show), where 0.3.2 stopped at a 420 px table.
   A widget made shorter scrolls as a whole, its table header staying on top
-* Beside a tall table, a device's panel opens level with its row and never
-  reaches below the table, and the loading spinner shows near the top
+* Beside a tall table, a device's panel opens level with its row, follows it
+  when the table is sorted or filtered, and never reaches below it; the
+  loading spinner shows near the top and stays in view as the widget scrolls
 
 0.3.2
 

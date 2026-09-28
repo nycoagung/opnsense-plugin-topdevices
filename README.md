@@ -56,7 +56,7 @@ table header staying on top, and a newly added one opens at up to 1,000 px. The
 dashboard keeps the height you save as the widget's *maximum* on every load, so a
 height saved while the widget was showing fewer rows stays in force until you drag
 it taller and save again. Beside a tall table, a device's panel opens level with its
-row, and never reaches below the table.
+row (and follows it when you sort or filter), and never reaches below the table.
 
 Nothing is hardcoded. Local networks are derived from the firewall's own
 interface configuration (anything outside RFC1918 is treated as upstream, so a
@@ -559,8 +559,10 @@ dragged in Edit Dashboard, 0.3.2 went no taller than 718 px, its table stopping 
 420 px of 918 px of rows; 0.3.3 reaches the full 1,216 px, and at 712 px it scrolls
 with the table header on top. In a 1440x800 window at full height, clicking the 18th
 and the 20th row opened the device panel beside the row and wholly on screen (0.3.2's
-design put it at the table's top, here off screen), and the loading spinner shows
-96 px below the widget's top.
+design put it at the table's top, here off screen); its loading placeholder already
+sits beside the row, and sorting by name moved the panel with its row. The loading
+spinner shows about 150 px below the widget's top, and stays in view (98 px below the
+top of what is shown) in a 600 px widget scrolled by 400 px.
 
 **Automated tests** cover the live sampler, the widget's live logic, since 0.1.2
 the NetFlow ranges, since 0.2.0 the raw flow log reader, run against core's own
