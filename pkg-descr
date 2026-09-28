@@ -23,7 +23,8 @@ Plugin Changelog
   code and an ISP's meter count them: a figure in GB reads about 7% higher
   than before (5% in MB, 10% in TB)
 * Today and Yesterday move on to the new day 5 seconds after midnight, by
-  whichever of the browser's and the firewall's clocks reaches it last,
+  whichever of the browser's and the firewall's clocks reaches it last (for
+  Today, within the five minutes flows.py allows a browser to run fast),
   whatever the refresh interval, and a changed refresh interval applies at
   once: the widget keeps its own refresh timer, and opening it reads once,
   not twice

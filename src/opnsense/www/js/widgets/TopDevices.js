@@ -460,8 +460,9 @@ export function nextRefreshAt(nowS, intervalS, range, tz, aheadS = 0) {
 
 // How far the browser's clock runs ahead of the firewall's, in seconds, from a flows
 // answer's own clock and the browser's when it asked: 0 when it does not, or when it is
-// more than an hour ahead - a clock that far off is broken, not steady, and every recent
-// range then fails anyway (flows.py allows five minutes).
+// more than an hour ahead - a clock that far off is broken, not steady. Only answers for
+// ranges ending in the past (Yesterday) can show more than five minutes: flows.py refuses
+// ranges reaching its present from a browser that far ahead.
 export function clockAhead(askedS, answerNowS) {
     const ahead = askedS - answerNowS;
     return ahead > 0 && ahead <= 3600 ? ahead : 0;
@@ -884,6 +885,7 @@ export default class TopDevices extends BaseWidget {
 
     // A load that failed leaves no rows it cannot vouch for, and no panel beside them.
     _loadFailed() {
+        if (this.state.range === 'live') return;   // Live, picked while the read failed, draws itself
         $('.td-body').html('<tr><td colspan="5" class="text-danger">Unable to read NetFlow data</td></tr>');
         $('.td-window small').text('');
         this.state.selected = null;
@@ -1287,7 +1289,7 @@ export default class TopDevices extends BaseWidget {
                 if (this.state.selected) await this.renderDetails(this.state.selected);
             }
         } catch (e) {
-            if (this.state.range !== 'live') this._loadFailed();   // Live, picked meanwhile, draws itself
+            this._loadFailed();
         } finally { this.loading = false; this._busy(false); this._schedule(); }
     }
 
