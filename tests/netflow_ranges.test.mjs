@@ -1,7 +1,7 @@
 // NetFlow ranges of TopDevices.js: which aggregate, bucket size and window each
 // range reads, and how the rows become per-device download and upload.
 // Run:  node --test tests/netflow_ranges.test.mjs
-import test from 'node:test';
+import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 
 // The browser runs in another zone than the firewall, so nothing may depend on
@@ -15,6 +15,17 @@ let ZONE = 'Asia/Vladivostok';          // the zone set on the firewall, as flow
 globalThis.BaseWidget = class {
     constructor(config) { this.config = config; }
     async getWidgetConfig() { return {}; }
+    onWidgetClose() {}
+    closeEventSource() {}
+};
+globalThis.document = globalThis.document || {};     // $(document), when the widget closes
+// The widget keeps its own refresh timer (0.3.2). Node only: a long one must never
+// hold the test process open - the tests that follow a timer use mock timers.
+const realSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (fn, ms, ...args) => {
+    const t = realSetTimeout(fn, ms, ...args);
+    if (ms > 1000 && t && t.unref) t.unref();
+    return t;
 };
 // jQuery: chainable no-ops, except what the tests read back - the last .html()
 // or .text() written to a selector - and $.ajax, answered by `reply`.
@@ -885,4 +896,218 @@ test('a custom range ending later today asks the raw log up to now', async () =>
 test('the raw log gets a minute to answer, as JSON', async () => {
     await loadRaw('1h', () => totalsAnswer(NOW - 3600, NOW));
     assert.deepEqual([lastAjax.dataType, lastAjax.timeout], ['json', 60000]);
+});
+
+// --- 0.3.2: byte units, the widget's own refresh schedule, a day's first second, an unknown zone ---
+
+test("byte counts are decimal, as the dashboard's own widgets and an ISP's meter count them", () => {
+    const w = widget('24h');
+    assert.equal(w._fmt(13736096347), '13.7 GB');                  // 12.8 GB before 0.3.2, counted in 1024s
+    assert.equal(w._fmt(999), '999.0 B');
+    assert.equal(w._fmt(1000), '1.0 KB');
+    assert.equal(w._fmt(1500000), '1.5 MB');
+    assert.equal(w._fmt(2.5e12), '2.5 TB');
+    assert.equal(w._fmt(0), '-');
+});
+
+const MID = S(14, 0, 23);                   // Thu 24 Sep 00:00:00 VST, the midnight after NOW
+
+test('the next refresh comes one refresh interval later', () => {
+    for (const range of ['1h', '24h', 'today', 'yesterday', '7d', 'custom']) {
+        assert.equal(m.nextRefreshAt(NOW, 900, range, 'Asia/Vladivostok'), NOW + 900, range);
+    }
+    assert.equal(m.nextRefreshAt(NOW, 60, 'today', 'Asia/Vladivostok'), NOW + 60);
+});
+
+test('Live keeps no refresh time: its stream updates itself', () => {
+    assert.equal(m.nextRefreshAt(NOW, 900, 'live', 'Asia/Vladivostok'), null);
+});
+
+test("Today and Yesterday are read again 5 s after the firewall's midnight when that comes first", () => {
+    const late = MID - 120;                                        // Wed 23:58:00 VST
+    assert.equal(m.MIDNIGHT_DELAY, 5);
+    assert.equal(m.nextRefreshAt(late, 900, 'today', 'Asia/Vladivostok'), MID + 5);
+    assert.equal(m.nextRefreshAt(late, 900, 'yesterday', 'Asia/Vladivostok'), MID + 5);
+    assert.equal(m.nextRefreshAt(late, 60, 'today', 'Asia/Vladivostok'), late + 60);     // the interval first
+    assert.equal(m.nextRefreshAt(late, 900, '24h', 'Asia/Vladivostok'), late + 900);     // a rolling window
+    assert.equal(m.nextRefreshAt(late, 900, 'custom', 'Asia/Vladivostok'), late + 900);  // a fixed one
+});
+
+test("in a day's first seconds its own midnight refresh is still to come", () => {
+    assert.equal(m.nextRefreshAt(MID, 900, 'today', 'Asia/Vladivostok'), MID + 5);
+    assert.equal(m.nextRefreshAt(MID + 4, 900, 'today', 'Asia/Vladivostok'), MID + 5);
+    assert.equal(m.nextRefreshAt(MID + 5, 2 * 86400, 'today', 'Asia/Vladivostok'), MID + 86400 + 5);
+});
+
+test("the midnight is the firewall's, not the browser's", () => {
+    // 13:58 VST is 23:58 in the browser, on New York time: its midnight is not the firewall's
+    assert.equal(m.nextRefreshAt(S(3, 58), 900, 'today', 'Asia/Vladivostok'), S(3, 58) + 900);
+    // Sydney after its clocks went forward: from Sun 4 Oct 23:58 AEDT, Mon 00:00 AEDT is 2 minutes on
+    assert.equal(m.nextRefreshAt(U(10, 4, 12) + 58 * 60, 900, 'today', 'Australia/Sydney'), U(10, 4, 13) + 5);
+});
+
+// the widget's own timer, under mock timers
+const settle = async () => { for (let i = 0; i < 50; i++) await new Promise(r => setImmediate(r)); };
+const rawAnswers = flowsOnly((url) => {
+    const x = /\/totals\/(\d+)\/(\d+)$/.exec(url);
+    return x ? totalsAnswer(+x[1], +x[2]) : null;
+});
+function timed(nowS, fn) {
+    return async (t) => {
+        mock.timers.enable({ apis: ['setTimeout', 'Date'], now: nowS * 1000 });
+        try { await fn(t); } finally { mock.timers.reset(); }
+    };
+}
+
+test('an open Today moves to the new day 5 s after midnight, whatever the refresh interval', timed(MID - 120, async () => {
+    const w = widget('today');
+    w.tickTimeout = 900;
+    reply = rawAnswers;
+    await w.refresh();
+    assert.equal(requests[requests.length - 1], `${FLOWS_API}/totals/${S(14, 0, 22)}/${MID - 120}`);
+    const before = requests.length;
+    mock.timers.tick(124 * 1000);                                   // Thu 00:00:04: not yet
+    await settle();
+    assert.equal(requests.length, before);
+    mock.timers.tick(1000);                                         // Thu 00:00:05
+    await settle();
+    assert.deepEqual(requests.slice(before), [`${FLOWS_API}/totals/${MID}/${MID + 5}`]);
+    assert.match(w._windowCaption().text, /^Thu Sep 24 00:00:00 VST 2026 {2}→ {2}Thu Sep 24 00:00:05 VST 2026/);
+    w.onWidgetClose();
+}));
+
+test('a changed refresh interval applies at once, without a reload', timed(NOW, async () => {
+    const w = new TopDevices({});
+    let interval = '900';
+    w.getWidgetConfig = async () => ({ refreshInterval: interval, defaultRange: '24h', defaultChart: 'none' });
+    w.ajaxCall = async (url) => (url.endsWith('/flows/zone') ? { timezone: 'Asia/Vladivostok' } : { rows: [] });
+    reply = rawAnswers;
+    await w.onMarkupRendered();
+    interval = '60';                                                // the options dialog's OK
+    await w.onWidgetOptionsChanged();
+    const before = requests.length;
+    mock.timers.tick(59 * 1000);
+    await settle();
+    assert.equal(requests.length, before);
+    mock.timers.tick(1000);
+    await settle();
+    assert.deepEqual(requests.slice(before), [`${FLOWS_API}/totals/${NOW + 60 - 86400}/${NOW + 60}`]);
+    w.onWidgetClose();
+}));
+
+test("opening the widget reads once: the dashboard's own tick, straight after, reads nothing", timed(NOW, async () => {
+    const w = new TopDevices({});
+    w.getWidgetConfig = async () => ({ refreshInterval: '900', defaultRange: '24h', defaultChart: 'none' });
+    w.ajaxCall = async (url) => (url.endsWith('/flows/zone') ? { timezone: 'Asia/Vladivostok' } : { rows: [] });
+    reply = rawAnswers;
+    const before = requests.length;
+    await w.onMarkupRendered();                                      // as the dashboard opens a widget:
+    await w.onWidgetTick();                                          // markup, then a tick at once
+    assert.deepEqual(requests.slice(before), [`${FLOWS_API}/totals/${NOW - 86400}/${NOW}`]);
+    mock.timers.tick(900 * 1000);                                   // the dashboard's next tick: still the widget's own
+    await w.onWidgetTick();
+    await settle();
+    assert.equal(requests.length, before + 2);
+    w.onWidgetClose();
+}));
+
+test('a closed widget refreshes no more, even when a refresh ends after it closed', timed(NOW, async () => {
+    const w = widget('24h');
+    w.tickTimeout = 60;
+    let release;
+    reply = flowsOnly((url) => new Promise((r) => { release = () => r(rawAnswers(url)); }));
+    const loading = w.refresh();
+    await settle();
+    w.onWidgetClose();
+    release();
+    await loading;
+    const before = requests.length;
+    mock.timers.tick(3600 * 1000);
+    await settle();
+    assert.equal(requests.length, before);
+    reply = rawAnswers;
+    const w2 = widget('24h');
+    w2.tickTimeout = 60;
+    await w2.refresh();
+    w2.onWidgetClose();
+    const before2 = requests.length;
+    mock.timers.tick(3600 * 1000);
+    await settle();
+    assert.equal(requests.length, before2);
+}));
+
+test('entering Live drops the pending refresh: the stream updates itself', timed(NOW, async () => {
+    const w = widget('24h');
+    w.tickTimeout = 60;
+    reply = rawAnswers;
+    await w.refresh();
+    let started = 0;
+    w._startLive = async () => { started++; };
+    w.state.range = 'live';
+    await w.refresh();
+    const before = requests.length;
+    mock.timers.tick(3600 * 1000);
+    await settle();
+    assert.equal(started, 1);
+    assert.equal(requests.length, before);
+}));
+
+test('Today in its first second reads nothing, and says the day has only just begun', async () => {
+    for (const scope of ['all', 'wan']) {
+        const w = widget('today', scope);
+        reply = serve;
+        const before = requests.length;
+        await w._load(MID * 1000);                                   // Thu 24 Sep 00:00:00 VST
+        assert.deepEqual(requests.slice(before), [], scope);        // internet only read the whole day before
+        assert.deepEqual(w.state.rows, []);
+        const tail = scope === 'wan' ? 'internet only (via em0)' : 'all traffic';
+        assert.deepEqual(w._windowCaption(), {
+            text: `Thu Sep 24 00:00:00 VST 2026  →  Thu Sep 24 00:00:00 VST 2026 · ${tail}`,
+            note: 'Today has only just begun' }, scope);
+        await w._detailsData('192.168.1.10');
+        assert.equal(requests.length, before, scope);
+    }
+});
+
+test("with the firewall's zone unknown, the caption says whose midnights these are", inBrowserZone('Asia/Kolkata', async () => {
+    const w = widget('today');
+    w.tz = undefined;
+    reply = flowsOnly(() => totalsAnswer(S(18, 30, 22), S(6, 30)));
+    await w._load(S(6, 30) * 1000);
+    const c = w._windowCaption();
+    assert.equal(c.text, 'Wed Sep 23 00:00:00 IST 2026  →  Wed Sep 23 12:00:00 IST 2026 · all traffic');
+    // named as the browser's Intl names it: Chrome and Node still say Asia/Calcutta
+    assert.match(c.note, /^Could not read the firewall's time zone: days follow this browser's \(Asia\/(Kolkata|Calcutta)\)$/);
+}));
+
+test('the zone note comes first when there is another', inBrowserZone('Asia/Kolkata', async () => {
+    const w = widget('today');
+    w.tz = undefined;
+    reply = serve;                                                   // no raw answer: NetFlow's records
+    await w._load(S(6, 30) * 1000);
+    assert.match(w._windowCaption().note,
+        /^Could not read the firewall's time zone: days follow this browser's \(Asia\/(Kolkata|Calcutta)\) · The raw flow log could not be read/);
+}));
+
+test('a refresh asks the firewall for its zone again until it answers', async () => {
+    const w = widget('24h');
+    w.tz = undefined;
+    let answer = null;
+    const asked = [];
+    w.ajaxCall = async (url) => {
+        if (!url.endsWith('/flows/zone')) return { rows: [] };
+        asked.push(url);
+        if (!answer) throw new Error('timeout');
+        return answer;
+    };
+    reply = rawAnswers;
+    await w.refresh();
+    assert.equal(w.tz, undefined);
+    answer = { timezone: 'Asia/Vladivostok' };
+    await w.refresh();
+    assert.equal(w.tz, 'Asia/Vladivostok');
+    await w.refresh();
+    assert.equal(asked.length, 2);                                   // asked no more once it answered
+    assert.equal(w._windowCaption().note, null);
+    w.onWidgetClose();
 });

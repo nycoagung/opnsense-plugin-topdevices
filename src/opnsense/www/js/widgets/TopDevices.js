@@ -36,8 +36,16 @@
  *
  * TIME ZONE: midnights, the custom range fields and every caption use the zone
  * set on the firewall (System: Settings: General), from /api/topdevices/flows/zone,
- * whatever the browser's own; the browser's only when the firewall does not say.
+ * whatever the browser's own; the browser's only when the firewall does not say,
+ * which the caption then states, and the zone is asked for again at each refresh.
  * Design: docs/superpowers/specs/2026-09-24-keep-flow-log-design.md §7
+ *
+ * REFRESH: the widget keeps its own timer (nextRefreshAt) instead of the dashboard's
+ * tick, which runs at the interval of the page load: a changed refresh interval
+ * applies at once, and Today and Yesterday move on just after the firewall's midnight.
+ *
+ * Byte counts are decimal (1 GB = 10^9 bytes), as the dashboard's own widgets and an
+ * ISP's meter count them.
  *
  * LIVE: the "Live" range shows current rates instead, streamed once per
  * interval by the plugin's own sampler (scripts/topdevices/live.py) through
@@ -229,6 +237,9 @@ const TOTALS_KEPT = [[300, 3600], [3600, DAY], [DAY, TOTALS_DAYS * DAY]];     //
 // window to the nearest bucket boundaries first gives a range the buckets that
 // mostly cover it - Yesterday one day, not two - and an exact span to show.
 function snapWindow(from, to, now, res) {
+    // an empty window - Today in its first second - reads nothing: the bucket it
+    // starts in would be the day before's, for internet only
+    if (to <= from) return [from, from];
     const near = (t) => Math.round(t / res) * res;
     let start = near(from);
     let end = to >= now ? now : Math.min(near(to), now);
@@ -328,6 +339,11 @@ export function fmtSpan(seconds) {
 
 const FALLBACK_NOTE = "The raw flow log could not be read: showing NetFlow's records";
 
+// the browser's own time zone, by name, as Intl has it
+function browserZone() {
+    try { return new Intl.DateTimeFormat().resolvedOptions().timeZone || 'its own'; } catch (e) { return 'its own'; }
+}
+
 export function fmtRate(bps) {
     if (!bps || bps < 1) return '0 b/s';
     const units = ['b/s', 'kb/s', 'Mb/s', 'Gb/s'];
@@ -415,6 +431,25 @@ export function exportStart(text, nowS, tz) {
     return x ? Date.UTC(+x[1], +x[2] - 1, +x[3], +x[4], +x[5], +x[6]) / 1000 - offsetAt(nowS, tz) : null;
 }
 
+/* ---------- when to refresh next: a pure helper (tests/netflow_ranges.test.mjs) ---------- */
+
+// Today and Yesterday change at midnight on the firewall. An open widget reads them
+// again this many seconds after it: a browser clock a little ahead of the firewall's
+// would otherwise ask flows.py for a day that has not begun there yet.
+export const MIDNIGHT_DELAY = 5;
+
+// When to refresh next, in epoch seconds, after one at nowS: a refresh interval on,
+// and for Today and Yesterday no later than just past the next midnight in tz. Live
+// streams its own updates: null.
+export function nextRefreshAt(nowS, intervalS, range, tz) {
+    if (range === 'live') return null;
+    const next = nowS + intervalS;
+    if (range !== 'today' && range !== 'yesterday') return next;
+    const soon = localMidnight(nowS, 0, tz) + MIDNIGHT_DELAY;        // in the day's first seconds, its own
+    const midnight = soon > nowS ? soon : localMidnight(nowS, -1, tz) + MIDNIGHT_DELAY;
+    return Math.min(next, midnight);
+}
+
 export default class TopDevices extends BaseWidget {
 
     constructor(config) {
@@ -438,6 +473,7 @@ export default class TopDevices extends BaseWidget {
         this.ptrCache = {};       // peer ip -> reverse-DNS name ('' = none)
         this.chartObj = null;
         this.loading = false;
+        this.refreshTimer = null;  // the next refresh (_schedule)
         this.live = {
             interval: 1, view: null, last: null, lastAt: 0, retryAt: 0, status: 'off', token: 0,
             watchdog: null, hover: false, order: [], ptrPending: new Set(), closed: false,
@@ -570,18 +606,20 @@ export default class TopDevices extends BaseWidget {
         return `${WEEKDAYS[dow]} ${MONTHS[mo - 1]} ${p(d)} ${p(h)}:${p(mi)}:${p(s)} ${zoneAbbr(ts, this.tz)} ${y}`;
     }
 
-    // A span's end: one on a midnight prints as the second before, so a day reads 00:00:00 → 23:59:59
-    _endStr(ts) {
-        return this._dateStr(localMidnight(ts, 0, this.tz) === ts ? ts - 1 : ts);
+    // A span's end: one on a midnight prints as the second before, so a day reads
+    // 00:00:00 → 23:59:59 - but an empty span, from its start, ends where it starts
+    _endStr(ts, from = -Infinity) {
+        return this._dateStr(ts > from && localMidnight(ts, 0, this.tz) === ts ? ts - 1 : ts);
     }
 
     /* ---------- helpers ---------- */
 
+    // decimal, as the dashboard's own widgets (BaseWidget._formatBytes) and an ISP's meter count bytes
     _fmt(n) {
         if (!n || n < 1) return '-';
         const u = ['B', 'KB', 'MB', 'GB', 'TB'];
         let i = 0;
-        while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+        while (n >= 1000 && i < u.length - 1) { n /= 1000; i++; }
         return `${n.toFixed(1)} ${u[i]}`;
     }
 
@@ -823,11 +861,20 @@ export default class TopDevices extends BaseWidget {
         this._applyLayout();
     }
 
-    // What the caption says: the raw answer's span, or the export's (spec §4).
+    // What the caption says: the raw answer's span, or the export's (spec §4) - and,
+    // first, when every day and time in it is the browser's, not the firewall's.
     _windowCaption() {
-        if (this.state.request.raw) return this._rawCaption();
-        const c = this._exportCaption();
-        if (this.state.fallback) c.note = c.note ? `${FALLBACK_NOTE} · ${c.note}` : FALLBACK_NOTE;
+        let c;
+        if (this.state.request.raw) {
+            c = this._rawCaption();
+        } else {
+            c = this._exportCaption();
+            if (this.state.fallback) c.note = c.note ? `${FALLBACK_NOTE} · ${c.note}` : FALLBACK_NOTE;
+        }
+        if (this.tz === undefined) {
+            const zone = `Could not read the firewall's time zone: days follow this browser's (${browserZone()})`;
+            c.note = c.note ? `${zone} · ${c.note}` : zone;
+        }
         return c;
     }
 
@@ -839,12 +886,12 @@ export default class TopDevices extends BaseWidget {
         const tail = wan ? ` · internet only (via ${(r.wan || []).join(', ') || 'WAN'})` : ' · all traffic';
         const [a, b] = rawSpan(r, q.scope);
         if (wan && a >= b) {
-            return { text: `${this._dateStr(q.from)}  →  ${this._endStr(q.to)}${tail}`,
+            return { text: `${this._dateStr(q.from)}  →  ${this._endStr(q.to, q.from)}${tail}`,
                      note: 'Internet only: no flows in the log for this range' };
         }
         const note = wan && a > q.from
             ? `Internet only covers the last ${fmtSpan(b - a)}: older flows are no longer in the log` : null;
-        return { text: `${this._dateStr(a)}  →  ${this._endStr(b)}${tail}`, note };
+        return { text: `${this._dateStr(a)}  →  ${this._endStr(b, a)}${tail}`, note };
     }
 
     // The span the figures cover, and a note when the buckets are coarser than
@@ -857,17 +904,19 @@ export default class TopDevices extends BaseWidget {
             : ' · all traffic';
         const days = p.provider === DETAILS ? DETAILS_DAYS : TOTALS_DAYS;
         if (p.end <= p.start) {                  // nothing recorded, or nothing kept: say which
-            return { text: `${this._dateStr(q.from)}  →  ${this._endStr(q.to)}${scopeTxt}`,
-                     note: p.clipped ? `No NetFlow data: only the last ${days} days are kept`
+            // an empty window is Today in its first second: a custom range is never empty (_window)
+            return { text: `${this._dateStr(q.from)}  →  ${this._endStr(q.to, q.from)}${scopeTxt}`,
+                     note: q.to <= q.from ? 'Today has only just begun'
+                         : p.clipped ? `No NetFlow data: only the last ${days} days are kept`
                                      : 'No NetFlow data for this range' };
         }
         // from the oldest bucket that came back: NetFlow may have begun collecting later
         const start = this.state.first > p.start ? this.state.first : p.start;
         if (this.state.first === null) {         // the export came back empty: nothing recorded then
-            return { text: `${this._dateStr(q.from)}  →  ${this._endStr(q.to)}${scopeTxt}`,
+            return { text: `${this._dateStr(q.from)}  →  ${this._endStr(q.to, q.from)}${scopeTxt}`,
                      note: 'No NetFlow data for this range' };
         }
-        const text = `${this._dateStr(start)}  →  ${this._endStr(p.end)}${scopeTxt}`;
+        const text = `${this._dateStr(start)}  →  ${this._endStr(p.end, start)}${scopeTxt}`;
         let note = null;
         // off by an hour, or by a tenth of a shorter range: 10:00 -> 10:05 is not the last hour
         const off = Math.max(Math.abs(p.start - q.from), Math.abs(p.end - q.to));
@@ -1186,13 +1235,20 @@ export default class TopDevices extends BaseWidget {
     }
 
     async refresh(force) {
-        // Live restarts its stream: the header refresh button and an options change land here
-        if (this.state.range === 'live') { await this._startLive(); return; }
+        // Live restarts its stream: the header refresh button and an options change land
+        // here. It updates itself, so no refresh stays pending.
+        if (this.state.range === 'live') { this._schedule(); await this._startLive(); return; }
         if (this.loading) return;
         this.loading = true;
         this._busy(true);
         if (force) { this.cache = {}; this._device = null; }   // an explicit refresh reads everything again
         try {
+            // the firewall's zone, asked for again until it answers (_loadZone); exports
+            // read without it are undated (_export), so none is kept once it has
+            if (this.tz === undefined) {
+                await this._loadZone();
+                if (this.tz !== undefined) this.cache = {};
+            }
             await this._loadNames();
             if (await this._load()) {
                 await this.render();
@@ -1200,13 +1256,25 @@ export default class TopDevices extends BaseWidget {
             }
         } catch (e) {
             this._loadFailed();
-        } finally { this.loading = false; this._busy(false); }
+        } finally { this.loading = false; this._busy(false); this._schedule(); }
     }
 
-    async onWidgetTick() {
-        if (this.state.range === 'live') return;      // the stream refreshes itself
-        await this.refresh();
+    // One timer for the next refresh (nextRefreshAt), set again after each one, and
+    // at once when the refresh interval changes (onWidgetOptionsChanged refreshes).
+    _schedule() {
+        clearTimeout(this.refreshTimer);
+        this.refreshTimer = null;
+        if (this.live.closed) return;                 // the widget is gone
+        const now = Math.floor(Date.now() / 1000);
+        const at = nextRefreshAt(now, this.tickTimeout > 0 ? this.tickTimeout : 900, this.state.range, this.tz);
+        if (at === null) return;
+        this.refreshTimer = setTimeout(() => { this.refreshTimer = null; this.refresh(); }, (at - now) * 1000);
     }
+
+    // The dashboard's tick keeps the interval of the page load, and its first comes
+    // straight after onMarkupRendered, which has just loaded: the widget keeps its own
+    // time instead (_schedule).
+    async onWidgetTick() { }
 
     async onWidgetOptionsChanged() { await this.onMarkupRendered(); }
 
@@ -1996,6 +2064,8 @@ export default class TopDevices extends BaseWidget {
 
     onWidgetClose() {
         this.live.closed = true;            // before _stopLive, so no late timer can reopen
+        clearTimeout(this.refreshTimer);    // and no refresh can come after the widget
+        this.refreshTimer = null;
         this._stopLive();
         super.onWidgetClose();              // BaseWidget closes the EventSource here
         // its menu lives under <body> (data-container), outside the widget being removed
