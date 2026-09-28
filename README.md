@@ -562,7 +562,11 @@ and the 20th row opened the device panel beside the row and wholly on screen (0.
 design put it at the table's top, here off screen); its loading placeholder already
 sits beside the row, and sorting by name moved the panel with its row. The loading
 spinner shows about 150 px below the widget's top, and stays in view (98 px below the
-top of what is shown) in a 600 px widget scrolled by 400 px.
+top of what is shown) in a 600 px widget scrolled by 400 px. Installed from the branch
+on the reference install on 2026-09-28: the served widget and its metadata are
+byte-identical to the branch, the flows and Live endpoints answer as 0.3.3, and the
+widget, stuck at its saved 371 px before, was dragged taller and saved: the dashboard
+now holds it at 771 px, the height of all its rows at the time.
 
 **Automated tests** cover the live sampler, the widget's live logic, since 0.1.2
 the NetFlow ranges, since 0.2.0 the raw flow log reader, run against core's own
