@@ -35,7 +35,14 @@ The active window is shown in OPNsense's own date format, to the second and with
 the timezone, e.g. `Tue Sep 22 12:11:42 VST 2026`. Midnights, the custom range
 fields and every caption follow the time zone set under **System → Settings →
 General**, whatever the browser's own; the browser's is used only when the firewall
-does not say (before 0.3.0 it always was). A day reads `00:00:00 → 23:59:59`.
+does not say (before 0.3.0 it always was), and since 0.3.2 the caption then says so,
+and each refresh asks the firewall again. A day reads `00:00:00 → 23:59:59`.
+
+The widget keeps its own refresh timer (since 0.3.2; the dashboard's own keeps the
+interval the page was opened with): a changed refresh interval applies at once, and
+an open Today or Yesterday moves on to the new day 5 seconds after the firewall's
+midnight, whatever the interval. In a day's very first second, Today says it has only
+just begun.
 
 Nothing is hardcoded. Local networks are derived from the firewall's own
 interface configuration (anything outside RFC1918 is treated as upstream, so a
@@ -61,6 +68,10 @@ total traffic and only megabytes of internet.
 
 The active scope is always printed beside the date range, so a figure is never
 ambiguous about which it is.
+
+Byte counts are decimal - 1 GB is 1,000,000,000 bytes - as the dashboard's own
+widgets and an ISP's meter count them. Before 0.3.2 the widget divided by 1024 and
+still wrote GB, so its figures read about 7% lower.
 
 Totals are keyed on `dst_addr`. NetFlow records each flow once per interface it
 crosses, with source and destination swapped between the two observations, so
@@ -301,6 +312,9 @@ own ten files, so the first run of `configctl topdevices install` (or of the wee
 job) installs everything but `uninstall.sh` and its action, and the next run adds
 them. Nothing else changes in 0.3.1.
 
+**Upgrading from 0.3.1 to 0.3.2:** nothing to do: the same eleven files, and only the
+widget changes. Reload the dashboard to pick it up.
+
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
 fail here — the **GitHub API** costs one rate-limited request per file (60/hour
@@ -345,7 +359,7 @@ Requires a FreeBSD host matching the target ABI (26.7 / amd64 / FreeBSD 15.1):
     cp -R opnsense-plugin-topdevices plugins/net-mgmt/topdevices
     cd plugins/net-mgmt/topdevices && make package
 
-That builds `os-topdevices-0.3.0.pkg`; `pkg add` it on the firewall, or run
+That builds `os-topdevices-0.3.2.pkg`; `pkg add` it on the firewall, or run
 `make upgrade` instead of `make package` to build and install in one step.
 GitHub releases carry source only - no prebuilt package is published.
 
