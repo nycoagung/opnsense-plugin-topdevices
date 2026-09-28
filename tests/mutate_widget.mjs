@@ -247,6 +247,14 @@ const mutants = [
      '            if (false && this.tzUnknown === undefined'],
     ["no word that days follow the browser's zone", '        if (this.state.request.tz === undefined) {\n            const why', '        if (false) {\n            const why'],
     ['the zone note after the others', 'c.note = c.note ? `${zone} · ${c.note}` : zone;', 'c.note = c.note ? `${c.note} · ${zone}` : zone;'],
+    // 0.3.3: the table is as tall as its rows
+    ['the table capped at 420 px again in the markup', '<div class="td-tablewrap" style="flex:1 1 0;min-width:0;">',
+     '<div class="td-tablewrap" style="flex:1 1 0;min-width:0;max-height:420px;overflow-y:auto;">'],
+    ['the table given a scroll box of its own', '<div class="td-tablewrap" style="flex:1 1 0;min-width:0;">',
+     '<div class="td-tablewrap" style="flex:1 1 0;min-width:0;overflow-y:auto;">'],
+    ['the table capped at 420 px again by the layout', "            overflowY: narrow ? '' : 'auto'\n        });\n        // The table itself",
+     "            overflowY: narrow ? '' : 'auto'\n        });\n        $('.td-tablewrap').css({ maxHeight: narrow ? '' : '420px' });\n        // The table itself"],
+    ['the device panel loses its own scroll box', "            maxHeight: narrow ? '' : '420px',", "            maxHeight: '',"],
     // the Live detail panel resizes the widget when it appears or grows
     ['Live refits only when the row count changes', '        const shape = `${rows.length}|${lines}`;',
      '        const shape = `${rows.length}`;'],

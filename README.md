@@ -28,7 +28,7 @@ NetFlow/Insight aggregator. No extra collector required.
 - **Refresh control** in the widget header, and a loading overlay while the
   export is being fetched
 - The widget **resizes to its content** after filtering, via gridstack's
-  `resizeToContent`
+  `resizeToContent`, and can be made as tall as all its rows (see *Height*)
 - **Configurable** — rows to show, default range, default chart, refresh interval
 
 The active window is shown in OPNsense's own date format, to the second and with
@@ -47,6 +47,14 @@ the interval, by whichever of the browser's and the firewall's clocks reaches it
 for Yesterday; a browser more than five minutes fast cannot read Today, Last hour or
 Last 24 hours from the flow log at all, and Today then moves on at its own midnight).
 In a day's very first second, Today says it has only just begun.
+
+**Height.** The table has no height of its own (since 0.3.3; before, it stopped at
+420 px): the widget is as tall as the rows it shows, and you choose how much of that
+to see. Under **Edit Dashboard**, drag its bottom edge, then **Save**. A widget
+shorter than its rows scrolls as a whole, with the table header staying on top. The
+dashboard keeps the height you save as the widget's *maximum* on every load, so a
+height saved while the widget was showing fewer rows stays in force until you drag
+it taller and save again.
 
 Nothing is hardcoded. Local networks are derived from the firewall's own
 interface configuration (anything outside RFC1918 is treated as upstream, so a
@@ -326,6 +334,9 @@ them. Nothing else changes in 0.3.1.
 widget changes (the scripts only carry the new version number). Reload the dashboard
 to pick it up.
 
+**Upgrading from 0.3.2 to 0.3.3:** likewise nothing to do. A widget saved at a small
+height keeps it until you drag it taller under Edit Dashboard and save (see *Height*).
+
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
 fail here — the **GitHub API** costs one rate-limited request per file (60/hour
@@ -530,6 +541,20 @@ configctl and daemon; ten planted bugs were all caught.
 Not verified: a real uninstall on the firewall, and so the deletion of the weekly
 job through core's Cron model (the PHP runs only for real; its filters were read
 against core's model and the job's stored fields).
+
+**Time zone and 0.3.2**, on the reference install on 2026-09-28. Today, Yesterday and
+Last 24 hours were checked against core's own records before 0.3.2: their edges fell
+on the firewall's midnights from 7 browser zones, and the hour after midnight agreed
+with core's hourly bucket to 14.7 KB of 8.59 GB (core's database was the side missing
+flows, by 0.05-0.5%, against the WAN's own counters). 0.3.2 was then installed with
+the bootstrap command: the served widget and its metadata are byte-identical to the
+release, and the flows and Live endpoints answer as 0.3.2.
+
+**Height (0.3.3)**, in headless Chrome with the firewall's own dashboard code, CSS and
+gridstack 10.2.1, the reference install's saved layout (a 371 px maximum) and 20 rows:
+dragged in Edit Dashboard, 0.3.2 went no taller than 718 px, its table stopping at
+420 px of 918 px of rows; 0.3.3 reaches the full 1,216 px, and at 712 px it scrolls
+with the table header on top.
 
 **Automated tests** cover the live sampler, the widget's live logic, since 0.1.2
 the NetFlow ranges, since 0.2.0 the raw flow log reader, run against core's own

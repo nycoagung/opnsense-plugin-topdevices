@@ -34,6 +34,8 @@ const requests = [];
 let lastAjax = null;                 // the last $.ajax options
 let reply = () => '';
 const dom = {};
+const styles = {};                   // selector -> the values .css() last set on it
+let wrapWidth = 0;                   // what $('.td-wrap').width() answers: the widget's width
 const chain = new Proxy(function () {}, {
     get: (t, p) => (p === Symbol.toPrimitive ? () => '' : p === 'length' ? 0 : chain),
     apply: () => chain
@@ -41,6 +43,12 @@ const chain = new Proxy(function () {}, {
 const element = (sel) => new Proxy(function () {}, {
     get: (t, p) => (p === 'html' || p === 'text'
         ? (v) => { if (v !== undefined) dom[sel] = String(v); return chain; }
+        : p === 'css' ? (a, b) => {
+            if (typeof a === 'string' && b === undefined) return '';            // a read: nothing painted
+            styles[sel] = { ...(styles[sel] || {}), ...(typeof a === 'string' ? { [a]: b } : a) };
+            return chain;
+        }
+        : p === 'width' && sel === '.td-wrap' ? () => wrapWidth
         : p === Symbol.toPrimitive ? () => '' : p === 'length' ? 0 : chain),
     apply: () => chain
 });
@@ -1346,3 +1354,45 @@ test("a timed refresh keeps the exports it has: only the refresh button reads ev
     assert.equal(requests.length, before);                            // the same window: read from the cache
     w.onWidgetClose();
 }));
+
+// --- 0.3.3: the widget can be as tall as its rows ---
+
+// the HTML getMarkup() hands to $(): the widget's own markup
+function markupOf(w) {
+    const real = globalThis.$;
+    let html = null;
+    globalThis.$ = new Proxy(real, { apply: (t, self, args) => {
+        if (typeof args[0] === 'string' && args[0].includes('td-wrap')) html = args[0];
+        return Reflect.apply(t, self, args);
+    } });
+    try { w.getMarkup(); } finally { globalThis.$ = real; }
+    return html;
+}
+
+test('the table has no height of its own, so the widget can be made as tall as its rows', () => {
+    const w = widget('24h');
+    const wrap = /<div class="td-tablewrap" style="([^"]*)"/.exec(markupOf(w) || '');
+    assert.ok(wrap, 'the table wrapper is in the markup');
+    assert.doesNotMatch(wrap[1], /max-height|overflow/);     // no scroll box of its own: the widget's scrolls
+    try {
+        for (const width of [1200, 600]) {                    // side by side, and stacked below 780 px
+            wrapWidth = width;
+            delete styles['.td-tablewrap'];
+            w._applyLayout();
+            assert.ok(!(styles['.td-tablewrap'] || {}).maxHeight, `at ${width} px`);
+        }
+    } finally { wrapWidth = 0; }
+});
+
+test('the device panel beside the table keeps its own scroll box; stacked under it, it has none', () => {
+    const w = widget('24h');
+    w.state.selected = '192.168.1.10';
+    try {
+        wrapWidth = 1200;
+        w._applyLayout();
+        assert.deepEqual([styles['.td-details'].maxHeight, styles['.td-details'].overflowY], ['420px', 'auto']);
+        wrapWidth = 600;
+        w._applyLayout();
+        assert.deepEqual([styles['.td-details'].maxHeight, styles['.td-details'].overflowY], ['', '']);
+    } finally { wrapWidth = 0; }
+});
