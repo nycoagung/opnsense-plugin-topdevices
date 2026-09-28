@@ -48,13 +48,15 @@ for Yesterday; a browser more than five minutes fast cannot read Today, Last hou
 Last 24 hours from the flow log at all, and Today then moves on at its own midnight).
 In a day's very first second, Today says it has only just begun.
 
-**Height.** The table has no height of its own (since 0.3.3; before, it stopped at
-420 px): the widget is as tall as the rows it shows, and you choose how much of that
-to see. Under **Edit Dashboard**, drag its bottom edge, then **Save**. A widget
-shorter than its rows scrolls as a whole, with the table header staying on top. The
+**Height.** The table has no height of its own (since 0.3.3; before, in a widget
+wider than 780 px, it stopped at 420 px): the widget is as tall as the rows it shows,
+and you choose how much of that to see. Under **Edit Dashboard**, drag its bottom
+edge, then **Save**. A widget shorter than its rows scrolls as a whole, with the
+table header staying on top, and a newly added one opens at up to 1,000 px. The
 dashboard keeps the height you save as the widget's *maximum* on every load, so a
 height saved while the widget was showing fewer rows stays in force until you drag
-it taller and save again.
+it taller and save again. Beside a tall table, a device's panel opens level with its
+row, and never reaches below the table.
 
 Nothing is hardcoded. Local networks are derived from the firewall's own
 interface configuration (anything outside RFC1918 is treated as upstream, so a
@@ -545,8 +547,9 @@ against core's model and the job's stored fields).
 **Time zone and 0.3.2**, on the reference install on 2026-09-28. Today, Yesterday and
 Last 24 hours were checked against core's own records before 0.3.2: their edges fell
 on the firewall's midnights from 7 browser zones, and the hour after midnight agreed
-with core's hourly bucket to within 0.0002% (core's database was the side missing
-flows, by 0.05-0.5%, against the WAN's own counters). 0.3.2 was then installed with
+with core's hourly bucket to within 0.0002%. Where they differed, core's database
+was the side missing flows: 0.05-0.5% below the raw log over the windows compared, and
+the WAN interface's own counters sided with the raw log. 0.3.2 was then installed with
 the bootstrap command: the served widget and its metadata are byte-identical to the
 release, and the flows and Live endpoints answer as 0.3.2.
 
@@ -554,7 +557,10 @@ release, and the flows and Live endpoints answer as 0.3.2.
 gridstack 10.2.1, a saved layout with a small maximum height, and 20 rows:
 dragged in Edit Dashboard, 0.3.2 went no taller than 718 px, its table stopping at
 420 px of 918 px of rows; 0.3.3 reaches the full 1,216 px, and at 712 px it scrolls
-with the table header on top.
+with the table header on top. In a 1440x800 window at full height, clicking the 18th
+and the 20th row opened the device panel beside the row and wholly on screen (0.3.2's
+design put it at the table's top, here off screen), and the loading spinner shows
+96 px below the widget's top.
 
 **Automated tests** cover the live sampler, the widget's live logic, since 0.1.2
 the NetFlow ranges, since 0.2.0 the raw flow log reader, run against core's own
