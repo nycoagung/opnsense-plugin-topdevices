@@ -499,6 +499,7 @@ export default class TopDevices extends BaseWidget {
         this.loading = false;
         this.refreshTimer = null;  // the next refresh (_schedule)
         this.detailTop = 0;        // px down the table where the device panel starts (_alignDetails)
+        this.detailMaxH = 0;       // the panel's tallest since then, which _applyLayout clamps it by
         this.clockAhead = 0;       // seconds the browser's clock runs ahead of the firewall's (clockAhead)
         this.zoneAskedAt = 0;      // when the zone was last asked for (_loadZone), ms
         this.live = {
@@ -1092,7 +1093,7 @@ export default class TopDevices extends BaseWidget {
         <div class="td-wrap" style="position:relative;">
             <div class="td-loading" style="display:none;position:absolute;top:0;left:0;right:0;bottom:0;
                  background:rgba(127,127,127,0.12);z-index:20;align-items:flex-start;justify-content:center;padding-top:96px;">
-                <i class="fa fa-spinner fa-spin fa-2x" style="opacity:0.7;"></i>
+                <i class="fa fa-spinner fa-spin fa-2x" style="opacity:0.7;position:sticky;top:96px;"></i>
             </div>
             <div class="td-controls" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:center;margin-bottom:6px;">
                 <select class="td-range"   style="${selCss}width:140px;">${ranges}</select>
@@ -1275,7 +1276,6 @@ export default class TopDevices extends BaseWidget {
             self.state.selected = (self.state.selected === ip) ? null : ip;
             await self.render();
             if (self.state.selected) await self.renderDetails(self.state.selected);
-            self._alignDetails();
         });
     }
 
@@ -1391,7 +1391,7 @@ export default class TopDevices extends BaseWidget {
             $('.td-window small').append('<br>').append($('<span class="text-warning"></span>').text(caption.note));
         }
         if (!this.state.selected) $('.td-details').empty();
-        this._applyLayout();
+        this._alignDetails();               // a sort, filter or refresh moves the rows: the panel follows its own
         this._fitHeight();
     }
 
@@ -2008,16 +2008,16 @@ export default class TopDevices extends BaseWidget {
     }
 
     async _renderDetails(ip) {
-        if (this.state.range === 'live') { this._renderLiveDetails(ip); return; }
+        if (this.state.range === 'live') { this._renderLiveDetails(ip); this._alignDetails(); return; }
         const $d = $('.td-details');
         // clicking a device must acknowledge immediately: the aggregate is cheap
         // but resolving peer names can take a second or more
         $d.html('<div style="padding:12px 0;text-align:center;">'
               + '<i class="fa fa-spinner fa-spin" style="opacity:0.6;"></i></div>');
-        this._applyLayout();
+        this._alignDetails();               // the placeholder already beside its row
         let d;
         try { d = await this._detailsData(ip); }
-        catch (e) { $d.html('<small class="text-danger">Detail unavailable for this range</small>'); this._fitHeight(); return; }
+        catch (e) { $d.html('<small class="text-danger">Detail unavailable for this range</small>'); this._alignDetails(); this._fitHeight(); return; }
         if (this.state.selected !== ip) return;
 
         const { peers, ports, down, up } = d;
@@ -2075,13 +2075,15 @@ export default class TopDevices extends BaseWidget {
 
     // Beside a table as tall as its rows (since 0.3.3), the device panel starts level
     // with its device's row - not at the table's top, which a tall widget may have
-    // scrolled out of view. Measured when a panel is drawn for a click or a refresh;
-    // _applyLayout keeps it, clamped inside the table, so Live's re-sorting never moves it.
+    // scrolled out of view. Measured when a panel is drawn, and when the NetFlow table is
+    // re-rendered; _applyLayout keeps it, clamped inside the table, so Live's re-sorting
+    // every second never moves it.
     _alignDetails() {
         const ip = this.state.selected;
         const tr = ip ? $('.td-body').children('tr[data-ip]').filter((i, el) => el.getAttribute('data-ip') === ip)[0] : null;
         const wrap = $('.td-tablewrap')[0];
         this.detailTop = tr && wrap ? Math.round(tr.getBoundingClientRect().top - wrap.getBoundingClientRect().top) : 0;
+        this.detailMaxH = 0;
         this._applyLayout();
     }
 
@@ -2094,7 +2096,10 @@ export default class TopDevices extends BaseWidget {
         let top = 0;                                   // beside the table: level with its row (_alignDetails)
         if (!narrow && show) {
             const wrap = $('.td-tablewrap')[0];
-            top = panelTop(this.detailTop || 0, wrap ? wrap.offsetHeight : 0, $('.td-details').outerHeight() || 0);
+            // clamped by the tallest the panel has been since it was lined up: Live's lists
+            // change length every second, and a panel held at the table's foot must not jump
+            this.detailMaxH = Math.max(this.detailMaxH || 0, $('.td-details').outerHeight() || 0);
+            top = panelTop(this.detailTop || 0, wrap ? wrap.offsetHeight : 0, this.detailMaxH);
         }
         $('.td-main').css({ display: narrow ? 'block' : 'flex' });
         // hidden entirely when nothing is selected, so the table gets the full width
