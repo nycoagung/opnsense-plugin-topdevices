@@ -339,6 +339,9 @@ export function fmtSpan(seconds) {
     return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`;
 }
 
+// The device panel's height beside the table, where it scrolls; stacked under it, it has none.
+const PANEL_MAX_PX = 420;
+
 // Where the device panel starts, in px down the table beside it (0.3.3): level with
 // its device's row, but never so low that it reaches below the table's last row.
 export function panelTop(rowOffset, tableHeight, panelHeight) {
@@ -500,6 +503,7 @@ export default class TopDevices extends BaseWidget {
         this.refreshTimer = null;  // the next refresh (_schedule)
         this.detailTop = 0;        // px down the table where the device panel starts (_alignDetails)
         this.detailMaxH = 0;       // the panel's tallest since then, which _applyLayout clamps it by
+        this.detailIp = null;      // the device those two are for
         this.clockAhead = 0;       // seconds the browser's clock runs ahead of the firewall's (clockAhead)
         this.zoneAskedAt = 0;      // when the zone was last asked for (_loadZone), ms
         this.live = {
@@ -2082,8 +2086,12 @@ export default class TopDevices extends BaseWidget {
         const ip = this.state.selected;
         const tr = ip ? $('.td-body').children('tr[data-ip]').filter((i, el) => el.getAttribute('data-ip') === ip)[0] : null;
         const wrap = $('.td-tablewrap')[0];
-        this.detailTop = tr && wrap ? Math.round(tr.getBoundingClientRect().top - wrap.getBoundingClientRect().top) : 0;
-        this.detailMaxH = 0;
+        // another device: its own height (a refresh redrawing the same one keeps the tallest,
+        // so its placeholder does not drop to the row and back)
+        if (ip !== this.detailIp) { this.detailIp = ip; this.detailMaxH = 0; }
+        // with no row to line up with - a sort took it past the row limit - the panel stays put
+        if (!ip) this.detailTop = 0;
+        else if (tr && wrap) this.detailTop = Math.round(tr.getBoundingClientRect().top - wrap.getBoundingClientRect().top);
         this._applyLayout();
     }
 
@@ -2098,7 +2106,9 @@ export default class TopDevices extends BaseWidget {
             const wrap = $('.td-tablewrap')[0];
             // clamped by the tallest the panel has been since it was lined up: Live's lists
             // change length every second, and a panel held at the table's foot must not jump
-            this.detailMaxH = Math.max(this.detailMaxH || 0, $('.td-details').outerHeight() || 0);
+            // (measured before this layout applies: never more than its limit beside the table,
+            // which a panel stacked under it, as it may just have been, does not have)
+            this.detailMaxH = Math.max(this.detailMaxH || 0, Math.min(PANEL_MAX_PX, $('.td-details').outerHeight() || 0));
             top = panelTop(this.detailTop || 0, wrap ? wrap.offsetHeight : 0, this.detailMaxH);
         }
         $('.td-main').css({ display: narrow ? 'block' : 'flex' });
@@ -2109,7 +2119,7 @@ export default class TopDevices extends BaseWidget {
             width: narrow ? '100%' : '',
             position: narrow ? 'static' : 'sticky',
             marginTop: narrow ? '8px' : (top ? `${top}px` : ''),
-            maxHeight: narrow ? '' : '420px',
+            maxHeight: narrow ? '' : `${PANEL_MAX_PX}px`,
             overflowY: narrow ? '' : 'auto'
         });
         // The table itself has no height (since 0.3.3): it is as tall as its rows, and

@@ -1541,3 +1541,50 @@ test("near the table's foot, the panel is kept inside the table once its lists a
         assert.equal(styles['.td-details'].marginTop, '531px');       // its foot on the table's
     } finally { unlaid(); }
 });
+
+test("a refresh redrawing the same device's panel keeps it where it was, placeholder and all", async () => {
+    let answer;
+    const { w } = await loadRaw('1h', (url) => (url.includes('/device/') ? new Promise((r) => { answer = r; })
+        : totalsAnswer(NOW - 3600, NOW)));
+    laidOut(w, 800);                                                   // near the foot: held at 531 px
+    try {
+        let drawing = w.renderDetails('192.168.1.10');
+        await tick(); await tick();
+        answer(deviceAnswer(NOW - 3600, NOW)); await drawing;
+        assert.equal(styles['.td-details'].marginTop, '531px');
+        boxes['.td-details'] = { height: 50 };                         // the refresh's placeholder
+        drawing = w.renderDetails('192.168.1.10');
+        await tick(); await tick();
+        assert.equal(styles['.td-details'].marginTop, '531px');       // not down at its row and back
+        boxes['.td-details'] = { height: 369 };
+        answer(deviceAnswer(NOW - 3600, NOW)); await drawing;
+        assert.equal(styles['.td-details'].marginTop, '531px');
+    } finally { unlaid(); }
+});
+
+test('back beside the table after being stacked under it, the panel is lined up by its height beside it', () => {
+    const w = widget('24h');
+    laidOut(w, 400);
+    try {
+        w._alignDetails();
+        assert.equal(styles['.td-details'].marginTop, '300px');
+        wrapWidth = 600;
+        boxes['.td-details'] = { height: 1529 };                       // stacked, with no height limit of its own
+        w._applyLayout();
+        wrapWidth = 1200;                                              // wide again: measured before its 420 px limit returns
+        w._applyLayout();
+        assert.equal(styles['.td-details'].marginTop, '300px');
+    } finally { unlaid(); }
+});
+
+test("a panel whose row a sort has taken off the table stays where it was", async () => {
+    const { w } = await loadRaw('1h', () => totalsAnswer(NOW - 3600, NOW));
+    laidOut(w, 400);
+    try {
+        await w.render();
+        assert.equal(styles['.td-details'].marginTop, '300px');
+        bodyRows = [{ ip: '192.168.20.5', top: 130 }];                 // its row is past the row limit now
+        await w.render();
+        assert.equal(styles['.td-details'].marginTop, '300px');
+    } finally { unlaid(); }
+});
