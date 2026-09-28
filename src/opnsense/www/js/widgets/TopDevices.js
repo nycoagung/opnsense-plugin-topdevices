@@ -37,15 +37,17 @@
  * TIME ZONE: midnights, the custom range fields and every caption use the zone
  * set on the firewall (System: Settings: General), from /api/topdevices/flows/zone,
  * whatever the browser's own; the browser's only when the firewall does not say,
- * which the caption then states, and the zone is asked for again at later refreshes.
+ * which the caption then states; a zone that could not be read is asked for again at
+ * later refreshes (one this browser does not know, never: it cannot change).
  * Design: docs/superpowers/specs/2026-09-24-keep-flow-log-design.md §7
  *
  * REFRESH: the widget keeps its own timer (nextRefreshAt) instead of the dashboard's
  * tick, which runs at the interval of the page load: a changed refresh interval
- * applies at once, and Today and Yesterday move on just after the firewall's midnight.
+ * applies at once, and Today and Yesterday move on just after midnight, by whichever
+ * of the browser's and the firewall's clocks reaches it last.
  *
- * Byte counts are decimal (1 GB = 10^9 bytes), as the dashboard's own widgets and an
- * ISP's meter count them.
+ * Byte counts are decimal (1 GB = 10^9 bytes), as core's BaseWidget._formatBytes and
+ * an ISP's meter count them.
  *
  * LIVE: the "Live" range shows current rates instead, streamed once per
  * interval by the plugin's own sampler (scripts/topdevices/live.py) through
@@ -338,7 +340,9 @@ export function fmtSpan(seconds) {
 }
 
 const FALLBACK_NOTE = "The raw flow log could not be read: showing NetFlow's records";
-const ZONE_RETRY_MS = 10000;   // a refresh asks for an unknown zone again once this long has passed since the last ask
+// a refresh asks again for a zone it could not read once this long has passed since the last ask
+// (never for one this browser does not know: tzUnknown)
+const ZONE_RETRY_MS = 10000;
 
 // the browser's own time zone, by name, as Intl has it
 function browserZone() {
@@ -440,9 +444,10 @@ export const MIDNIGHT_DELAY = 5;
 
 // When to refresh next, in epoch seconds of the browser's clock, after one at nowS: a
 // refresh interval on, and for Today and Yesterday no later than just past the next
-// midnight in tz on the firewall's clock - aheadS later, when the browser's clock runs
-// that far ahead of it, since flows.py answers a day not begun on its own clock with an
-// error. Live streams its own updates: null.
+// midnight in tz - aheadS later, when the browser's clock runs that far ahead of the
+// firewall's, since flows.py answers a day its own clock has not begun with an error.
+// A refresh that would fall between the two midnights waits for the later one. Live
+// streams its own updates: null.
 export function nextRefreshAt(nowS, intervalS, range, tz, aheadS = 0) {
     if (range === 'live') return null;
     const next = nowS + intervalS;
@@ -450,15 +455,16 @@ export function nextRefreshAt(nowS, intervalS, range, tz, aheadS = 0) {
     const late = MIDNIGHT_DELAY + aheadS;
     const soon = localMidnight(nowS, 0, tz) + late;                   // in the day's first seconds, its own
     const midnight = soon > nowS ? soon : localMidnight(nowS, -1, tz) + late;
-    return Math.min(next, midnight);
+    return next < midnight - late ? next : midnight;
 }
 
 // How far the browser's clock runs ahead of the firewall's, in seconds, from a flows
-// answer's own clock and the browser's when it asked: 0 when it does not, or when the
-// gap is more than flows.py's own slack, which no real answer can show (it refuses the range).
+// answer's own clock and the browser's when it asked: 0 when it does not, or when it is
+// more than an hour ahead - a clock that far off is broken, not steady, and every recent
+// range then fails anyway (flows.py allows five minutes).
 export function clockAhead(askedS, answerNowS) {
     const ahead = askedS - answerNowS;
-    return ahead > 0 && ahead <= 300 ? ahead : 0;
+    return ahead > 0 && ahead <= 3600 ? ahead : 0;
 }
 
 export default class TopDevices extends BaseWidget {
@@ -805,19 +811,21 @@ export default class TopDevices extends BaseWidget {
     async _load(nowMs = Date.now(), scope = this.state.scope) {
         const token = this._loadToken = (this._loadToken || 0) + 1;
         const now = Math.floor(nowMs / 1000);
+        const tz = this.tz;                  // the zone this window is worked out in, whatever arrives meanwhile
         const [from, to] = this._window(this.state.range, nowMs);
         let fallback = false;
         if (rawRange(from, now)) {
             const end = Math.min(to, now);
             let resp = null;
+            const askedS = Math.floor(Date.now() / 1000);   // not `now`: a scope switch reloads an older window
             try { resp = await this._flows(`totals/${from}/${end}`); } catch (e) { resp = null; }
             if (token !== this._loadToken) return false;
             if (resp && resp.all.from <= from) {
-                this.clockAhead = clockAhead(now, resp.now);
+                this.clockAhead = clockAhead(askedS, resp.now);
                 this.state.raw = resp;
                 this.state.plan = null;
                 this.state.fallback = false;
-                this.state.request = { from, to: end, now, scope, raw: true, tz: this.tz };
+                this.state.request = { from, to: end, now, scope, raw: true, tz };
                 this._applyRaw(scope);
                 this._pruneCache(this.state.request);
                 return true;
@@ -840,7 +848,7 @@ export default class TopDevices extends BaseWidget {
         // the oldest bucket that came back: null when nothing did, undefined when none is dated
         const dated = flows.map(r => r.start).filter(t => t !== null);
         this.state.first = !flows.length ? null : dated.length ? dated.reduce((a, b) => Math.min(a, b)) : undefined;
-        this.state.request = { from, to, now, scope, tz: this.tz };   // what the range asked for, in which zone
+        this.state.request = { from, to, now, scope, tz };   // what the range asked for, in which zone
         this.state.raw = null;
         this.state.fallback = fallback;
         this._pruneCache(this.state.request);
@@ -1279,7 +1287,7 @@ export default class TopDevices extends BaseWidget {
                 if (this.state.selected) await this.renderDetails(this.state.selected);
             }
         } catch (e) {
-            this._loadFailed();
+            if (this.state.range !== 'live') this._loadFailed();   // Live, picked meanwhile, draws itself
         } finally { this.loading = false; this._busy(false); this._schedule(); }
     }
 

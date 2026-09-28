@@ -1232,13 +1232,81 @@ test("the midnight refresh waits for the firewall's midnight when the browser's 
     w.onWidgetClose();
 }));
 
-test('how far ahead the browser runs is read from each answer, within flows.py\'s own slack', () => {
+test('how far ahead the browser runs is read from each answer, up to an hour', () => {
     assert.equal(m.clockAhead(NOW, NOW - 30), 30);
     assert.equal(m.clockAhead(NOW, NOW + 30), 0);                    // behind: its own midnight comes later anyway
-    assert.equal(m.clockAhead(NOW, NOW - 301), 0);                   // more than no real answer can show
+    assert.equal(m.clockAhead(NOW, NOW - 320), 320);                 // past flows.py's slack: a Yesterday answer shows it
+    assert.equal(m.clockAhead(NOW, NOW - 3601), 0);                  // a clock that far off is broken, not steady
     assert.equal(m.nextRefreshAt(MID - 120, 900, 'today', 'Australia/Brisbane', 30), MID + 35);
     assert.equal(m.nextRefreshAt(MID + 10, 900, 'today', 'Australia/Brisbane', 30), MID + 35);
 });
+
+test("a refresh due between the browser's midnight and the firewall's waits for the firewall's", () => {
+    assert.equal(m.nextRefreshAt(MID - 10, 12, 'today', 'Australia/Brisbane'), MID + 5);          // due 00:00:02
+    assert.equal(m.nextRefreshAt(MID - 10, 30, 'today', 'Australia/Brisbane', 60), MID + 65);     // due 00:00:20
+    assert.equal(m.nextRefreshAt(MID - 100, 60, 'today', 'Australia/Brisbane', 60), MID - 40);    // due before midnight
+    assert.equal(m.nextRefreshAt(MID - 10, 12, '24h', 'Australia/Brisbane', 60), MID + 2);        // a rolling window
+});
+
+test("the gap is measured when the request goes out, not at the moment of the window it reads", timed(NOW, async () => {
+    const w = widget('24h');
+    reply = flowsOnly((url) => {                                      // the firewall's clock is 30 s behind
+        const [, f, t] = /\/totals\/(\d+)\/(\d+)$/.exec(url);
+        return { ...totalsAnswer(+f, +t), now: NOW - 30 };
+    });
+    await w._load((NOW - 600) * 1000);                                // as a scope switch reloads the window on screen
+    assert.equal(w.clockAhead, 30);
+}));
+
+test("an open Yesterday waits for the firewall's midnight even when its clock is minutes behind", timed(MID - 300, async () => {
+    const w = widget('yesterday');
+    w.tickTimeout = 900;
+    reply = flowsOnly((url) => {                                      // the firewall's clock is 320 s behind
+        const [, f, t] = /\/totals\/(\d+)\/(\d+)$/.exec(url);
+        return { ...totalsAnswer(+f, +t), now: Math.floor(Date.now() / 1000) - 320 };
+    });
+    await w.refresh();
+    const before = requests.length;
+    mock.timers.tick((300 + 324) * 1000);                             // Thu 00:05:24 on the browser's clock
+    await settle();
+    assert.equal(requests.length, before);
+    mock.timers.tick(1000);                                           // 00:05:25: 00:00:05 on the firewall's
+    await settle();
+    assert.deepEqual(requests.slice(before), [`${FLOWS_API}/totals/${MID - 86400}/${MID}`]);
+    w.onWidgetClose();
+}));
+
+for (const range of ['24h', '7d']) {                                  // the raw log, and NetFlow's records
+    test(`the zone a ${range} load began with labels its rows, even when the zone arrives while it runs`, timed(NOW, async () => {
+        const w = widget(range);
+        w.tz = undefined;
+        const pending = [];
+        reply = (url) => new Promise((r) => pending.push(() => r(url.startsWith(`${FLOWS_API}/`) ? rawAnswers(url) : serve(url))));
+        const loading = w._load(Date.now());
+        await settle();
+        w.tz = 'Australia/Brisbane';                                  // an options change's page load learns it meanwhile
+        while (pending.length) { pending.shift()(); await settle(); }
+        await loading;
+        assert.equal(w.state.request.tz, undefined);
+        assert.match(w._windowCaption().note, /^Could not read the firewall's time zone/);
+    }));
+}
+
+test('a NetFlow refresh that fails after Live was picked leaves Live alone', timed(NOW, async () => {
+    const w = widget('24h');
+    let fits = 0;
+    w._fitHeight = () => { fits++; };
+    const pending = [];
+    reply = () => new Promise((r) => pending.push(() => r(null)));    // every read hangs, then fails
+    const loading = w.refresh();
+    await settle();
+    w.state.range = 'live';                                           // the range select, while it loads
+    delete dom['.td-body'];
+    while (pending.length) { pending.shift()(); await settle(); }
+    await loading;
+    assert.equal(dom['.td-body'], undefined);                         // nothing painted over Live
+    assert.equal(fits, 0);
+}));
 
 test('a refresh that fails still sets the next one, and fits the widget to its one-line error', timed(NOW, async () => {
     const w = widget('24h');

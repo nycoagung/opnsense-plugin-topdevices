@@ -41,10 +41,10 @@ not know, which the caption then names. A day reads `00:00:00 → 23:59:59`.
 
 The widget keeps its own refresh timer (since 0.3.2; the dashboard's own keeps the
 interval the page was opened with): a changed refresh interval applies at once, and
-an open Today or Yesterday moves on to the new day 5 seconds after the firewall's
-midnight, whatever the interval - on the firewall's clock: a browser whose clock runs
-ahead of it waits that much longer. In a day's very first second, Today says it has
-only just begun.
+an open Today or Yesterday moves on to the new day 5 seconds after midnight, whatever
+the interval, by whichever of the browser's and the firewall's clocks reaches it last
+(each answer tells the widget how far ahead the browser's clock runs, up to an hour).
+In a day's very first second, Today says it has only just begun.
 
 Nothing is hardcoded. Local networks are derived from the firewall's own
 interface configuration (anything outside RFC1918 is treated as upstream, so a
@@ -71,12 +71,14 @@ traffic is 16.9 MB of internet, and cameras showing 17.5 GB of upload are ~5 MB.
 The active scope is always printed beside the date range, so a figure is never
 ambiguous about which it is.
 
-The widget's byte counts are decimal - 1 GB is 1,000,000,000 bytes - as the
-dashboard's own widgets and an ISP's meter count them. Before 0.3.2 it divided by
-1024 and still wrote GB, so a figure in GB read about 7% lower (5% in MB, 9% in TB).
-Core's own **Reporting → Insight** page still divides by 1024, so it reads that much
-lower than the widget for the same bytes. The storage sizes in this README, such as
-the kept log's 1 GB cap, are binary.
+The widget's byte counts are decimal - 1 GB is 1,000,000,000 bytes - as core's own
+dashboard widget code (`BaseWidget._formatBytes`) and an ISP's meter count them.
+Before 0.3.2 it divided by 1024 and still wrote GB, so a figure in GB read about 7%
+lower (5% in MB, 9% in TB). Some of core's own figures still divide by 1024, and read
+that much lower for the same bytes: **Reporting → Insight**'s Details table and its
+interface totals, and the Interface Statistics widget's tooltip (its table is
+decimal). Insight's graphs and pie charts count in 1000s, as the widget does. The
+storage sizes in this README, such as the kept log's 1 GB cap, are binary.
 
 Totals are keyed on `dst_addr`. NetFlow records each flow once per interface it
 crosses, with source and destination swapped between the two observations, so
