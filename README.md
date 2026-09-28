@@ -36,13 +36,15 @@ the timezone, e.g. `Tue Sep 22 12:11:42 AEST 2026`. Midnights, the custom range
 fields and every caption follow the time zone set under **System → Settings →
 General**, whatever the browser's own; the browser's is used only when the firewall
 does not say (before 0.3.0 it always was), and since 0.3.2 the caption then says so,
-and each refresh asks the firewall again. A day reads `00:00:00 → 23:59:59`.
+and later refreshes ask the firewall again - unless it named a zone this browser does
+not know, which the caption then names. A day reads `00:00:00 → 23:59:59`.
 
 The widget keeps its own refresh timer (since 0.3.2; the dashboard's own keeps the
 interval the page was opened with): a changed refresh interval applies at once, and
 an open Today or Yesterday moves on to the new day 5 seconds after the firewall's
-midnight, whatever the interval. In a day's very first second, Today says it has only
-just begun.
+midnight, whatever the interval - on the firewall's clock: a browser whose clock runs
+ahead of it waits that much longer. In a day's very first second, Today says it has
+only just begun.
 
 Nothing is hardcoded. Local networks are derived from the firewall's own
 interface configuration (anything outside RFC1918 is treated as upstream, so a
@@ -63,15 +65,18 @@ traffic disappears entirely. The upstream device is derived from the interface
 configuration, never hardcoded: for Live and for ranges starting within the last
 50 hours, every interface with a default route or a public address; for older ranges,
 the one addressed outside RFC1918, excluding loopback and link-local. On the
-reference install the difference is dramatic: an NVR showing 53.4 GB of total
-traffic is 16.1 MB of internet, and cameras showing 16.3 GB of upload are ~5 MB.
+reference install the difference is dramatic: an NVR showing 57.3 GB of total
+traffic is 16.9 MB of internet, and cameras showing 17.5 GB of upload are ~5 MB.
 
 The active scope is always printed beside the date range, so a figure is never
 ambiguous about which it is.
 
-Byte counts are decimal - 1 GB is 1,000,000,000 bytes - as the dashboard's own
-widgets and an ISP's meter count them. Before 0.3.2 the widget divided by 1024 and
-still wrote GB, so its figures read about 7% lower.
+The widget's byte counts are decimal - 1 GB is 1,000,000,000 bytes - as the
+dashboard's own widgets and an ISP's meter count them. Before 0.3.2 it divided by
+1024 and still wrote GB, so a figure in GB read about 7% lower (5% in MB, 9% in TB).
+Core's own **Reporting → Insight** page still divides by 1024, so it reads that much
+lower than the widget for the same bytes. The storage sizes in this README, such as
+the kept log's 1 GB cap, are binary.
 
 Totals are keyed on `dst_addr`. NetFlow records each flow once per interface it
 crosses, with source and destination swapped between the two observations, so
@@ -313,7 +318,8 @@ job) installs everything but `uninstall.sh` and its action, and the next run add
 them. Nothing else changes in 0.3.1.
 
 **Upgrading from 0.3.1 to 0.3.2:** nothing to do: the same eleven files, and only the
-widget changes. Reload the dashboard to pick it up.
+widget changes (the scripts only carry the new version number). Reload the dashboard
+to pick it up.
 
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
