@@ -36,6 +36,9 @@ let reply = () => '';
 const dom = {};
 const styles = {};                   // selector -> the values .css() last set on it
 let wrapWidth = 0;                   // what $('.td-wrap').width() answers: the widget's width
+const boxes = {};                    // selector -> { top, height }: what the layout code measures
+let bodyRows = [];                   // the table's rows as the layout code finds them: [{ ip, top }]
+const box = (b) => ({ offsetHeight: b.height || 0, getBoundingClientRect: () => ({ top: b.top || 0 }) });
 const chain = new Proxy(function () {}, {
     get: (t, p) => (p === Symbol.toPrimitive ? () => '' : p === 'length' ? 0 : chain),
     apply: () => chain
@@ -49,6 +52,14 @@ const element = (sel) => new Proxy(function () {}, {
             return chain;
         }
         : p === 'width' && sel === '.td-wrap' ? () => wrapWidth
+        : p === 'outerHeight' ? () => (boxes[sel] || {}).height || 0
+        : p === '0' && boxes[sel] ? box(boxes[sel])
+        : p === 'children' && sel === '.td-body' ? () => new Proxy(function () {}, {    // the rows; any other call chains on
+            get: (t, q) => (q === 'filter'
+                ? (fn) => { const found = bodyRows.map(r => ({ ...box(r), getAttribute: () => r.ip })).filter((el, i) => fn(i, el));
+                            return Object.assign(found, { length: found.length }); }
+                : q === Symbol.toPrimitive ? () => '' : q === 'length' ? 0 : chain),
+            apply: () => chain })
         : p === Symbol.toPrimitive ? () => '' : p === 'length' ? 0 : chain),
     apply: () => chain
 });
@@ -1374,12 +1385,14 @@ test('the table has no height of its own, so the widget can be made as tall as i
     const wrap = /<div class="td-tablewrap" style="([^"]*)"/.exec(markupOf(w) || '');
     assert.ok(wrap, 'the table wrapper is in the markup');
     assert.doesNotMatch(wrap[1], /max-height|overflow/);     // no scroll box of its own: the widget's scrolls
+    assert.match(markupOf(w), /<thead style="[^"]*position:sticky;top:0;/);    // its header sticks to the widget's top
     try {
         for (const width of [1200, 600]) {                    // side by side, and stacked below 780 px
             wrapWidth = width;
             delete styles['.td-tablewrap'];
             w._applyLayout();
-            assert.ok(!(styles['.td-tablewrap'] || {}).maxHeight, `at ${width} px`);
+            const capped = Object.entries(styles['.td-tablewrap'] || {}).filter(([k, v]) => /max-?height|overflow/i.test(k) && v);
+            assert.deepEqual(capped, [], `at ${width} px`);
         }
     } finally { wrapWidth = 0; }
 });
@@ -1391,8 +1404,68 @@ test('the device panel beside the table keeps its own scroll box; stacked under 
         wrapWidth = 1200;
         w._applyLayout();
         assert.deepEqual([styles['.td-details'].maxHeight, styles['.td-details'].overflowY], ['420px', 'auto']);
+        assert.equal(styles['.td-details'].position, 'sticky');
         wrapWidth = 600;
         w._applyLayout();
         assert.deepEqual([styles['.td-details'].maxHeight, styles['.td-details'].overflowY], ['', '']);
     } finally { wrapWidth = 0; }
+});
+
+test('the device panel starts level with the clicked row, and never reaches below the table', () => {
+    assert.equal(m.panelTop(200, 900, 369), 200);            // level with the row
+    assert.equal(m.panelTop(600, 900, 369), 531);            // near the bottom: its foot on the table's
+    assert.equal(m.panelTop(200, 300, 369), 0);              // a table shorter than the panel: at its top
+    assert.equal(m.panelTop(-5, 900, 369), 0);
+});
+
+test('a click lines the panel up with its row; later layouts keep it there, inside the table', () => {
+    const w = widget('24h');
+    w.state.selected = '192.168.1.10';
+    boxes['.td-tablewrap'] = { top: 100, height: 900 };
+    boxes['.td-details'] = { height: 369 };
+    bodyRows = [{ ip: '192.168.20.5', top: 130 }, { ip: '192.168.1.10', top: 400 }];
+    wrapWidth = 1200;
+    try {
+        w._alignDetails();
+        assert.equal(styles['.td-details'].marginTop, '300px');       // beside its row, 300 px down the table
+        bodyRows = [{ ip: '192.168.1.10', top: 130 }];                 // Live re-sorts: the row moves up
+        w._applyLayout();
+        assert.equal(styles['.td-details'].marginTop, '300px');       // the panel stays put
+        boxes['.td-tablewrap'] = { top: 100, height: 500 };            // fewer rows: the table shrinks
+        w._applyLayout();
+        assert.equal(styles['.td-details'].marginTop, '131px');       // kept inside it
+        wrapWidth = 600;                                               // stacked under the table
+        w._applyLayout();
+        assert.equal(styles['.td-details'].marginTop, '8px');
+        wrapWidth = 1200;
+        w.state.selected = null;
+        w._alignDetails();
+        assert.equal(styles['.td-details'].marginTop, '');
+    } finally {
+        wrapWidth = 0; bodyRows = [];
+        delete boxes['.td-tablewrap']; delete boxes['.td-details'];
+    }
+});
+
+test('the loading spinner shows near the top of a widget as tall as its rows', () => {
+    const loading = /<div class="td-loading" style="([^"]*)"/.exec(markupOf(widget('24h')) || '');
+    assert.ok(loading);
+    assert.match(loading[1], /align-items:flex-start;/);
+});
+
+test("a refresh that redraws the device panel lines it up with its row's new place", async () => {
+    const { w } = await loadRaw('1h', (url) => (url.includes('/device/') ? deviceAnswer(NOW - 3600, NOW)
+        : totalsAnswer(NOW - 3600, NOW)));
+    w.state.selected = '192.168.1.10';
+    boxes['.td-tablewrap'] = { top: 100, height: 900 };
+    boxes['.td-details'] = { height: 369 };
+    bodyRows = [{ ip: '192.168.1.10', top: 350 }];
+    wrapWidth = 1200;
+    try {
+        await w.renderDetails('192.168.1.10');
+        assert.equal(styles['.td-details'].marginTop, '250px');
+    } finally {
+        wrapWidth = 0; bodyRows = [];
+        delete boxes['.td-tablewrap']; delete boxes['.td-details'];
+    }
 });
