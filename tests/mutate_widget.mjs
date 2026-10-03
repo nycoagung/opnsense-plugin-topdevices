@@ -1,6 +1,6 @@
 // Prove the widget tests catch the lifecycle mistakes that matter.
 // Run:  node tests/mutate_widget.mjs      (exit status 1 if any mutant survives)
-import { readFileSync, writeFileSync, mkdtempSync, copyFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, copyFileSync, mkdirSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -289,15 +289,21 @@ let survivors = 0;
 for (const [name, from, to] of mutants) {
     const count = source.split(from).length - 1;
     if (count !== 1) { console.log(`BROKEN MUTANT ${name}: anchor found ${count} times`); process.exit(2); }
+    // one throwaway copy per mutant, removed even when the run throws: they used to pile up in $TMPDIR
     const dir = mkdtempSync(join(tmpdir(), 'tdmut-'));
-    mkdirSync(join(dir, 'src/opnsense/www/js/widgets'), { recursive: true });
-    mkdirSync(join(dir, 'tests'));
-    writeFileSync(join(dir, widget), source.replace(from, to));
-    for (const t of TESTS) copyFileSync(join(root, t), join(dir, t));
-    // a mutant that leaves a timer running keeps node alive: a hang counts as caught
-    // (netflow_ranges.test.mjs unrefs timers over 1 s: a timer leaked there fails a test instead)
-    const run = spawnSync(process.execPath, ['--test', ...TESTS],
-                          { cwd: dir, encoding: 'utf8', timeout: 20000 });
+    let run;
+    try {
+        mkdirSync(join(dir, 'src/opnsense/www/js/widgets'), { recursive: true });
+        mkdirSync(join(dir, 'tests'));
+        writeFileSync(join(dir, widget), source.replace(from, to));
+        for (const t of TESTS) copyFileSync(join(root, t), join(dir, t));
+        // a mutant that leaves a timer running keeps node alive: a hang counts as caught
+        // (netflow_ranges.test.mjs unrefs timers over 1 s: a timer leaked there fails a test instead)
+        run = spawnSync(process.execPath, ['--test', ...TESTS],
+                        { cwd: dir, encoding: 'utf8', timeout: 20000 });
+    } finally {
+        rmSync(dir, { recursive: true, force: true });
+    }
     const killed = run.status !== 0;
     console.log(`${killed ? 'killed  ' : 'SURVIVED'} ${name}${run.status === null ? ' (hung)' : ''}`);
     if (!killed) survivors++;
