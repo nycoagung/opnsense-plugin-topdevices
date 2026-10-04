@@ -457,10 +457,10 @@ test('the page load asks the firewall for its time zone before anything else', a
     const w = new TopDevices({ widget: {} });
     t.after(() => { w._stopLive(); store.clear(); });
     const asked = [];
-    w.ajaxCall = async (url) => { asked.push(url); return url.endsWith('/flows/zone') ? { timezone: 'Australia/Sydney' } : {}; };
+    w.ajaxCall = async (url) => { asked.push(url); return url.endsWith('/flows/zone') ? { timezone: 'Asia/Vladivostok' } : {}; };
     await w.onMarkupRendered();
     assert.equal(asked[0], '/api/topdevices/flows/zone');
-    assert.equal(w.tz, 'Australia/Sydney');
+    assert.equal(w.tz, 'Asia/Vladivostok');
 });
 
 test('the picker offers named devices and anything Live saw, never the firewall or a broadcast address', async (t) => {

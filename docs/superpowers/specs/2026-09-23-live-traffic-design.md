@@ -493,8 +493,7 @@ The user installs the branch. Checks run through the API unless marked (user).
    under "all" match the VLAN's rx counter (`vlan01`).
 3. **(user) Real devices.**
    - A speed test on one device shows that device at the speed-test rate.
-   - A device behind a shaper pipe tops out at the pipe's limit (25 Mbit/s on the
-     reference install).
+   - A device behind a shaper pipe tops out at the pipe's limit.
    - A client connected over WireGuard appears with its tunnel address.
 4. **Cost.** Record the median and maximum `cost_ms` over a minute, and the sampler's
    CPU in `diagnostics/activity`.

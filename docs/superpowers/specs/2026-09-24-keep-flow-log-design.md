@@ -65,8 +65,8 @@ Success criteria, each checked on the firewall before merge (§13):
     NetFlow's settings cover only capture, collection and flow timeouts.
 - **The raw log is kept by size.** `check_rotate()` in `flowd_aggregate.py` rotates
   `flowd.log` once it passes 10 MB and keeps 10 rotated files, deleting the oldest
-  with `os.remove`. On 2026-09-24 the log reached back 20.9 to 22.2 hours, and its
-  start moved about every 2 hours, as a file rotated out.
+  with `os.remove`. On 2026-09-24 the log reached back less than a day, and its
+  start moved each time a file rotated out.
 - **Raising core's limits was rejected.** More files would cost only disk: core
   decodes just the current file on each pass, about every 2 minutes, from its first
   record, so a bigger *size* would multiply that work instead. But editing
@@ -78,8 +78,8 @@ Success criteria, each checked on the firewall before merge (§13):
 - **Hard links keep the files without touching core.** A hard link is a second name
   for the same file. Core's renames don't affect it, and core's `os.remove` drops only
   core's name. A link costs no space while core still holds the file. Links must stay
-  within one filesystem, and `/var/log` is its own ZFS dataset (`zroot/var/log`, 221
-  GB free), so the kept files live in `/var/log/topdevices/`.
+  within one filesystem, and `/var/log` is its own ZFS dataset (`zroot/var/log`), so
+  the kept files live in `/var/log/topdevices/`.
 - **Nothing in core touches that directory.**
   - Core's rotation globs `/var/log/flowd.log.*`, and its aggregator
     `/var/log/flowd.log*`.
@@ -92,10 +92,10 @@ Success criteria, each checked on the firewall before merge (§13):
   `/etc/cron.d/at` the same way.
 - **The time zone.** Core writes the setting into PHP's `date.timezone` (its
   `php.ini` template) and copies its zoneinfo file to `/etc/localtime`. The reference
-  firewall is set to Asia/Vladivostok: UTC+10, with no daylight saving. The widget
-  currently takes the browser's zone (`_window`, `_localToEpoch`, `_dateStr`). A
-  browser on Sydney time after 4 October would get Yesterday as 23:00 → 23:00
-  in the firewall's zone; this was reproduced.
+  firewall is set to a zone at UTC+10, with no daylight saving. The widget currently
+  takes the browser's zone (`_window`, `_localToEpoch`, `_dateStr`). A browser on
+  Sydney time after 4 October would get Yesterday as 23:00 → 23:00 in the firewall's
+  zone; this was reproduced.
 - **Captions of ranges read from NetFlow's records can overstate their coverage.**
   NetFlow on the reference firewall started collecting at 02:00 on Sun 20 Sep. The
   week's export returns buckets from the one starting Sat 19 Sep 10:00, yet the
@@ -216,7 +216,7 @@ stays in core's set for hours, so a job every 10 minutes has a wide margin.
   - `localMidnight(ts, back, tz)`: the midnight `back` calendar days before the day
     of `ts`, in `tz`.
 - **The zone's name** in captions is the acronym of Intl's long name in `tz`
-  ("Australian Eastern Standard Time" → `VST`), else Intl's short name, else
+  ("Vladivostok Standard Time" → `VST`), else Intl's short name, else
   `GMT+hhmm`, as 0.2.0 does for the browser's zone.
 - **A caption end on a midnight** prints as the second before it, so Yesterday ends
   `… 23:59:59 VST 2026`. A note's span follows the same rule.
@@ -325,7 +325,7 @@ during the test.
    `check_rotate()`.
 3. After core's next rotation, the new file is kept within 10 minutes, which shows
    the cron job running.
-4. The zone endpoint answers Asia/Vladivostok.
+4. The zone endpoint answers the configured zone.
 5. After the first midnight:
    - a parity check of the whole previous local day in both scopes, against core's
      parser and aggregator arithmetic over the same files;
@@ -368,7 +368,7 @@ during the test.
   the firewall.
 - The export's `start_time` format and zone. `2026/09/19 10:00:00` was observed for a
   bucket starting at 00:00 UTC.
-- Intl's long zone names in Chrome, Firefox and Safari for Asia/Vladivostok.
+- Intl's long zone names in Chrome, Firefox and Safari for the configured zone.
 - FreeBSD cron's checks on files in `cron.d`, such as owner and mode, in
   `process_crontab()`.
 - flowd's writes at a rotation: whether it appends to the renamed file until it

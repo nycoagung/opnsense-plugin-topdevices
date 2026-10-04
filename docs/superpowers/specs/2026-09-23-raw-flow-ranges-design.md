@@ -27,8 +27,8 @@ Success criteria, each checked on the firewall before merge (§11):
   log, to 0 B per device. This is checked for an hour-aligned window in all traffic,
   and for a window the log fully covers in internet only.
 - Wherever the log reaches, the captions read as above, with no note.
-- End to end on the reference firewall: Today and Last 24 hours in at
-  most 2 s, and Last hour in at most 1 s.
+- End to end on the reference firewall: Today and Last 24 hours in at most 2 s, and
+  Last hour in at most 1 s.
 - No cron job, no database, and nothing written on the firewall.
 - Yesterday, Last 7 days, older custom ranges and the Live view behave exactly as in
   0.1.2.
@@ -46,17 +46,17 @@ Success criteria, each checked on the firewall before merge (§11):
 
 - **Core's records cannot do it.** `FlowSourceAddrDetails`, the only aggregate that
   records the interface a flow crossed, keeps one bucket per UTC day, which is 10:00 →
-  10:00 in VST. `FlowSourceAddrTotals` has 5-minute and hourly buckets but no
-  internet/local split.
+  10:00 in a UTC+10 zone. `FlowSourceAddrTotals` has 5-minute and hourly buckets but
+  no internet/local split.
 - **The raw log can.** `/var/log/flowd.log`, with rotated `.000001` and up, is
   root-only. It holds every flow with its source, destination, byte count, ports,
   interfaces and times.
   - Core keeps it by size, not by time: `MAX_FILE_SIZE_MB = 10` per file in
-    `flowd_aggregate.py`. 11 files (110 MB) held about **23 hours** here, at about
-    100 B per flow and 105,000 flows per file.
+    `flowd_aggregate.py`. 11 files (110 MB) hold roughly **a day** on a busy home
+    network, at about 100 B per flow and 105,000 flows per file.
 - **Speed.** Core's `FlowParser` takes 1.85 s per 10.8 MB file. A purpose-built reader
   takes 0.18 s per file, per-device sums included. That puts the whole log at 1.80 s
-  on one core, or 0.41 s on six.
+  on one core, or 0.41 s on several.
 - **Accuracy.**
   - The reader is record-identical to core's parser: 107,790 records, 0 differences.
   - For 19:00–20:00 its per-device totals are byte-identical to core's own parser and
@@ -64,9 +64,9 @@ Success criteria, each checked on the firewall before merge (§11):
   - Core's *live* database was 0.0041% lower for that hour. The reason is
     `parse_flow()`, which resumes by skipping `recv_sec <= last_sync`: records written
     within the already-synced second after a run read the file are never aggregated.
-- **Stability.** One worker and six gave identical results for a window that ended 45
-  minutes ago. A window ending now changes between reads as records arrive: 1.3 MB of
-  difference for 9.4 KB of new log.
+- **Stability.** One worker and several gave identical results for a window that
+  ended 45 minutes ago. A window ending now changes between reads as records arrive:
+  1.3 MB of difference for 9.4 KB of new log.
 - **Limit.** NetFlow's active timeout is 1800 s here. A long connection is reported
   every 30 minutes, so the most recent half hour can under-count it.
 
@@ -162,7 +162,7 @@ Validation, repeated here after the controller has checked the same things:
  "inet": {"from": 1790151400, "to": 1790155000},
  "wan": ["em0"],
  "devices": {"192.168.1.10": [1000, 357, 1000, 300]},
- "files": 2, "workers": 3, "cost_ms": 212}
+ "files": 2, "workers": 2, "cost_ms": 212}
 ```
 
 - `devices` holds, per IPv4 address, `[all_down, all_up, inet_down, inet_up]` in whole
@@ -322,9 +322,9 @@ message:TopDevices flows device %s
   reach configd.
 - **Exposure.** Per-device totals and peers are exactly what the widget already shows
   through core's NetFlow exports. The least-privilege check (§6.2) keeps it that way.
-- **Cost.** One request uses at most half the firewall's cores for about a second. There is no rate
-  limit: the widget refreshes slowly and only while a dashboard is open. This is
-  documented.
+- **Cost.** One request uses at most half the firewall's cores for about a second.
+  There is no rate limit: the widget refreshes slowly and only while a dashboard is
+  open. This is documented.
 - **Writes.** The log is read as root through configd, and nothing is written.
 
 ## 10. Tests (local, before anything reaches the firewall)
@@ -363,8 +363,8 @@ during the test.
 1. A one-off check, as in the spike, comparing `flows.py` with core's own code run
    once over the same log. It must show 0 B per device for an hour-aligned all-traffic
    window and a fully covered internet-only window. It also measures real timings, and the parity tests run on the firewall's Python 3.13.
-2. Both endpoints called from the admin machine with the API key: sensible JSON, bad input
-   rejected, and the least-privilege check exercised.
+2. Both endpoints called from the admin machine with the API key: sensible JSON, bad
+   input rejected, and the least-privilege check exercised.
 3. The widget end to end:
    - its code run in Node against the firewall;
    - the headless-Chrome harness;
@@ -396,7 +396,8 @@ during the test.
 - **Core changes the flowd format or its NetFlow library.** The parity tests on the
   firewall catch it, and the widget falls back to 0.1.2's path when the script
   reports an error.
-- **Several dashboards open.** Each refresh is a short burst on up to half the firewall's cores.
+- **Several dashboards open.** Each refresh is a short burst on up to half the
+  firewall's cores.
 - **A larger active timeout.** Records span longer. Completeness from L still holds,
   but the recent under-count grows.
 

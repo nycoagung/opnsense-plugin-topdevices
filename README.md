@@ -70,7 +70,7 @@ at all. Every limit and default is a widget option.
 The **All traffic / Internet only** selector decides this.
 
 *All traffic* counts everything — internal plus internet — so an NVR pulling
-camera streams dominates the list with bytes that never reach the WAN.
+camera streams would dominate the list with bytes that never reach the WAN.
 
 *Internet only* counts a flow just once, on the upstream interface, so purely local
 traffic disappears entirely. The upstream device is derived from the interface
@@ -110,8 +110,8 @@ identified an actual service.
 
 NetFlow records addresses, ports and byte counts - there is no hostname, no TLS
 SNI and no HTTP path in the data, so true per-flow domains are not obtainable
-from this source however it is queried. Pi-hole knows which domains a client
-asked for, but its query log records only the reply *type*, not the answer
+from this source however it is queried. A DNS filter such as Pi-hole knows which
+domains a client asked for, but its query log records only the reply *type*, not the answer
 address, so domain-to-IP correlation is not possible either. Real per-flow
 domains require deep packet inspection (Zenarmor, Suricata), which is a
 different tool entirely.
@@ -142,7 +142,7 @@ way core's own Traffic Graph streams interface counters.
 - **Accuracy.** Checked against the kernel's WAN counters, less 14 bytes of
   Ethernet header per frame, on the reference install: over 380 sliding 60-second
   windows above 1 Mb/s, attributed traffic came to 98.7-102.7% of WAN download and
-  98.5-101.8% of upload, and a cross-check against the IoT VLAN's own counters
+  98.5-101.8% of upload, and a cross-check against a VLAN's own counters
   agreed to 97.0-99.2%. Core's iftop-based *Top talkers* read 32-68% of the same
   steady load, which is why it is not used.
 - **What the numbers are.** Rows and the pie and bar charts show a 3-second
@@ -257,25 +257,24 @@ Both were measured against a live firewall, not assumed:
    the flow log*), which hold every flow with its interfaces. It is exact to the
    second in both scopes, and agrees to the byte with core's own parser and
    aggregators run over the same files. A read takes about a second on up to half the
-   firewall's cores (three on the reference install), and there is no rate limit: the
-   widget refreshes slowly, and only while a dashboard is open. Core keeps that log by
-   size, not time: about 110 MB, which is roughly a day on the reference install and
-   less on a busy network; the plugin keeps it for two days. Where the log does not
-   reach back to a range's start, all traffic is filled in from core's hourly records
-   within their day (the oldest hour counted in proportion), and internet only says
-   how much it covers; a range reaching back past both is read from NetFlow's records
-   instead, with no note. The table above still applies to older ranges, and to recent
-   ones when the raw log cannot be read (the caption says so). NetFlow reports a long
-   connection every 30 minutes (`activeTimeout`), so the most recent half hour can
-   under-count a long download. One known edge: while core holds rows stamped in the
-   future (after the firewall's clock jumped back), its cleanup can drop the oldest
-   hourly record early, and Last 24 hours can then be short by up to that hour's part
-   of the range, with no note.
+   firewall's cores, and there is no rate limit: the widget refreshes slowly, and only
+   while a dashboard is open. Core keeps that log by size, not time: about 110 MB,
+   which is roughly a day on a busy home network and less on a busier one; the plugin
+   keeps it for two days. Where the log does not reach back to a range's start, all
+   traffic is filled in from core's hourly records within their day (the oldest hour
+   counted in proportion), and internet only says how much it covers; a range reaching
+   back past both is read from NetFlow's records instead, with no note. The table above
+   still applies to older ranges, and to recent ones when the raw log cannot be read
+   (the caption says so). NetFlow reports a long connection every 30 minutes
+   (`activeTimeout`), so the most recent half hour can under-count a long download.
+   One known edge: while core holds rows stamped in the future (after the firewall's
+   clock jumped back), its cleanup can drop the oldest hourly record early, and Last
+   24 hours can then be short by up to that hour's part of the range, with no note.
 
 ## Keeping the flow log
 
 Core rotates `/var/log/flowd.log` at 10 MB and keeps ten rotated files: about a day
-on the reference install. Since 0.3.0 the plugin keeps them for two days, so Yesterday
+on a busy home network. Since 0.3.0 the plugin keeps them for two days, so Yesterday
 is exact.
 
 - **How.** Every 10 minutes `/usr/local/etc/cron.d/topdevices` runs
@@ -286,15 +285,15 @@ is exact.
   installer puts it in place, and the weekly job keeps it there.
 - **How long.** A kept file is deleted once it was last written to more than 51 hours ago, and the
   directory never holds more than 1 GB, oldest first, and never the last 512 MB free
-  on that filesystem (the root filesystem on a
-  single-partition install, RAM if /var/log is a RAM disk). Resetting NetFlow's data
-  (Reporting → Settings) also clears the kept log within 10 minutes.
+  on that filesystem (the root filesystem on a single-partition install, RAM if
+  /var/log is a RAM disk). Resetting NetFlow's data (Reporting → Settings) also clears
+  the kept log within 10 minutes.
 - **What it holds.** Raw flow records, readable by root only, as core's are.
 - **After install** the kept log starts with what core still holds, so Yesterday is
-  exact from the first midnight after install, as long as the
-  install day's first records were still in core's log. Until then, and wherever the
-  kept log has a gap (the job stopped for most of a day, or the cap was reached), a
-  range reaching back past it is read from NetFlow's records, as before.
+  exact from the first midnight after install, as long as the install day's first
+  records were still in core's log. Until then, and wherever the kept log has a gap
+  (the job stopped for most of a day, or the cap was reached), a range reaching back
+  past it is read from NetFlow's records, as before.
 
 ## Install without building
 
@@ -398,7 +397,7 @@ Verified by measurement against a live firewall, not by reading the code:
   for every device, and the direction is semantically right — devices that mostly
   send read as almost entirely upload, devices that mostly receive as almost
   entirely download.
-- **Local-network derivation** finds all five interface networks and correctly
+- **Local-network derivation** finds every interface network and correctly
   rejects the public WAN, loopback and CGNAT `100.64/10` — the last of which a
   naive "is private" check accepts.
 - **The drill-down reconciles** with its table row to within 0.1%, once keyed on
@@ -412,7 +411,7 @@ Verified by measurement against a live firewall, not by reading the code:
 **Live (0.1.0)**, measured on the reference install (OPNsense 26.7.4)
 on 2026-09-23:
 
-- **The parser agrees with core's own** on all 841 states of the live table, with
+- **The parser agrees with core's own** on every state of the live table, with
   none unreadable and no mismatch, and the test suite passes on the firewall's
   Python 3.13.
 - **Accuracy**: the 60-second windows and the VLAN cross-check under *Live
@@ -435,11 +434,10 @@ on 2026-09-23:
 - **The NetFlow ranges** behave as in 0.0.1, checked by hand through every range
   and control. (0.0.1's ranges were wrong; see below.)
 
-Not verified: non-root users, IPv6
-attribution (not attempted: no routable IPv6 there), multiple WANs, and a device
-behind a traffic-shaper pipe.
+Not verified: non-root users, IPv6 attribution (not attempted: no routable IPv6
+there), multiple WANs, and a device behind a traffic-shaper pipe.
 
-**NetFlow ranges (0.1.2)**, measured on the reference install on 2026-09-23 (VST):
+**NetFlow ranges (0.1.2)**, measured on the reference install on 2026-09-23:
 
 - **The bug**: at 19:08, *Last hour* showed everything since 10:00, about 16 times
   what the last hour held. *Last 24 hours* showed 35% more than its 24 hours held.
@@ -447,8 +445,8 @@ behind a traffic-shaper pipe.
   *Yesterday* covered 48 hours.
 - **The two exports agree to the byte**: over the same UTC day,
   `FlowSourceAddrTotals` gave every device the same download and upload as the
-  `dst_addr`-keyed details. Over the current hour, the 5-minute
-  buckets summed to the hourly one exactly.
+  `dst_addr`-keyed details. Over the current hour, the 5-minute buckets summed to
+  the hourly one exactly.
 - **End to end**: the widget's own code was run against the firewall for four
   ranges in both scopes. It matched an independent recomputation from the raw
   exports to 0 bytes per device.
@@ -458,19 +456,19 @@ behind a traffic-shaper pipe.
   only ever hit 0-byte rows, which the widget reads as 0.
 
 **Recent ranges (0.2.0)**, measured on the reference install (Python 3.13)
-on 2026-09-24 (VST), installed with the bootstrap command from the branch:
+on 2026-09-24, installed with the bootstrap command from the branch:
 
 - **Matches core's own code**: `flows.py` against core's parser and aggregators
   run once over the live log matched every device to within a
-  byte - all traffic for the whole hour 07:00-08:00, internet only
-  for 07:15-07:45. The largest gap, 0.49 B, is the answer's rounding
-  to whole bytes, well inside the under-1-byte pass mark. The unit tests pass on
-  the firewall against its own core library.
+  byte - all traffic for the whole hour 07:00-08:00, internet only for
+  07:15-07:45. The largest gap, 0.49 B, is the answer's rounding to whole bytes,
+  well inside the under-1-byte pass mark. The unit tests pass on the firewall
+  against its own core library.
 - **Speed** through configd: Last hour 0.33 s (2 files), Today 0.59 s
   (5 files), Last 24 hours 1.20 s (11 files).
 - **Reach**: the log held under 24 hours at the time, so Last 24 hours' internet only
   started at the log, with its note, and all traffic took the hours before it
-  from the hourly records. Every record carried ports (9,567 of 9,567 in the
+  from the hourly records. Every record carried ports (all of them in the
   newest file), so the panel's Top ports work.
 - **The endpoints**, called from the admin machine, refused bad input with a
   reason: non-digits, IPv6, a zero-padded IPv4, a range starting over a day ago,
@@ -488,24 +486,22 @@ on 2026-09-24 (VST), installed with the bootstrap command from the branch:
 - **Installed files**: all eight, and the generated actions file, byte-identical
   to a dry run of the branch.
 
-Not verified: non-root users, and so the endpoints' Network Insight check (only
-root exists on the reference install); IPv6 (not attributed, by design); multiple
-WANs; a log that nothing rotates (unit tests only); and the headless-browser run
-of 0.1.2, replaced here by the widget's code against the live endpoints and the
-dashboard itself.
+Not verified: non-root users, and so the endpoints' Network Insight check; IPv6
+(not attributed, by design); multiple WANs; a log that nothing rotates (unit tests
+only); and the headless-browser run of 0.1.2, replaced here by the widget's code
+against the live endpoints and the dashboard itself.
 
 **Kept log and time zone (0.3.0)**, measured on the reference install
-(Python 3.13) on 2026-09-24 and 25, installed
-with the bootstrap command from the branch:
+(Python 3.13) on 2026-09-24 and 25, installed with the bootstrap command from the
+branch:
 
 - **A whole day matches core's own code**: for Thu 24 Sep, 00:00:00 to 23:59:59,
   `flows.py` against core's parser and aggregators run once over the same files,
   core's and the kept ones (14 files), agreed for every
-  device to within a byte in both scopes:
-  largest gap 0.500 B, the answer's rounding to whole bytes. The hourly comparison
-  of 0.2.0 agreed as before (largest gap 0.490 B). The unit
-  tests pass on the firewall against its own core library, core's rotation code
-  included.
+  device to within a byte in both scopes: largest gap 0.500 B, the answer's
+  rounding to whole bytes. The hourly comparison of 0.2.0 agreed as before
+  (largest gap 0.490 B). The unit tests pass on the firewall against its own core
+  library, core's rotation code included.
 - **Speed** through configd: Yesterday 1.29 s (14 files), read from the
   log alone; Last hour 0.20 s, Today 0.38 s, Last 24 hours 1.14 s.
 - **Keeping**: at install, each of core's ten rotated files was linked into
@@ -514,10 +510,10 @@ with the bootstrap command from the branch:
   back 37 hours (core's reach at install, plus the night), its rate of growth put
   its full 51 hours well under the 1 GB cap.
 - **The time zone**: the widget's own code, run on New York time against the live
-  endpoints, read `Asia/Vladivostok` from the firewall and captioned Yesterday
-  `Thu Sep 24 00:00:00 VST 2026  →  Thu Sep 24 23:59:59 VST 2026` in both
+  endpoints, read the configured zone from the firewall and captioned Yesterday
+  as that whole local day, `Thu Sep 24 00:00:00` to `23:59:59`, in both
   scopes, with no note, in one request, its rows equal to the answer. Today started
-  at 00:00:00 VST, Last 24 hours read the log, and Last 7 days started at NetFlow's
+  at local midnight, Last 24 hours read the log, and Last 7 days started at NetFlow's
   oldest daily bucket, Sat 19 Sep 10:00, with a note saying so. Yesterday's device
   panel answered in one request.
 - **The endpoints** answered the zone and refused a range starting 50 h 6 min ago

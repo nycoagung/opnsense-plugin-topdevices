@@ -2,3 +2,4 @@
 *.pkg
 work/
 __pycache__/
+docs/superpowers/plans/
