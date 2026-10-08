@@ -17,6 +17,11 @@ WWW: https://github.com/nycoagung/opnsense-plugin-topdevices
 Plugin Changelog
 ----------------
 
+0.3.4
+
+* The API controllers declare their parameter and return types. Nothing
+  visible changes
+
 0.3.3
 
 * The table is as tall as its rows, so the widget can be made as tall as

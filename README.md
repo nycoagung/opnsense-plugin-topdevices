@@ -338,6 +338,10 @@ to pick it up.
 **Upgrading from 0.3.2 to 0.3.3:** likewise nothing to do. A widget saved at a small
 height keeps it until you drag it taller under Edit Dashboard and save (see *Height*).
 
+**Upgrading from 0.3.3 to 0.3.4:** nothing to do: the same eleven files. The two API
+controllers declare their types and the scripts carry the new version number; nothing
+you can see changes.
+
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
 fail here — the **GitHub API** costs one rate-limited request per file (60/hour
@@ -569,6 +573,15 @@ now holds it at the height of all its rows at the time.
 the NetFlow ranges, since 0.2.0 the raw flow log reader, run against core's own
 parser and aggregators, and since 0.3.0 the keeper, run against core's own
 rotation (see *Tests*).
+
+**Static analysis (0.3.4)**, on 2026-10-08. PHPStan 2.3 at its strictest level (9),
+with OPNsense core 26.7.5's sources on its scan path, reports nothing for the two API
+controllers. Semgrep's PHP, JavaScript, Python, secrets and security-audit rules, run
+over everything but the tests, report one finding: `keep.py` creating its kept-log
+directory with mode `0o700`, which is owner-only, the strictest sensible mode rather
+than a permissive one. The Python scripts have no unused functions, imports or
+write-only variables; each of the widget's 114 methods and functions has a caller,
+and it makes no loose `==` or `!=` comparison.
 
 **The installer was ported to codeload** after the GitHub API's per-file rate
 limit locked the sibling `os-parentalcontrol` plugin out entirely. No GitHub API
