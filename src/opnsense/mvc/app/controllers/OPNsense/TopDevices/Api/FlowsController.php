@@ -17,13 +17,18 @@ class FlowsController extends ApiControllerBase
 {
     /* The same data reaches the dashboard through core's NetFlow exports; this
        endpoint must never show it to someone core itself would not. */
-    private function mayReadNetflow()
+    private function mayReadNetflow(): bool
     {
         return (new ACL())->isPageAccessible($this->getUserName(), '/api/diagnostics/networkinsight/export');
     }
 
-    private function answer($action, $params)
+    /**
+     * @param list<string> $params
+     * @return array<mixed> the script's JSON answer, or an error
+     */
+    private function answer(string $action, array $params): array
     {
+        /* configd can answer nothing at all, hence the cast */
         $data = json_decode((string)(new Backend())->configdpRun($action, $params), true);
         return is_array($data) ? $data : ['error' => 'no answer from the flows script'];
     }
@@ -32,16 +37,17 @@ class FlowsController extends ApiControllerBase
      * GET /api/topdevices/flows/totals/{from}/{to}
      * @param string $from epoch seconds
      * @param string $to epoch seconds
+     * @return array<mixed>
      */
-    public function totalsAction($from = '', $to = '')
+    public function totalsAction(string $from = '', string $to = ''): array
     {
         if (!$this->mayReadNetflow()) {
             return ['error' => 'this needs the Diagnostics: Network Insight privilege too'];
         }
-        if (!ctype_digit((string)$from) || !ctype_digit((string)$to)) {
+        if (!ctype_digit($from) || !ctype_digit($to)) {
             return ['error' => 'from and to must be whole epoch seconds'];
         }
-        return $this->answer('topdevices flows totals', [(string)$from, (string)$to]);
+        return $this->answer('topdevices flows totals', [$from, $to]);
     }
 
     /**
@@ -49,25 +55,28 @@ class FlowsController extends ApiControllerBase
      * @param string $ip the device's IPv4 address
      * @param string $from epoch seconds
      * @param string $to epoch seconds
+     * @return array<mixed>
      */
-    public function deviceAction($ip = '', $from = '', $to = '')
+    public function deviceAction(string $ip = '', string $from = '', string $to = ''): array
     {
         if (!$this->mayReadNetflow()) {
             return ['error' => 'this needs the Diagnostics: Network Insight privilege too'];
         }
         if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) === false
-            || !ctype_digit((string)$from) || !ctype_digit((string)$to)) {
+            || !ctype_digit($from) || !ctype_digit($to)) {
             return ['error' => 'ip must be IPv4, and from and to whole epoch seconds'];
         }
-        return $this->answer('topdevices flows device', [(string)$ip, (string)$from, (string)$to]);
+        return $this->answer('topdevices flows device', [$ip, $from, $to]);
     }
 
     /**
      * GET /api/topdevices/flows/zone: the time zone set under System: Settings:
      * General, which core writes into PHP's date.timezone. The widget draws its
      * midnights and captions in it (spec 2026-09-24-keep-flow-log §7.1).
+     *
+     * @return array{timezone: string}
      */
-    public function zoneAction()
+    public function zoneAction(): array
     {
         return ['timezone' => date_default_timezone_get()];
     }
