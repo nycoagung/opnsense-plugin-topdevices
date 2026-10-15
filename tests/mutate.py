@@ -12,6 +12,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 LIVE = ROOT / 'src/opnsense/scripts/topdevices/live.py'
 FLOWS = ROOT / 'src/opnsense/scripts/topdevices/flows.py'
 KEEP = ROOT / 'src/opnsense/scripts/topdevices/keep.py'
+TUNNELS = ROOT / 'src/opnsense/scripts/topdevices/tunnels.py'
 
 MUTANTS = [
     ('port-forward direction not swapped',
@@ -84,11 +85,11 @@ FLOW_MUTANTS = [
      '    if not (frm.isdigit() and to.isdigit()):'),
     ('a non-device given a panel', '    if not net.is_device(ip):\n        raise', '    if False:\n        raise'),
     ('the two scopes swapped in the jobs',
-     '    jobs = [(fd, a_lo, a_hi, i_lo, i_hi, net) for fd, _, _ in files]',
-     '    jobs = [(fd, i_lo, i_hi, a_lo, a_hi, net) for fd, _, _ in files]'),
+     '    jobs = [(fd, a_lo, a_hi, i_lo, i_hi, l_lo, net) for fd, _, _ in files]',
+     '    jobs = [(fd, i_lo, i_hi, a_lo, a_hi, l_lo, net) for fd, _, _ in files]'),
     ("hourly records replacing the log's figures",
-     '            t = acc.setdefault(ip, [0.0, 0.0, 0.0, 0.0])\n            t[0] += down\n            t[1] += up\n',
-     '            acc[ip] = [down, up, 0.0, 0.0]\n'),
+     '            t = acc.setdefault(ip, [0.0] * 6)\n            t[0] += down\n            t[1] += up\n',
+     '            acc[ip] = [down, up, 0.0, 0.0, 0.0, 0.0]\n'),
     ('a rotation while the files are opened accepted', '        if _files_now(log) == ids:', '        if True:'),
     ('any open error taken for a rotation',
      '                except FileNotFoundError:\n                    continue                      # rotated or pruned away since the listing',
@@ -97,8 +98,8 @@ FLOW_MUTANTS = [
     ('only ValueError answered', '    except Exception as exc:', '    except ValueError as exc:'),
     ('the reach applied to device panels', "    if mode == 'totals' and frm < now - REACH - SLACK:", '    if frm < now - REACH - SLACK:'),
     ('the device answer given its range reversed',
-     "            out = answer_device(req['ip'], req['from'], req['to'], now, opened, net, workers)",
-     "            out = answer_device(req['ip'], req['to'], req['from'], now, opened, net, workers)"),
+     "            out = answer_device(req['ip'], req['from'], req['to'], now, opened, net, workers,",
+     "            out = answer_device(req['ip'], req['to'], req['from'], now, opened, net, workers,"),
     ('a log nobody rotates read anyway', '        if newest_size > MAX_FILE:', '        if False:'),
     ('a big file in the range read anyway', '        if size > MAX_FILE:', '        if False:'),
     ('the aggregator check over every file', '        newest_size = opened[-1][2]',
@@ -130,6 +131,42 @@ FLOW_MUTANTS = [
      '        if first is not None:\n            L = first\n', '        L = first\n'),
     ('the rotation re-check blind to kept names', '    for path in _names(log):\n        try:\n            st = os.stat(path)',
      "    for path in glob.glob(glob.escape(log) + '*'):\n        try:\n            st = os.stat(path)"),
+    # the tunnel samples (2026-10-15 spec §4, §6)
+    ('a counter reset counted as a huge negative growth',
+     "            t[0] += w * (tx1 - tx0 if tx1 >= tx0 else tx1)", "            t[0] += w * (tx1 - tx0)"),
+    ('tunnel down and up swapped',
+     "            t[0] += w * (tx1 - tx0 if tx1 >= tx0 else tx1)\n            t[1] += w * (rx1 - rx0 if rx1 >= rx0 else rx1)",
+     "            t[1] += w * (tx1 - tx0 if tx1 >= tx0 else tx1)\n            t[0] += w * (rx1 - rx0 if rx1 >= rx0 else rx1)"),
+    ('internet only for a tunnel device not clamped at zero',
+     "            t[2] = max(0.0, d - t[4])", "            t[2] = d - t[4]"),
+    # Not run: ('a negative interval differenced anyway', "            if t1 <= t0:\n                continue\n", "")
+    # is an equivalent mutant. ov = min(t1, hi) - max(t0, lo) <= t1 - t0, so when t1 <= t0
+    # the `ov <= 0` check skips the interval anyway: no test can tell the two apart.
+    ('the whole growth counted whatever the overlap', "            w = ov / (t1 - t0)", "            w = 1.0"),
+    ('the tunnel figure subtracted over the wrong span',
+     "        t_inet = tunnel_totals(tunnels, i_lo, i_hi)", "        t_inet = tunnel_totals(tunnels, frm, to)"),
+    ('a torn sample line read as a sample', "            if len(parts) != 5:\n                continue\n", ""),
+    ('the local figure taken over the all-traffic span',
+     "            t[4] += l                                 # all traffic", "            t[4] += a                                 # all traffic"),
+    ('the local traffic subtracted over the whole internet span, before the first sample too',
+     "    l_lo = max(i_lo, S) if tunnelled else i_lo", "    l_lo = i_lo"),
+    ("a device's local traffic subtracted over the whole range, before the first sample too",
+     "    d_lo = max(lo, S) if S is not None and S < to else lo", "    d_lo = lo"),
+    ("a device's tunnel internet only not clamped at zero",
+     "int(round(max(0.0, t_all[1] - dirs[1])))", "int(round(t_all[1] - dirs[1]))"),
+    ("a device's upload bytes from the workers dropped", "            dirs[1] += r[1]\n", ""),
+    ('the local upload taken over the all-traffic span', "            t[5] += l\n", "            t[5] += a\n"),
+    ('internet only upload for a tunnel device not clamped at zero',
+     "            t[3] = max(0.0, u - t[5])", "            t[3] = u - t[5]"),
+    ('a tunnel peer outside the local subnets credited as a device',
+     "            if not net.is_device(ip):             # a peer outside", "            if False:             # a peer outside"),
+    ('a device panel given tunnel figures for a range before the first sample',
+     "    if S is not None and S < to and any(key[1] == ip for key in tunnels):",
+     "    if S is not None and any(key[1] == ip for key in tunnels):"),
+    ('the device panel never given the samples',
+     "            out = answer_device(req['ip'], req['from'], req['to'], now, opened, net, workers,\n"
+     "                                tunnels=read_tunnels(log))",
+     "            out = answer_device(req['ip'], req['from'], req['to'], now, opened, net, workers)"),
 ]
 
 KEEP_MUTANTS = [
@@ -200,6 +237,19 @@ KEEP_MUTANTS = [
      "ROTATED = re.compile(r'\\.[0-9]+')", "ROTATED = re.compile(r'\\..+')"),
 ]
 
+TUNNEL_MUTANTS = [
+    ('interface lines taken as peers', "        if len(parts) == 5:\n            continue", "        if False:\n            continue"),
+    ('a /24 allowed-ip credited as a device', "            if net.version == 4 and net.prefixlen == 32:", "            if net.version == 4:"),
+    ('received and sent swapped in the file',
+     "    data = ''.join('%d %s %s %d %d\\n' % (int(now), iface, ip, rx, tx)", "    data = ''.join('%d %s %s %d %d\\n' % (int(now), iface, ip, tx, rx)"),
+    ('day files never pruned', "            if os.stat(path).st_mtime < now - keep_s:", "            if False:"),
+    ('the folder left world-readable', "    os.chmod(kept, 0o700)", "    os.chmod(kept, 0o755)"),
+    ('a peer with several /32s not reported', "        others = hosts[1:] + nets", "        others = nets"),
+    ('a peer carrying a whole network not reported', "        others = hosts[1:] + nets", "        others = hosts[1:]"),
+    ('a hung wg taken as no WireGuard',
+     "        raise RuntimeError('wg show all dump did not finish within 10 s') from None", "        return None"),
+]
+
 
 def run(target, env_name, pattern, mutants, survivors):
     source = target.read_text()
@@ -224,7 +274,8 @@ def run(target, env_name, pattern, mutants, survivors):
 def main():
     survivors = []
     for args in ((LIVE, 'LIVE_PY', 'test_live.py', MUTANTS), (FLOWS, 'FLOWS_PY', 'test_flows.py', FLOW_MUTANTS),
-                 (KEEP, 'KEEP_PY', 'test_keep.py', KEEP_MUTANTS)):
+                 (KEEP, 'KEEP_PY', 'test_keep.py', KEEP_MUTANTS),
+                 (TUNNELS, 'TUNNELS_PY', 'test_tunnels.py', TUNNEL_MUTANTS)):
         if not run(*args, survivors):
             return 2
     return 1 if survivors else 0

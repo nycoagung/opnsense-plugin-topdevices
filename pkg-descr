@@ -17,6 +17,17 @@ WWW: https://github.com/nycoagung/opnsense-plugin-topdevices
 Plugin Changelog
 ----------------
 
+0.4.0
+
+* WireGuard clients' ranges (Last hour, Today, Yesterday, Last 24 hours and
+  custom ranges within 50 hours) count their real traffic, internet included,
+  from the tunnel's own byte counters, sampled every minute by a new cron
+  job; before, NetFlow could only see their local traffic. All traffic is the
+  tunnel figure (it includes the tunnel's overhead); internet only is that
+  less the local traffic NetFlow saw. Such rows carry a "tunnel" tag, the
+  caption says when the figures start later than the range, and the device
+  panel adds the internet figure. Twelve installed files
+
 0.3.4
 
 * The API controllers declare their parameter and return types. Nothing

@@ -151,8 +151,8 @@ const mutants = [
     ['a failed raw read shows nothing', '            fallback = !resp;', '            return false;'],
     ["no fallback note", '        if (this.state.fallback) c.note = c.note ? `${FALLBACK_NOTE} · ${c.note}` : FALLBACK_NOTE;\n', ''],
     ['a scope switch leaves the other scope\'s rows', '            if (q.raw) { this._applyRaw(this.state.scope); break; }', '            if (q.raw) break;'],
-    ['the raw caption shows the range asked for', '        return { text: `${this._dateStr(a)}  →  ${this._endStr(b, a)}${tail}`, note };',
-     '        return { text: `${this._dateStr(q.from)}  →  ${this._endStr(q.to, q.from)}${tail}`, note };'],
+    ['the raw caption shows the range asked for', '        return { text: `${this._dateStr(a)}  →  ${this._endStr(b, a)}${tail}`,\n',
+     '        return { text: `${this._dateStr(q.from)}  →  ${this._endStr(q.to, q.from)}${tail}`,\n'],
     ['no note when internet only reaches past the log', '        const note = wan && a > q.from', '        const note = false && a > q.from'],
     ['no word when internet only has nothing in the log', '        if (wan && a >= b) {', '        if (false) {'],
     ['a raw load keeps the exports of earlier windows', '                this._applyRaw(scope);\n                this._pruneCache(this.state.request);\n', '                this._applyRaw(scope);\n'],
@@ -283,6 +283,16 @@ const mutants = [
     ['the placeholder collides with a same-sized real panel',
      "$d.html('<small class=\"text-muted\">Measuring\\u2026</small>'); return -2; }",
      "$d.html('<small class=\"text-muted\">Measuring\\u2026</small>'); return 1; }"],
+    // VPN devices counted from the tunnel (spec 2026-10-15)
+    ['the tunnel tag never drawn', "const tag = r.tunnel ? `", "const tag = false ? `"],
+    ["the tunnel tag back inside a named device's clipped name",
+     '${this._esc(r.name)}</strong>`', '${this._esc(r.name)}${tag}</strong>`'],
+    ['the VPN coverage note shown even when the samples cover the range', 't.from > q.from', 't.from >= q.from'],
+    ['tunnel rows not flagged', 'tunnel: tunnel.has(d.ip)', 'tunnel: false'],
+    ["the panel's internet line shows all traffic", 'down: d.tunnel.inet[0], up: d.tunnel.inet[1]', 'down: d.tunnel.all[0], up: d.tunnel.all[1]'],
+    ['the internet-only note dropped when the VPN note joins it',
+     'note: note && vpn ? `${note} · ${vpn}` : note || vpn', 'note: note || vpn'],
+    ['the VPN note when the tunnel counts no device', 't && t.devices && t.devices.length && t.from > q.from', 't && t.from > q.from'],
 ];
 
 let survivors = 0;

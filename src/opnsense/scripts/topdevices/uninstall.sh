@@ -9,7 +9,7 @@
 # that starts with a dash before the action ever sees it.
 #
 # It undoes install.sh: the weekly GUI cron job that would otherwise put it all
-# back, the keeper's cron file and the kept flow log, the widget, its backends and
+# back, the cron file (keeper and tunnel sampler) and the kept logs, the widget, its backends and
 # their configd actions. It touches nothing of core's: core's own flow log files
 # lose only the second name the keeper gave them. Running it twice is harmless.
 #
@@ -113,13 +113,14 @@ fi
 
 # --- 2. the keeper's cron file, then the kept log -------------------------------
 # The cron file goes first so no new run starts, and a run already going (under a
-# second, every 10 minutes) gets to finish, or it could recreate the directory.
+# second each: keep.py every 10 minutes, tunnels.py every minute) gets to finish,
+# or it could recreate the directory.
 # Each kept file is a hard link; unlinking it leaves core's own name untouched.
 remove "$CRON"
 if [ -z "$DRY" ]; then
     i=0
-    while [ $i -lt 30 ] && pgrep -qf "$SCRIPTS/keep.py" 2>/dev/null; do sleep 1; i=$((i + 1)); done
-    [ $i -lt 30 ] || warn "a keep.py run is still going after 30 s; if $KEPT comes back, remove it by hand"
+    while [ $i -lt 30 ] && pgrep -qf "$SCRIPTS/(keep|tunnels).py" 2>/dev/null; do sleep 1; i=$((i + 1)); done
+    [ $i -lt 30 ] || warn "a keep.py or tunnels.py run is still going after 30 s; if $KEPT comes back, remove it by hand"
 fi
 remove "$KEPT"
 
