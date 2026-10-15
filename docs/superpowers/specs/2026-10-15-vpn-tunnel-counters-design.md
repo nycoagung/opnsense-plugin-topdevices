@@ -188,7 +188,10 @@ file boundaries never interact.
   note), joined to any other note with " · ".
 - **Device panel.** For a tunnel device, one line above Top peers: "Internet
   ↓ <down> ↑ <up>, counted from the tunnel · internet peers are not recorded for
-  VPN devices", with the scope's figures. The lists below are as today.
+  VPN devices", with the internet-only figures in both scopes (the row already
+  shows the scope's figure; the line states the device's internet share).
+  Corrected 2026-10-15 during implementation: "the scope's figures" would have
+  shown all-traffic numbers under an "Internet" label. The lists below are as today.
 - **Charts** use the per-device totals, so nothing changes there.
 - **Export path** (older ranges): unchanged, including its notes.
 - **Live:** untouched.
@@ -196,7 +199,9 @@ file boundaries never interact.
 ## 8. Installer and uninstaller
 
 - `install.sh`: `src/opnsense/scripts/topdevices/tunnels.py` joins the file list
-  (13 files); `src/etc/cron.d/topdevices` carries the second line. The staged
+  (12 files: 0.3.4 installed eleven, the cron file among them, and 0.4.0 adds only
+  the sampler; an earlier draft said 13); `src/etc/cron.d/topdevices` carries the
+  second line. The staged
   dotted copy and rename (0.3.0 §9) already keep cron from reading a half-written
   file.
 - **Upgrade from 0.3.4:** the installed 0.3.4 installer knows its own 11 files, so
@@ -232,7 +237,7 @@ file boundaries never interact.
 
 ## 11. Verification on the firewall (before merge)
 
-1. Install from the branch with the bootstrap. Confirm the 13 files, the two cron
+1. Install from the branch with the bootstrap. Confirm the 12 files, the two cron
    lines, and that `tunnels.<today>` appears within a minute and grows by one
    sample a minute (line count).
 2. For each connected peer, note the WireGuard widget's counters, wait N whole
@@ -277,7 +282,7 @@ file boundaries never interact.
   line, and the export path untouched.
 - `mutate.py` gains the sampler; every planted bug must fail the suite, as the
   mutation runs require today. `mutate_widget.mjs` as before.
-- `test_install.sh` / `test_uninstall.sh`: the 13th file and the two-line cron file.
+- `test_install.sh` / `test_uninstall.sh`: the 12th file and the two-line cron file.
 
 ## 14. Risks
 
