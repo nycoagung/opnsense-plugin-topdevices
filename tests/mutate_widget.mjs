@@ -287,7 +287,10 @@ const mutants = [
     ['the tunnel tag never drawn', "const tag = r.tunnel ? `", "const tag = false ? `"],
     ['the VPN coverage note shown even when the samples cover the range', 't.from > q.from', 't.from >= q.from'],
     ['tunnel rows not flagged', 'tunnel: tunnel.has(d.ip)', 'tunnel: false'],
-    ["the panel's tunnel line in the wrong scope", 'down: d.tunnel[k][0], up: d.tunnel[k][1]', "down: d.tunnel.all[0], up: d.tunnel.all[1]"],
+    ["the panel's internet line shows all traffic", 'down: d.tunnel.inet[0], up: d.tunnel.inet[1]', 'down: d.tunnel.all[0], up: d.tunnel.all[1]'],
+    ['the internet-only note dropped when the VPN note joins it',
+     'note: note && vpn ? `${note} · ${vpn}` : note || vpn', 'note: note || vpn'],
+    ['the VPN note when the tunnel counts no device', 't && t.devices && t.devices.length && t.from > q.from', 't && t.from > q.from'],
 ];
 
 let survivors = 0;

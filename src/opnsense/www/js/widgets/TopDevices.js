@@ -1991,8 +1991,9 @@ export default class TopDevices extends BaseWidget {
             peers: Object.fromEntries(d.peers[k]), ports: Object.fromEntries(d.ports[k]),
             down: row ? row.down : 0, up: row ? row.up : 0,
             note: d.from > q.from ? `Peers and ports cover the last ${fmtSpan(d.to - d.from)}` : null,
-            // a VPN device's internet figures from the tunnel; none from a 0.3.4 backend
-            tunnel: d.tunnel ? { down: d.tunnel[k][0], up: d.tunnel[k][1] } : null
+            // a VPN device's internet figures from the tunnel, in either scope: with all traffic
+            // shown, the row and the line above already give the rest; none from a 0.3.4 backend
+            tunnel: d.tunnel ? { down: d.tunnel.inet[0], up: d.tunnel.inet[1] } : null
         };
     }
 

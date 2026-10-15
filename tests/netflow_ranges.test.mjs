@@ -964,7 +964,21 @@ test('the caption says when the VPN figures start later than the range', async (
     assert.equal(w2._windowCaption().note, null);
 });
 
-test('the device panel of a tunnel device carries its internet line, in the scope shown', async () => {
+test('internet only: the VPN note follows the note that the log is shorter than the range', async () => {
+    // the log begins at 10:00 on the 23rd, S(0, 0, 23); the samples at 12:00, S(2, 0, 23)
+    const { w } = await loadRaw('today', () => totalsAnswer(S(14, 0, 22), NOW, { L: S(0, 0, 23),
+        devices: { '10.8.0.2': [3000, 1000, 2500, 1000] }, tunnel: { from: S(2, 0, 23), devices: ['10.8.0.2'] } }),
+        NOW, 'wan');
+    assert.equal(w._windowCaption().note, 'Internet only covers the last 9 h 8 min: older flows are no longer in the log'
+                                          + ' · VPN figures cover from Wed 23 Sep 12:00');
+});
+
+test('no VPN note when the tunnel counts no device', async () => {
+    const { w } = await loadRaw('today', () => totalsAnswer(S(14, 0, 22), NOW, { tunnel: { from: S(2, 0, 23), devices: [] } }));
+    assert.equal(w._windowCaption().note, null);
+});
+
+test('the device panel of a tunnel device carries its internet line, in either scope', async () => {
     // flows.py answers `tunnel: null` for a device not counted from the tunnel
     const { w } = await loadRaw('1h', (url) => url.includes('/device/')
         ? { now: NOW, log_from: NOW - 7200, ip: '10.8.0.2', from: NOW - 3600, to: NOW,
@@ -973,7 +987,8 @@ test('the device panel of a tunnel device carries its internet line, in the scop
                 ? { from: NOW - 7200, all: [3000, 1000], inet: [2500, 1000] } : null }
         : TUNNEL_ANSWER(NOW - 3600, NOW));
     const d = await w._detailsData('10.8.0.2');
-    assert.deepEqual(d.tunnel, { down: 3000, up: 1000 });
+    assert.deepEqual(d.tunnel, { down: 2500, up: 1000 });                   // internet, though all traffic is shown
+    assert.deepEqual([d.down, d.up], [3000, 1000]);                          // the row's all-traffic figures stay above it
     w._applyRaw('wan');
     assert.deepEqual((await w._detailsData('10.8.0.2')).tunnel, { down: 2500, up: 1000 });
     const lan = await w._detailsData('192.168.1.10').catch(() => null);
