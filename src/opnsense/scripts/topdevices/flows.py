@@ -391,7 +391,7 @@ def tunnel_totals(series, lo, hi):
 
 def scan_totals(job):
     """One file's bytes per device: {ip: [all_down, all_up, inet_down, inet_up,
-    local_down, local_up]}, all traffic over [a_lo, a_hi) and internet only over
+    span_down, span_up]}, all traffic over [a_lo, a_hi) and internet only over
     [i_lo, i_hi) (spec §5.3); the last two: all traffic over the internet span, which
     a tunnel device's internet only is its tunnel figure minus (2026-10-15 spec §6).
     The destination device downloads, the source device uploads; a download is
@@ -552,7 +552,8 @@ def answer_device(ip, frm, to, now, opened, net, workers, tunnels=None):
     """One device's peers and ports over [max(frm, L), to), both scopes (spec §5.5).
     tunnels: the tunnel samples (read_tunnels()); None or {} = none. A device with
     samples also gets its tunnel figures over the same span (2026-10-15 spec §6):
-    all traffic from the tunnel, internet only = that minus NetFlow's figure."""
+    all traffic from the tunnel, internet only = that minus NetFlow's figure; none
+    (tunnel None) for a range that ends before the first sample."""
     if not net.is_device(ip):
         raise ValueError('%s is not a local device' % _ip_str(ip))
     L = log_from(opened)
@@ -570,9 +571,12 @@ def answer_device(ip, frm, to, now, opened, net, workers, tunnels=None):
             dirs[0] += r[0]
             dirs[1] += r[1]
     tunnel = None
-    if tunnels and any(key[1] == ip for key in tunnels):
+    tunnels = tunnels or {}
+    S = tunnel_start(tunnels)
+    # as in the totals answer: only when some sample bounds an interval inside the range
+    if S is not None and S < to and any(key[1] == ip for key in tunnels):
         t_all = tunnel_totals(tunnels, lo, to).get(ip, [0.0, 0.0])
-        tunnel = {'from': tunnel_start(tunnels),
+        tunnel = {'from': S,
                   'all': [int(round(x)) for x in t_all],
                   'inet': [int(round(max(0.0, t_all[0] - dirs[0]))), int(round(max(0.0, t_all[1] - dirs[1])))]}
     return {'now': now, 'log_from': L, 'ip': _ip_str(ip), 'from': lo, 'to': to,

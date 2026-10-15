@@ -151,6 +151,12 @@ FLOW_MUTANTS = [
     ("a device's tunnel internet only not clamped at zero",
      "int(round(max(0.0, t_all[1] - dirs[1])))", "int(round(t_all[1] - dirs[1]))"),
     ("a device's upload bytes from the workers dropped", "            dirs[1] += r[1]\n", ""),
+    ('the local upload taken over the all-traffic span', "            t[5] += i\n", "            t[5] += a\n"),
+    ('internet only upload for a tunnel device not clamped at zero',
+     "            t[3] = max(0.0, u - t[5])", "            t[3] = u - t[5]"),
+    ('a device panel given tunnel figures for a range before the first sample',
+     "    if S is not None and S < to and any(key[1] == ip for key in tunnels):",
+     "    if S is not None and any(key[1] == ip for key in tunnels):"),
     ('the device panel never given the samples',
      "            out = answer_device(req['ip'], req['from'], req['to'], now, opened, net, workers,\n"
      "                                tunnels=read_tunnels(log))",
