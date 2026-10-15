@@ -44,10 +44,13 @@ fresh() {
     echo flows > "$R/var/log/flowd.log.000001"
     ln "$R/var/log/flowd.log.000001" "$R/var/log/topdevices/flowd.1000.2000"
     : > "$R/var/log/topdevices/.current"
+    echo '1760000000 peer 1 2' > "$R/var/log/topdevices/tunnels.20260921"
     : > "$R$U/scripts/topdevices/__pycache__/flows.cpython-313.pyc"
     : > "$R$U/www/js/widgets/Other.js"; : > "$R$U/www/js/widgets/Metadata/Other.xml"
     : > "$R$U/service/conf/actions.d/actions_other.conf"; : > "$R/usr/local/etc/cron.d/other"
     for p in $OURS $THEIRS; do [ -e "$R$p" ] || fail "test setup: $p missing"; done
+    # the sampler is removed with the scripts folder (no per-file removal), its log with the kept folder
+    for p in $U/scripts/topdevices/tunnels.py /var/log/topdevices/tunnels.20260921; do [ -e "$R$p" ] || fail "test setup: $p missing"; done
     echo "$R"
 }
 nlink() { stat -c '%h' "$1" 2>/dev/null || stat -f '%l' "$1"; }    # GNU first: BSD's -f means something else to GNU stat

@@ -37,6 +37,10 @@
 # run through configctl or cron it installs everything but uninstall.sh and its
 # action, until the next run. Nothing else changes in 0.3.1, so the second run
 # can wait for the next Sunday.
+# UPGRADING FROM 0.3.x: likewise, the 0.3.x installer only knows its eleven files:
+# run through configctl it installs everything but tunnels.py and the two-line
+# cron file, until the next run (VPN devices stay local-only meanwhile). Use the
+# bootstrap command once, or run configctl topdevices install twice.
 #
 # REMOVING: configctl topdevices uninstall (see uninstall.sh).
 #
@@ -70,6 +74,7 @@ install.sh|$SCRIPTS/install.sh
 $P/scripts/topdevices/flows.py|$SCRIPTS/flows.py
 $P/mvc/app/controllers/OPNsense/TopDevices/Api/FlowsController.php|$MVC/controllers/OPNsense/TopDevices/Api/FlowsController.php
 $P/scripts/topdevices/keep.py|$SCRIPTS/keep.py
+$P/scripts/topdevices/tunnels.py|$SCRIPTS/tunnels.py
 src/etc/cron.d/topdevices|/usr/local/etc/cron.d/topdevices
 $P/scripts/topdevices/uninstall.sh|$SCRIPTS/uninstall.sh
 "
@@ -123,7 +128,7 @@ echo "widget installed"
 # Once now, so the kept log starts with core's current files (spec 2026-09-24 §9).
 if [ -z "$ROOT" ]; then
     if "$SCRIPTS/keep.py"; then
-        echo "flow log kept in /var/log/topdevices (cron: every 10 minutes)"
+        echo "flow log kept in /var/log/topdevices (cron: keep.py every 10 minutes, tunnels.py every minute)"
     else
         echo "WARNING: keep.py failed (see the system log); cron tries again every 10 minutes" >&2
     fi

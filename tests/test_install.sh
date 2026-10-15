@@ -29,6 +29,7 @@ install.sh|/usr/local/opnsense/scripts/topdevices/install.sh|755
 src/opnsense/scripts/topdevices/flows.py|/usr/local/opnsense/scripts/topdevices/flows.py|755
 src/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/FlowsController.php|/usr/local/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/FlowsController.php|644
 src/opnsense/scripts/topdevices/keep.py|/usr/local/opnsense/scripts/topdevices/keep.py|755
+src/opnsense/scripts/topdevices/tunnels.py|/usr/local/opnsense/scripts/topdevices/tunnels.py|755
 src/etc/cron.d/topdevices|/usr/local/etc/cron.d/topdevices|644
 src/opnsense/scripts/topdevices/uninstall.sh|/usr/local/opnsense/scripts/topdevices/uninstall.sh|755
 LIST
@@ -63,6 +64,9 @@ grep -q '<pattern>api/topdevices/flows/\*</pattern>' "$R/usr/local/opnsense/mvc/
 # message below (from ROOT skipping the run) is the real check
 grep -qxF "$(printf '*/10\t*\t*\t*\t*\troot\t/usr/local/opnsense/scripts/topdevices/keep.py >/dev/null 2>&1')" \
     "$R/usr/local/etc/cron.d/topdevices" || fail "the cron line is wrong"
+grep -qxF "$(printf '*\t*\t*\t*\t*\troot\t/usr/local/opnsense/scripts/topdevices/tunnels.py >/dev/null 2>&1')" \
+    "$R/usr/local/etc/cron.d/topdevices" || fail "the sampler cron line is wrong"
+[ "$(grep -c 'topdevices/' "$R/usr/local/etc/cron.d/topdevices")" = 2 ] || fail "the cron file should hold exactly two jobs"
 echo "$first" | grep -q 'keep.py not run (ROOT=' || fail "the dry run did not say it skipped keep.py"
 # A download that fails must not leave the installer's scratch directory behind.
 F="$R/fetchfail"; mkdir -p "$F"

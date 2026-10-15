@@ -1,3 +1,5 @@
-# TopDevices: keeps NetFlow's rotated flow log for two days (installed by install.sh)
+# TopDevices: keeps NetFlow's rotated flow log for two days, and samples the WireGuard
+# tunnel counters every minute (installed by install.sh)
 SHELL=/bin/sh
 */10	*	*	*	*	root	/usr/local/opnsense/scripts/topdevices/keep.py >/dev/null 2>&1
+*	*	*	*	*	root	/usr/local/opnsense/scripts/topdevices/tunnels.py >/dev/null 2>&1
