@@ -658,12 +658,14 @@ test('a failed scope change says so and closes the device panel', async () => {
 
 // --- recent ranges from the raw flow log -----------------------------------------
 
-// a flows/totals answer as flows.py gives it (spec §5.1)
+// a flows/totals answer as flows.py gives it (spec §5.1); `tunnel` only when given,
+// as a 0.3.4 backend's answer has none
 function totalsAnswer(from, to, { L = from - 3600, hourlyUntil = null,
-                                  devices = { '192.168.1.10': [1000, 357, 1000, 300], '192.168.30.5': [50, 0, 0, 0] } } = {}) {
+                                  devices = { '192.168.1.10': [1000, 357, 1000, 300], '192.168.30.5': [50, 0, 0, 0] },
+                                  tunnel = undefined } = {}) {
     return { v: '0.2.0', now: to, log_from: L,
              all: { from, to, hourly_until: hourlyUntil }, inet: { from: Math.max(from, L), to },
-             wan: ['em0'], devices };
+             wan: ['em0'], devices, ...(tunnel === undefined ? {} : { tunnel }) };
 }
 const flowsOnly = (answer) => (url) => (url.startsWith(`${FLOWS_API}/`) ? answer(url) : null);
 
@@ -864,7 +866,7 @@ test('the device panel reads the raw log for the table\'s window, and a scope sw
     let d = await w._detailsData('192.168.1.10');
     assert.deepEqual(requests.slice(before), [`${FLOWS_API}/device/192.168.1.10/${NOW - 3600}/${NOW}`]);
     assert.deepEqual(d, { peers: { '8.8.8.8': 1000, '1.1.1.1': 300, '192.168.30.5': 50 }, ports: { 443: 1300, 445: 50 },
-                          down: 1000, up: 357, note: null });
+                          down: 1000, up: 357, note: null, tunnel: null });    // a 0.3.4 answer: no tunnel line
     w.state.scope = 'wan';
     await w.render();
     d = await w._detailsData('192.168.1.10');
@@ -916,6 +918,79 @@ test('a custom range ending later today asks the raw log up to now', async () =>
 test('the raw log gets a minute to answer, as JSON', async () => {
     await loadRaw('1h', () => totalsAnswer(NOW - 3600, NOW));
     assert.deepEqual([lastAjax.dataType, lastAjax.timeout], ['json', 60000]);
+});
+
+// --- VPN devices counted from the tunnel (spec 2026-10-15) --------------------
+
+const TUNNEL_ANSWER = (from, to, tunnelFrom = from) => totalsAnswer(from, to, {
+    devices: { '192.168.1.10': [1000, 357, 1000, 300], '10.8.0.2': [3000, 1000, 2500, 1000] },
+    tunnel: { from: tunnelFrom, devices: ['10.8.0.2'] } });
+
+const rowsHtml = (w) => w._rowsHtml(w.state.rows, v => String(v), 'none');
+// one device's <tr>, by its place in the rows: this jQuery stub's _esc() writes no
+// addresses, so the markup cannot be searched for them
+const rowHtml = (w, ip) => rowsHtml(w).split('<tr').slice(1)[w.state.rows.findIndex(r => r.ip === ip)];
+
+test('a tunnel-counted row is tagged, in both scopes', async () => {
+    const { w } = await loadRaw('1h', () => TUNNEL_ANSWER(NOW - 3600, NOW));
+    assert.deepEqual(w.state.rows.map(r => [r.ip, r.tunnel]).sort(), [['10.8.0.2', true], ['192.168.1.10', false]]);
+    assert.ok(w.state.rows.every(r => !/tunnel/.test(r.name)));             // the tag is markup, not the name
+    const vpnRow = rowHtml(w, '10.8.0.2');
+    const lanRow = rowHtml(w, '192.168.1.10');
+    assert.match(vpnRow, /tunnel/);
+    assert.doesNotMatch(lanRow, /tunnel/);                                   // the LAN row carries no tag
+    w._applyRaw('wan');
+    assert.deepEqual(byIp(w)['10.8.0.2'], [2500, 1000]);
+    assert.match(rowsHtml(w), /tunnel/);
+    w.names = { '10.8.0.2': 'Phone' };                                       // a named device: the tag follows its name
+    w._applyRaw('all');
+    assert.equal(w.state.rows.find(r => r.ip === '10.8.0.2').name, 'Phone');
+    assert.match(rowHtml(w, '10.8.0.2'), /tunnel<\/small><\/strong>/);
+});
+
+test('an answer without a tunnel block is read as before', async () => {
+    const { w } = await loadRaw('1h', () => totalsAnswer(NOW - 3600, NOW));
+    assert.ok(w.state.rows.every(r => r.tunnel === false));
+    assert.doesNotMatch(rowsHtml(w), /tunnel/);
+    assert.equal(w._windowCaption().note, null);
+});
+
+test('the caption says when the VPN figures start later than the range', async () => {
+    // S(hour UTC, minute, day): Today starts at S(14, 0, 22) = 00:00 on the 23rd in the firewall's zone (UTC+10);
+    // the samples begin at 12:00 that day, S(2, 0, 23)
+    const { w } = await loadRaw('today', () => TUNNEL_ANSWER(S(14, 0, 22), NOW, S(2, 0, 23)));
+    assert.equal(w._windowCaption().note, 'VPN figures cover from Wed 23 Sep 12:00');
+    const { w: w2 } = await loadRaw('today', () => TUNNEL_ANSWER(S(14, 0, 22), NOW));
+    assert.equal(w2._windowCaption().note, null);
+});
+
+test('the device panel of a tunnel device carries its internet line, in the scope shown', async () => {
+    // flows.py answers `tunnel: null` for a device not counted from the tunnel
+    const { w } = await loadRaw('1h', (url) => url.includes('/device/')
+        ? { now: NOW, log_from: NOW - 7200, ip: '10.8.0.2', from: NOW - 3600, to: NOW,
+            peers: { all: [['192.168.1.10', 500]], inet: [] }, ports: { all: [['443', 500]], inet: [] },
+            tunnel: url.includes('/device/10.8.0.2/')
+                ? { from: NOW - 7200, all: [3000, 1000], inet: [2500, 1000] } : null }
+        : TUNNEL_ANSWER(NOW - 3600, NOW));
+    const d = await w._detailsData('10.8.0.2');
+    assert.deepEqual(d.tunnel, { down: 3000, up: 1000 });
+    w._applyRaw('wan');
+    assert.deepEqual((await w._detailsData('10.8.0.2')).tunnel, { down: 2500, up: 1000 });
+    const lan = await w._detailsData('192.168.1.10').catch(() => null);
+    assert.ok(lan === null || lan.tunnel === null);
+    // drawn: the internet line on the tunnel device's panel only
+    w.state.selected = '10.8.0.2';
+    await w.renderDetails('10.8.0.2');
+    assert.match(dom['.td-details'], /Internet &darr; 2\.5 KB &uarr; 1\.0 KB, counted from the tunnel/);
+    w.state.selected = '192.168.1.10';
+    await w.renderDetails('192.168.1.10');
+    assert.match(dom['.td-details'], /Top peers/);
+    assert.doesNotMatch(dom['.td-details'], /counted from the tunnel/);
+});
+
+test("the device panel on NetFlow's records has no tunnel line", async () => {
+    const { w } = await load('yesterday');
+    assert.equal((await w._detailsData('192.168.1.10')).tunnel, null);
 });
 
 // --- 0.3.2: byte units, the widget's own refresh schedule, a day's first second, an unknown zone ---

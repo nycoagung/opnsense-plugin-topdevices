@@ -349,6 +349,9 @@ export function panelTop(rowOffset, tableHeight, panelHeight) {
 }
 
 const FALLBACK_NOTE = "The raw flow log could not be read: showing NetFlow's records";
+// the tag's tooltip on a row counted from the WireGuard tunnel (spec 2026-10-15)
+const TUNNEL_TITLE = "Counted from the WireGuard tunnel: includes the tunnel's own overhead; "
+                   + 'internet only is the tunnel figure less local traffic';
 // a refresh asks again for a zone it could not read once this long has passed since the last ask
 // (never for one this browser does not know: tzUnknown)
 const ZONE_RETRY_MS = 10000;
@@ -887,9 +890,11 @@ export default class TopDevices extends BaseWidget {
     // Rows, span and scope from the raw answer in hand: a scope switch needs no request.
     _applyRaw(scope) {
         const r = this.state.raw;
+        // devices counted from the WireGuard tunnel; a 0.3.4 backend's answer has no `tunnel`
+        const tunnel = new Set((r.tunnel && r.tunnel.devices) || []);
         this.state.rows = rawRows(r, scope).map(d => ({
             ip: d.ip, name: this.names[d.ip] || (this.ifaceNames || {})[d.ip] || '', net: this._netOf(d.ip),
-            down: d.down, up: d.up, total: d.down + d.up
+            down: d.down, up: d.up, total: d.down + d.up, tunnel: tunnel.has(d.ip)
         }));
         this.state.window = rawSpan(r, scope);
         this.state.request = Object.assign({}, this.state.request, { scope });
@@ -937,9 +942,14 @@ export default class TopDevices extends BaseWidget {
             return { text: `${this._dateStr(q.from)}  →  ${this._endStr(q.to, q.from)}${tail}`,
                      note: 'Internet only: no flows in the log for this range' };
         }
+        // the tunnel's samples may begin later than the range (spec 2026-10-15)
+        const t = r.tunnel;
+        const vpn = t && t.devices && t.devices.length && t.from > q.from
+            ? `VPN figures cover from ${this._dayTime(t.from)}` : null;
         const note = wan && a > q.from
             ? `Internet only covers the last ${fmtSpan(b - a)}: older flows are no longer in the log` : null;
-        return { text: `${this._dateStr(a)}  →  ${this._endStr(b, a)}${tail}`, note };
+        return { text: `${this._dateStr(a)}  →  ${this._endStr(b, a)}${tail}`,
+                 note: note && vpn ? `${note} · ${vpn}` : note || vpn };
     }
 
     // The span the figures cover, and a note when the buckets are coarser than
@@ -1434,10 +1444,12 @@ export default class TopDevices extends BaseWidget {
         if (rows.length === 0) return `<tr><td colspan="5" class="text-muted">${this._esc(empty)}</td></tr>`;
         return rows.map((r) => {
             const clip = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+            // markup only: the tag is never part of r.name, so sorting and the search ignore it
+            const tag = r.tunnel ? ` <small class="text-info" title="${this._esc(TUNNEL_TITLE)}">tunnel</small>` : '';
             const label = r.name
-                ? `<strong style="display:block;${clip}">${this._esc(r.name)}</strong>`
+                ? `<strong style="display:block;${clip}">${this._esc(r.name)}${tag}</strong>`
                   + `<small class="text-muted" style="display:block;${clip}">${this._esc(r.ip)}</small>`
-                : `<strong style="display:block;${clip}">${this._esc(r.ip)}</strong>`;
+                : `<strong style="display:block;${clip}">${this._esc(r.ip)}${tag}</strong>`;
             const net = this.networks.find(n => n.key === r.net);
             const sel = this.state.selected === r.ip ? ' class="info"' : '';
             return `<tr${sel} data-ip="${this._esc(r.ip)}" style="cursor:pointer;"
@@ -1978,7 +1990,9 @@ export default class TopDevices extends BaseWidget {
         return {
             peers: Object.fromEntries(d.peers[k]), ports: Object.fromEntries(d.ports[k]),
             down: row ? row.down : 0, up: row ? row.up : 0,
-            note: d.from > q.from ? `Peers and ports cover the last ${fmtSpan(d.to - d.from)}` : null
+            note: d.from > q.from ? `Peers and ports cover the last ${fmtSpan(d.to - d.from)}` : null,
+            // a VPN device's internet figures from the tunnel; none from a 0.3.4 backend
+            tunnel: d.tunnel ? { down: d.tunnel[k][0], up: d.tunnel[k][1] } : null
         };
     }
 
@@ -2008,7 +2022,7 @@ export default class TopDevices extends BaseWidget {
         const same = plan.start === table.start && plan.end === table.end;
         const note = plan.end <= plan.start ? `Peers and ports are only kept for ${DETAILS_DAYS} days`
             : same ? null : `Peers and ports cover ${this._span(plan.start, plan.end, q.now)} (kept per day)`;
-        return { peers, ports, down, up, note };
+        return { peers, ports, down, up, note, tunnel: null };
     }
 
     async _renderDetails(ip) {
@@ -2060,6 +2074,7 @@ export default class TopDevices extends BaseWidget {
                     </select>
                 </div>
                 ${d.note ? `<small class="text-warning" style="display:block;margin-top:3px;">${this._esc(d.note)}</small>` : ''}
+                ${d.tunnel ? `<small class="text-muted" style="display:block;margin-top:3px;">Internet &darr; ${this._fmt(d.tunnel.down)} &uarr; ${this._fmt(d.tunnel.up)}, counted from the tunnel &middot; internet peers are not recorded for VPN devices</small>` : ''}
                 <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:6px;">
                     <div style="flex:1 1 260px;min-width:0;">
                         <small class="text-muted">Top peers</small>
