@@ -275,6 +275,13 @@ class Tunnels(unittest.TestCase):
         s = self.read([('tunnels.20260921', text, T0)])
         self.assertEqual(s, {('wg0', IP('10.8.0.2')): [(T0, 0, 0)]})
 
+    def test_a_final_line_cut_inside_a_number_is_not_a_sample(self):
+        # five fields, but the counters are a truncated 500000 500000: unterminated, so still being written
+        text = samples('10.8.0.2', [(T0, 0, 0)]) + '%d wg0 10.8.0.2 5 5' % (T0 + 60)
+        s = self.read([('tunnels.20260921', text, T0)])
+        self.assertEqual(s, {('wg0', IP('10.8.0.2')): [(T0, 0, 0)]})
+        self.assertNotIn((T0 + 60, 5, 5), s[('wg0', IP('10.8.0.2'))])
+
     # --- differencing (spec §4) ---
 
     def series(self, points, ip='10.8.0.2', iface='wg0'):

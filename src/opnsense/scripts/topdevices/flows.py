@@ -344,7 +344,7 @@ def read_tunnels(log=LOG):
                 data = f.read()
         except FileNotFoundError:
             continue                                  # pruned since the listing
-        for line in data.split(b'\n'):
+        for line in data.split(b'\n')[:-1]:           # the last chunk is b'' or a line still being written
             parts = line.split()
             if len(parts) != 5:
                 continue
