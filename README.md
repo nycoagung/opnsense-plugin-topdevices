@@ -315,7 +315,8 @@ is exact.
   the kept log within 10 minutes.
 - **What it holds.** Raw flow records, readable by root only, as core's are.
 - **The tunnel samples** live beside the kept files (`tunnels.<UTC day>`, root only,
-  about 130 KB a day per peer) and are pruned by the same 51-hour rule.
+  under 100 KB a day per peer) and are pruned by age after 51 hours (the size caps
+  above apply to the kept log only).
 - **After install** the kept log starts with what core still holds, so Yesterday is
   exact from the first midnight after install, as long as the install day's first
   records were still in core's log. Until then, and wherever the kept log has a gap
@@ -371,9 +372,11 @@ you can see changes.
 
 **Upgrading from 0.3.x to 0.4.0:** run the bootstrap command once, or
 `configctl topdevices install` twice. The 0.3.x installer only knows its eleven
-files, so its first run installs those from 0.4.0 (the new installer among them) and
-the second adds `tunnels.py` and the two-line cron file, completing all 12. VPN clients
-stay local-only until the sampler has run twice.
+files, so its first run installs those from 0.4.0, the new installer and the new cron
+file among them: the cron file's sampler line then fails silently every minute until
+the second run adds `tunnels.py`, completing all 12. Hence the bootstrap once, or
+`configctl topdevices install` twice straight away. VPN clients stay local-only until
+the sampler has run twice.
 
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
@@ -653,7 +656,7 @@ Since 0.3.1, as root:
 
 It removes everything the installer put in place: the weekly *Install/refresh
 TopDevices dashboard widget* job under System → Settings → Cron (through core's own
-Cron model, then a cron reload), the keeper's cron file and `/var/log/topdevices`
+Cron model, then a cron reload), the plugin's cron file (keeper and sampler) and `/var/log/topdevices`
 (each kept file is a second name for one of core's, so core's log is untouched), the
 widget and its metadata, the two controllers, the ACL, the scripts directory and the
 configd actions file, after which configd restarts by itself a second later. It
@@ -704,6 +707,9 @@ Rolling back from 0.3.0 works the same way, with that release's tag. `keep.py` a
 cron file stay behind and keep running, harmless: an earlier `flows.py` reads only
 core's files. Remove them with `rm /usr/local/etc/cron.d/topdevices
 /usr/local/opnsense/scripts/topdevices/keep.py && rm -r /var/log/topdevices`.
+
+Rolling back to 0.3.x rewrites the cron file to one line, so the sampler stops;
+`tunnels.py` and the `tunnels.*` day files stay behind, inert (`rm` them if you like).
 
 ## Requirements
 

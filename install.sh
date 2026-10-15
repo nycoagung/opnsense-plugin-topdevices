@@ -38,9 +38,10 @@
 # action, until the next run. Nothing else changes in 0.3.1, so the second run
 # can wait for the next Sunday.
 # UPGRADING FROM 0.3.x: likewise, the 0.3.x installer only knows its eleven files:
-# run through configctl it installs everything but tunnels.py and the two-line
-# cron file, until the next run (VPN devices stay local-only meanwhile). Use the
-# bootstrap command once, or run configctl topdevices install twice.
+# run through configctl it installs the eleven it knows, the new two-line cron file
+# among them, so the sampler line fails silently until the next run adds tunnels.py
+# (VPN devices stay local-only meanwhile). Use the bootstrap command once, or run
+# configctl topdevices install twice straight away.
 #
 # REMOVING: configctl topdevices uninstall (see uninstall.sh).
 #
