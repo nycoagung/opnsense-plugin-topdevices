@@ -390,10 +390,12 @@ def tunnel_totals(series, lo, hi):
 
 
 def scan_totals(job):
-    """One file's bytes per device: {ip: [all_down, all_up, inet_down, inet_up]}, all
-    traffic over [a_lo, a_hi) and internet only over [i_lo, i_hi) (spec §5.3). The
-    destination device downloads, the source device uploads; a download is internet
-    when it came in upstream, an upload when it left upstream."""
+    """One file's bytes per device: {ip: [all_down, all_up, inet_down, inet_up,
+    local_down, local_up]}, all traffic over [a_lo, a_hi) and internet only over
+    [i_lo, i_hi) (spec §5.3); the last two: all traffic over the internet span, which
+    a tunnel device's internet only is its tunnel figure minus (2026-10-15 spec §6).
+    The destination device downloads, the source device uploads; a download is
+    internet when it came in upstream, an upload when it left upstream."""
     fd, a_lo, a_hi, i_lo, i_hi, net = job
     lo = min(a_lo, i_lo)
     acc = {}
@@ -405,13 +407,15 @@ def scan_totals(job):
         if not (a or i):
             continue
         if net.is_device(dst):
-            t = acc.get(dst) or acc.setdefault(dst, [0.0, 0.0, 0.0, 0.0])
+            t = acc.get(dst) or acc.setdefault(dst, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             t[0] += a
+            t[4] += i                                 # all traffic over the internet span (tunnel devices, spec §6)
             if if_in in net.upstream:
                 t[2] += i
         if net.is_device(src):
-            t = acc.get(src) or acc.setdefault(src, [0.0, 0.0, 0.0, 0.0])
+            t = acc.get(src) or acc.setdefault(src, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             t[1] += a
+            t[5] += i
             if if_out in net.upstream:
                 t[3] += i
     return acc
@@ -421,8 +425,8 @@ def merge_totals(parts):
     out = {}
     for part in parts:
         for ip, v in part.items():
-            t = out.setdefault(ip, [0.0, 0.0, 0.0, 0.0])
-            for k in range(4):
+            t = out.setdefault(ip, [0.0] * 6)
+            for k in range(6):
                 t[k] += v[k]
     return out
 
@@ -448,9 +452,10 @@ def _refuse_if_too_big(files):
                              'at: it cannot be read exactly' % (size // (1024 * 1024)))
 
 
-def answer_totals(frm, to, now, opened, net, hourly_rows, workers):
+def answer_totals(frm, to, now, opened, net, hourly_rows, workers, tunnels=None):
     """The totals answer (spec §5.1) for [frm, to) at now. hourly_rows(lo, hi) gives
-    core's hourly FlowSourceAddrTotals rows for buckets starting in [lo, hi)."""
+    core's hourly FlowSourceAddrTotals rows for buckets starting in [lo, hi).
+    tunnels: the tunnel samples (read_tunnels()); None or {} = none (2026-10-15 spec §6)."""
     L = log_from(opened)
     if L is None:
         raise ValueError('the NetFlow flow log holds no flows yet')
@@ -468,14 +473,30 @@ def answer_totals(frm, to, now, opened, net, hourly_rows, workers):
     if p['hourly']:
         h_lo, h_hi = p['hourly']
         for ip, (down, up) in hourly_fill(hourly_rows(h_lo, h_hi), h_lo, h_hi, now, net).items():
-            t = acc.setdefault(ip, [0.0, 0.0, 0.0, 0.0])
+            t = acc.setdefault(ip, [0.0] * 6)
             t[0] += down
             t[1] += up
+    # tunnel devices (2026-10-15 spec §6): the tunnel figure is their all traffic,
+    # and internet only is what is left after the local traffic NetFlow did see
+    tunnels = tunnels or {}
+    S = tunnel_start(tunnels)
+    credited = []
+    if S is not None and S < to:                  # some sample bounds an interval inside the range
+        t_all = tunnel_totals(tunnels, frm, to)
+        t_inet = tunnel_totals(tunnels, i_lo, i_hi)
+        for ip in sorted(t_all):
+            t = acc.setdefault(ip, [0.0] * 6)
+            t[0], t[1] = t_all[ip]
+            d, u = t_inet.get(ip, [0.0, 0.0])
+            t[2] = max(0.0, d - t[4])
+            t[3] = max(0.0, u - t[5])
+            credited.append(ip)
     return {'now': now, 'log_from': L,
             'all': {'from': frm, 'to': to, 'hourly_until': p['hourly'][1] if p['hourly'] else None},
             'inet': {'from': i_lo, 'to': to},
             'wan': net.upstream_names,
-            'devices': {_ip_str(ip): [int(round(x)) for x in v] for ip, v in sorted(acc.items())},
+            'devices': {_ip_str(ip): [int(round(x)) for x in v[:4]] for ip, v in sorted(acc.items())},
+            'tunnel': {'from': S, 'devices': [_ip_str(ip) for ip in credited]},
             'files': len(jobs), 'workers': max(1, min(workers, len(jobs)))}
 
 
@@ -483,17 +504,19 @@ def answer_totals(frm, to, now, opened, net, hourly_rows, workers):
 
 
 def scan_device(job):
-    """One file's peers and ports for one device over [lo, hi), in both scopes:
-    ({peer: [all, inet]}, {port: [all, inet]}), both directions summed. A port is the
-    service port as core's details define it: the lower of the flow's two."""
+    """One file's peers and ports for one device over [lo, hi), in both scopes,
+    and its all-traffic bytes per direction: ({peer: [all, inet]}, {port: [all, inet]},
+    [down, up]), the tables with both directions summed. A port is the service port
+    as core's details define it: the lower of the flow's two."""
     fd, lo, hi, ip, net = job
-    peers, ports = {}, {}
+    peers, ports, dirs = {}, {}, [0.0, 0.0]
     for recv, src, dst, sp, dp, octets, if_in, if_out, fs, fe, dur in records(_read(fd), ports=True):
         if recv < lo or (src != ip and dst != ip):
             continue
         b = share(fs, fe, dur, octets, lo, hi)
         if not b:
             continue
+        dirs[0 if dst == ip else 1] += b
         if dst == ip:                     # its download: internet when it came in upstream
             peer, inet = src, if_in in net.upstream
         else:                             # its upload: internet when it left upstream
@@ -504,7 +527,7 @@ def scan_device(job):
             t[0] += b
             if inet:
                 t[1] += b
-    return peers, ports
+    return peers, ports, dirs
 
 
 def _merge2(into, part):
@@ -525,25 +548,37 @@ def _port_str(port):
     return str(port) if port else 'other'
 
 
-def answer_device(ip, frm, to, now, opened, net, workers):
-    """One device's peers and ports over [max(frm, L), to), both scopes (spec §5.5)."""
+def answer_device(ip, frm, to, now, opened, net, workers, tunnels=None):
+    """One device's peers and ports over [max(frm, L), to), both scopes (spec §5.5).
+    tunnels: the tunnel samples (read_tunnels()); None or {} = none. A device with
+    samples also gets its tunnel figures over the same span (2026-10-15 spec §6):
+    all traffic from the tunnel, internet only = that minus NetFlow's figure."""
     if not net.is_device(ip):
         raise ValueError('%s is not a local device' % _ip_str(ip))
     L = log_from(opened)
     if L is None:
         raise ValueError('the NetFlow flow log holds no flows yet')
     lo = max(frm, L)
-    peers, ports, jobs = {}, {}, []
+    peers, ports, dirs, jobs = {}, {}, [0.0, 0.0], []
     if lo < to:
         files = files_for(opened, lo)
         _refuse_if_too_big(files)
         jobs = [(fd, lo, to, ip, net) for fd, _, _ in files]
-        for p, q in run_parallel(scan_device, jobs, workers):
+        for p, q, r in run_parallel(scan_device, jobs, workers):
             _merge2(peers, p)
             _merge2(ports, q)
+            dirs[0] += r[0]
+            dirs[1] += r[1]
+    tunnel = None
+    if tunnels and any(key[1] == ip for key in tunnels):
+        t_all = tunnel_totals(tunnels, lo, to).get(ip, [0.0, 0.0])
+        tunnel = {'from': tunnel_start(tunnels),
+                  'all': [int(round(x)) for x in t_all],
+                  'inet': [int(round(max(0.0, t_all[0] - dirs[0]))), int(round(max(0.0, t_all[1] - dirs[1])))]}
     return {'now': now, 'log_from': L, 'ip': _ip_str(ip), 'from': lo, 'to': to,
             'peers': {'all': top(peers, 0, _ip_str), 'inet': top(peers, 1, _ip_str)},
             'ports': {'all': top(ports, 0, _port_str), 'inet': top(ports, 1, _port_str)},
+            'tunnel': tunnel,
             'files': len(jobs), 'workers': max(1, min(workers, len(jobs)))}
 
 
@@ -645,9 +680,11 @@ def main(argv, now=None, log=LOG, system=None, hourly=None):
                              "is NetFlow's aggregator running?" % (newest_size // (1024 * 1024)))
         workers = max(1, (os.cpu_count() or 2) // 2)
         if req['mode'] == 'totals':
-            out = answer_totals(req['from'], req['to'], now, opened, net, hourly or core_hourly, workers)
+            out = answer_totals(req['from'], req['to'], now, opened, net, hourly or core_hourly, workers,
+                                tunnels=read_tunnels(log))
         else:
-            out = answer_device(req['ip'], req['from'], req['to'], now, opened, net, workers)
+            out = answer_device(req['ip'], req['from'], req['to'], now, opened, net, workers,
+                                tunnels=read_tunnels(log))
         out['cost_ms'] = int(round((time.monotonic() - t0) * 1000))
     except Exception as exc:          # never a traceback: configd returns stdout as the answer
         out = {'error': str(exc) or exc.__class__.__name__}

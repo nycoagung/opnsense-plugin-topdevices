@@ -321,7 +321,111 @@ class Tunnels(unittest.TestCase):
         self.assertEqual(flows.tunnel_totals(self.series([(T0, 100, 100)]), T0 - 60, T0 + 60), {IP('10.8.0.2'): [0.0, 0.0]})
 
 
-IFNAME = {1: 'em0', 2: 'igb1', 3: 'vlan01'}      # the interface numbers the synthetic logs use
+VPN = ipaddress.ip_network('10.8.0.0/24')
+NET_VPN = flows.Net([LAN, IOT, VPN], [1], ['em0'])
+
+
+class TunnelAnswers(unittest.TestCase):
+    """The answers with tunnel samples (spec §6): the tunnel figure replaces NetFlow's
+    all-traffic one, internet only is tunnel minus NetFlow's local figure."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        # a VPN device that pulled 500 B from a LAN device (local, seen by NetFlow) in [T0+10, T0+90)
+        local = flow('192.168.1.10', '10.8.0.2', 500, recv=T0 + 100, start=T0 + 10, end=T0 + 90, if_in=2, if_out=4)
+        self.opened = flows.open_log(write_log(self.tmp.name, [('flowd.log', EARLY + b''.join(KINDS) + local, T0 + 100)]))
+        self.addCleanup(flows.close_log, self.opened)
+        # tunnel: 3000 B sent to it and 1000 B received from it over [T0, T0+100)
+        self.series = {('wg0', IP('10.8.0.2')): [(T0, 0, 0), (T0 + 100, 1000, 3000)]}
+
+    def totals(self, frm, to, series=None, now=T0 + 200):
+        return flows.answer_totals(frm, to, now, self.opened, NET_VPN, lambda lo, hi: [], 1, tunnels=series)
+
+    def test_without_samples_the_answer_is_as_before(self):
+        a = self.totals(T0, T0 + 100)
+        self.assertEqual(a['devices']['10.8.0.2'], [500, 0, 0, 0])
+        self.assertEqual(a['tunnel'], {'from': None, 'devices': []})
+
+    def test_the_tunnel_figure_replaces_all_traffic_and_internet_is_tunnel_minus_local(self):
+        a = self.totals(T0, T0 + 100, self.series)
+        self.assertEqual(a['devices']['10.8.0.2'], [3000, 1000, 2500, 1000])
+        self.assertEqual(a['tunnel'], {'from': T0, 'devices': ['10.8.0.2']})
+        # the LAN device: KINDS as before (1000 down; 300 + 50 + 7 up) plus the 500 B it sent the VPN device
+        self.assertEqual(a['devices']['192.168.1.10'], [1000, 857, 1000, 300])
+
+    def test_internet_only_never_goes_below_zero(self):
+        series = {('wg0', IP('10.8.0.2')): [(T0, 0, 0), (T0 + 100, 10, 100)]}      # less than its local traffic
+        a = self.totals(T0, T0 + 100, series)
+        self.assertEqual(a['devices']['10.8.0.2'], [100, 10, 0, 10])
+
+    def test_a_tunnel_device_netflow_never_saw_still_gets_a_row(self):
+        series = {('wg0', IP('10.8.0.9')): [(T0, 0, 0), (T0 + 100, 20, 40)]}
+        a = self.totals(T0, T0 + 100, series)
+        self.assertEqual(a['devices']['10.8.0.9'], [40, 20, 40, 20])
+
+    def test_a_range_before_the_first_sample_keeps_netflows_rows(self):
+        series = {('wg0', IP('10.8.0.2')): [(T0 + 150, 0, 0), (T0 + 200, 10, 10)]}
+        a = self.totals(T0, T0 + 100, series)
+        self.assertEqual(a['devices']['10.8.0.2'], [500, 0, 0, 0])
+        self.assertEqual(a['tunnel'], {'from': T0 + 150, 'devices': []})
+
+    def test_the_internet_span_is_the_one_the_tunnel_is_differenced_over(self):
+        # all traffic from the hourly records before the log (L = T0), internet only from L
+        series = {('wg0', IP('10.8.0.2')): [(T0 - 7200, 0, 0), (T0, 0, 0), (T0 + 100, 1000, 3000)]}
+        a = flows.answer_totals(T0 - 7200, T0 + 100, T0 + 200, self.opened, NET_VPN,
+                                lambda lo, hi: [{'start_time': utc(lo), 'src_addr': '10.8.0.2', 'direction': 'out', 'octets': 1.0}],
+                                1, tunnels=series)
+        self.assertEqual(a['inet'], {'from': T0, 'to': T0 + 100})
+        self.assertEqual(a['devices']['10.8.0.2'], [3000, 1000, 2500, 1000])
+
+    def test_tunnel_growth_before_the_internet_span_is_not_internet(self):
+        # the tunnel grew before the log began (L = T0): all traffic counts it, internet only does not
+        series = {('wg0', IP('10.8.0.2')): [(T0 - 7200, 0, 0), (T0, 500, 500), (T0 + 100, 1500, 3500)]}
+        a = flows.answer_totals(T0 - 7200, T0 + 100, T0 + 200, self.opened, NET_VPN, lambda lo, hi: [], 1, tunnels=series)
+        self.assertEqual(a['inet'], {'from': T0, 'to': T0 + 100})
+        self.assertEqual(a['devices']['10.8.0.2'], [3500, 1500, 2500, 1000])
+
+    def test_the_device_answer_carries_its_tunnel_figures(self):
+        a = flows.answer_device(IP('10.8.0.2'), T0, T0 + 100, T0 + 200, self.opened, NET_VPN, 1, tunnels=self.series)
+        self.assertEqual(a['tunnel'], {'from': T0, 'all': [3000, 1000], 'inet': [2500, 1000]})
+        self.assertEqual(a['peers']['all'], [['192.168.1.10', 500]])          # the local peer, as before
+        b = flows.answer_device(IP('192.168.1.10'), T0, T0 + 100, T0 + 200, self.opened, NET_VPN, 1, tunnels=self.series)
+        self.assertIsNone(b['tunnel'])
+
+    def test_the_device_answer_subtracts_each_direction_and_never_goes_below_zero(self):
+        # local both ways in two files: 500 B down (setUp's flow), 200 B up to the LAN device
+        up = flow('10.8.0.2', '192.168.1.10', 200, recv=T0 + 100, start=T0 + 10, end=T0 + 90, if_in=4, if_out=2)
+        with tempfile.TemporaryDirectory() as d:
+            opened = flows.open_log(write_log(d, [('flowd.log.000001', EARLY + b''.join(KINDS), T0 + 50),
+                                                  ('flowd.log', EARLY + up + flow('192.168.1.10', '10.8.0.2', 500, recv=T0 + 100,
+                                                                                 start=T0 + 10, end=T0 + 90, if_in=2, if_out=4), T0 + 100)]))
+            self.addCleanup(flows.close_log, opened)
+            for workers in (1, 2):
+                a = flows.answer_device(IP('10.8.0.2'), T0, T0 + 100, T0 + 200, opened, NET_VPN, workers, tunnels=self.series)
+                self.assertEqual(a['tunnel'], {'from': T0, 'all': [3000, 1000], 'inet': [2500, 800]}, workers)
+            small = {('wg0', IP('10.8.0.2')): [(T0, 0, 0), (T0 + 100, 100, 100)]}       # less than its local traffic
+            a = flows.answer_device(IP('10.8.0.2'), T0, T0 + 100, T0 + 200, opened, NET_VPN, 1, tunnels=small)
+            self.assertEqual(a['tunnel']['inet'], [0, 0])
+
+    def test_main_reads_the_samples_beside_the_log(self):
+        log = write_log(self.tmp.name, [('flowd.log', EARLY + b''.join(KINDS), T0 + 100)])
+        write_tunnels(self.tmp.name, [('tunnels.20260921', samples('10.8.0.2', [(T0, 0, 0), (T0 + 100, 1000, 3000)]), T0 + 100)])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            flows.main(['flows.py', 'totals', str(T0), str(T0 + 100)], now=T0 + 200, log=log,
+                       system=lambda: NET_VPN, hourly=lambda lo, hi: [])
+        a = json.loads(out.getvalue())
+        self.assertEqual(a['devices']['10.8.0.2'], [3000, 1000, 3000, 1000])
+        self.assertEqual(a['tunnel']['devices'], ['10.8.0.2'])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            flows.main(['flows.py', 'device', '10.8.0.2', str(T0), str(T0 + 100)], now=T0 + 200, log=log,
+                       system=lambda: NET_VPN, hourly=lambda lo, hi: [])
+        self.assertEqual(json.loads(out.getvalue())['tunnel'], {'from': T0, 'all': [3000, 1000], 'inet': [3000, 1000]})
+
+
+IFNAME ={1: 'em0', 2: 'igb1', 3: 'vlan01'}      # the interface numbers the synthetic logs use
 
 
 def write_log(dirpath, files):
@@ -534,18 +638,21 @@ class Attribution(unittest.TestCase):
 
     def test_downloads_uploads_local_traffic_and_broadcasts(self):
         got = self.scan(b''.join(KINDS), (T0, T0 + 100), (T0, T0 + 100))
-        self.assertEqual(got, {IP('192.168.1.10'): [1000.0, 357.0, 1000.0, 300.0],
-                               IP('192.168.30.5'): [50.0, 0.0, 0.0, 0.0]})
+        # the last two: all traffic over the internet span (here the same span)
+        self.assertEqual(got, {IP('192.168.1.10'): [1000.0, 357.0, 1000.0, 300.0, 1000.0, 357.0],
+                               IP('192.168.30.5'): [50.0, 0.0, 0.0, 0.0, 50.0, 0.0]})
 
     def test_the_two_scopes_count_over_their_own_spans(self):
         got = self.scan(KINDS[0], (T0, T0 + 50), (T0 + 50, T0 + 100))   # the flow runs T0+10 .. T0+90
-        self.assertEqual(got, {IP('192.168.1.10'): [500.0, 0.0, 500.0, 0.0]})
+        self.assertEqual(got, {IP('192.168.1.10'): [500.0, 0.0, 500.0, 0.0, 500.0, 0.0]})
+        got = self.scan(KINDS[0], (T0, T0 + 30), (T0 + 50, T0 + 100))   # all traffic 20 of 80 s, internet span 40
+        self.assertEqual(got, {IP('192.168.1.10'): [250.0, 0.0, 500.0, 0.0, 500.0, 0.0]})
 
     def test_a_record_received_before_the_span_is_skipped_and_one_straddling_it_is_split(self):
         early = flow('8.8.8.8', '192.168.1.10', 9999, recv=T0 + 40, start=T0, end=T0 + 40, if_in=1)
         across = flow('8.8.8.8', '192.168.1.10', 1000, recv=T0 + 60, start=T0 + 40, end=T0 + 60, if_in=1)
         self.assertEqual(self.scan(early + across, (T0 + 50, T0 + 100), (T0 + 50, T0 + 100)),
-                         {IP('192.168.1.10'): [500.0, 0.0, 500.0, 0.0]})
+                         {IP('192.168.1.10'): [500.0, 0.0, 500.0, 0.0, 500.0, 0.0]})
 
 
 class Totals(unittest.TestCase):
@@ -564,7 +671,7 @@ class Totals(unittest.TestCase):
         three = flows.merge_totals(flows.run_parallel(flows.scan_totals, jobs, 3))
         self.assertEqual(set(one), set(three))
         for ip in one:
-            for k in range(4):
+            for k in range(6):
                 self.assertAlmostEqual(one[ip][k], three[ip][k], delta=1e-6 * max(1.0, one[ip][k]))
 
     def test_the_answer_inside_the_log(self):
@@ -908,7 +1015,7 @@ class CoreParity(unittest.TestCase):
                 t[0] += row['octets']
                 if row['if'] == 'em0':
                     t[1] += row['octets']
-            peers, _ = flows.scan_device((self.opened[0][0], lo, hi, IP(dev), NET))
+            peers, _, _ = flows.scan_device((self.opened[0][0], lo, hi, IP(dev), NET))
             self.assertEqual({flows._ip_str(p) for p in peers}, set(core), dev)
             for p, v in peers.items():
                 for k in (0, 1):
