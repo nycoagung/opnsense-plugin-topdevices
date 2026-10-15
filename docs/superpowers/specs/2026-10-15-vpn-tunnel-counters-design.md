@@ -1,7 +1,8 @@
 # VPN devices in the ranges, from the tunnel counters: design
 
 - **Status:** approved in conversation on 2026-10-15 (scope option A, one-minute
-  sampling, a separate sampler script); this written spec awaits review.
+  sampling, a separate sampler script); approved by the user on 2026-10-15;
+  corrected during implementation (see §6–§8, §14).
 - **Date:** 2026-10-15
 - **Branch:** `tunnel-counters`, from `main` (`7c9a506`, 0.3.4)
 - **Baseline:** 0.3.4 as installed on the reference firewall (OPNsense 26.7.6,
@@ -17,7 +18,7 @@ custom range within the raw reach should show what that client really moved
 through its tunnel, in both scopes, instead of the sliver of it that NetFlow sees.
 
 The motivating example: a VPN peer read a few hundred KB for Today in the widget,
-while the WireGuard widget's counters for it stood at well over a hundred MB.
+while the WireGuard widget's counters for it stood at far more.
 
 Success criteria, each checked on the firewall before merge (§11):
 
@@ -120,8 +121,9 @@ Its own line in the plugin's own file: nothing shared with any other plugin.
    5 fields and are skipped. A line with any other count is skipped and counted;
    if every line was skipped, one syslog line says the output is not understood.
 3. The device address is the first IPv4 `/32` in `allowed-ips` (comma-separated).
-   A peer with none is skipped. A peer with several `/32`s is credited to the
-   first; the others are named in one syslog line per run at most (LOG_NOTICE),
+   A peer with none is skipped. A peer with several `/32`s, or a `/32` and a whole
+   IPv4 network (a site behind it), is credited to the first `/32` with all its
+   traffic; the others are named in one syslog line per run at most (LOG_NOTICE),
    so a wrong guess is visible rather than silent.
 4. Creates `/var/log/topdevices/` if it is missing, mode 0700 (the keeper's
    folder, 0.3.0 §5).
@@ -161,12 +163,16 @@ file boundaries never interact.
   each tunnel address present in the samples over the all-traffic span
   [a_lo, a_hi): `all_down, all_up` are replaced by the tunnel totals over the same
   span; `inet_down = max(0, tunnel_down - nf_all_down)` and likewise for up, where
-  `nf_*` is NetFlow's all-traffic figure for that device over the internet span
-  [i_lo, i_hi). The tunnel totals for the internet scope are computed over the
-  internet span, which may be shorter than the all-traffic one (0.2.0 §4). A tunnel
-  address with no NetFlow rows at all still gets a row.
+  `nf_*` is NetFlow's all-traffic figure for that device over [max(i_lo, S), i_hi).
+  The tunnel totals for the internet scope are computed over the internet span,
+  which may be shorter than the all-traffic one (0.2.0 §4). The subtracted local
+  traffic covers the same span as the tunnel figure, from the first sample.
+  (Corrected 2026-10-15 in review: it covered the whole internet span, so local
+  traffic before S, in no tunnel figure, was taken off one.) A tunnel address with
+  no NetFlow rows at all still gets a row.
 - **Device mode (0.2.0 §5.5).** Unchanged lists; the answer gains the device's
-  tunnel totals over the same spans.
+  tunnel totals over the same spans, its internet only less NetFlow's local figure
+  over [max(lo, S), to), likewise from the first sample.
 - **Answer.** Totals gains `"tunnel": {"from": S or null, "devices": [addresses
   with tunnel figures in this answer]}`; `devices[address]` keeps its four-number
   shape. Device gains `"tunnel": {"from": S or null, "all": [down, up],
@@ -263,8 +269,10 @@ file boundaries never interact.
 - The firewall runs the branch until 0.4.0 is released. If a weekly auto-install
   job is in use, disable it meanwhile.
 - Rollback: the bootstrap against `main` (0.3.4). Its installer rewrites its 11
-  files, including the one-line cron file, so the sampler stops; the day files are
-  harmless and age out, or `rm -rf /var/log/topdevices/tunnels.*`.
+  files, including the one-line cron file, so the sampler stops. `tunnels.py` and
+  the day files stay behind, inert: nothing prunes them any more (`keep.py` prunes
+  only `flowd.*`). Remove them with `rm /usr/local/opnsense/scripts/topdevices/tunnels.py
+  /var/log/topdevices/tunnels.*`.
 
 ## 13. Tests (local, before anything reaches the firewall)
 
@@ -291,8 +299,9 @@ file boundaries never interact.
 
 - `wg show all dump` changing shape: parsing is by field count, a surprise is
   logged and skipped, never guessed at.
-- A peer with several `/32` addresses: the first is credited and the rest named
-  in syslog; the user can see it and pick the right address in the peer's config.
+- A peer with several `/32` addresses, or a `/32` and a whole network: the first
+  `/32` is credited (with the network's traffic) and the rest named in syslog; the
+  user can see it and pick the right address in the peer's config.
 - Clock jumps: a negative interval is skipped; a forward jump stretches one
   interval, which §4 treats as one interval.
 - A backward clock step across a UTC midnight writes later samples into the

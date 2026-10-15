@@ -135,8 +135,8 @@ and `flows.py` differences consecutive samples into per-minute traffic.
 - **All traffic** for a VPN client is its tunnel figure. It counts the encrypted
   packets, so it includes WireGuard's own overhead (handshakes, keepalives, headers):
   a few percent on bulk traffic.
-- **Internet only** is the tunnel figure less the local traffic NetFlow did see, never
-  below zero: an estimate, a few percent high for the same reason.
+- **Internet only** is the tunnel figure less the local traffic NetFlow saw over the
+  same minutes (from the first sample on), never below zero: an estimate, a few percent high for the same reason.
 - **Down** is what the firewall sent to the client, as the widget's columns read for
   every device. The WireGuard widget's arrows are the firewall's: its ↑ is this Down.
 - Such rows carry a small **tunnel** tag; the caption says "VPN figures cover from …"
@@ -149,7 +149,9 @@ and `flows.py` differences consecutive samples into per-minute traffic.
   ranges older than 50 hours) still show VPN clients local-only.
 - **A peer's device address** is the first IPv4 `/32` among its allowed IPs. A peer
   with none (a whole subnet) is not counted; one with several is credited to the first
-  and the others named in the system log.
+  and the others named in the system log. A peer that also carries a whole subnet (a
+  site behind it) is credited with that subnet's traffic under its `/32`, and named
+  in the system log too.
 - Without WireGuard, or without peers, the sampler writes nothing and nothing changes.
 
 The **Live** view attributes VPN internet traffic by itself: the pf state table keeps
@@ -616,16 +618,16 @@ rotation (see *Tests*).
 WireGuard in core) over 11 minutes right after installing, against the WireGuard
 widget's own per-peer counters read once a minute:
 
-- **Agreement.** A peer moving several GB in those minutes: TopDevices' Today
+- **Agreement.** A peer moving a large volume in those minutes: TopDevices' Today
   download and upload grew within 0.01% of the counters (Down against the widget's
   "sent to the peer"). A peer moving a few hundred KB: within 0.05%. A peer moving a
   few tens of KB: 13-18% lower, because the samples are a minute old at most and the
   counters were read up to a minute after the last sample; over longer ranges that lag
   disappears in the total.
 - **Internet only** came out lower than all traffic for the peers with local traffic,
-  and never negative; zero for a peer that only watched local streams.
+  and never negative.
 - **Unchanged elsewhere.** The totals answer for a past window read before the
-  install was byte-identical afterwards for all 36 non-VPN devices; a LAN device's
+  install was byte-identical afterwards for every non-VPN device; a LAN device's
   panel answer carries no tunnel block; Live still lists VPN clients.
 - **Cost.** A totals request took 530-600 ms with the first minutes of samples, and
   Yesterday 1.1 s; the sampler logged nothing. The first sample landed on the minute
