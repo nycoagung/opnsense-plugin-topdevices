@@ -15,6 +15,7 @@ NetFlow/Insight aggregator. No extra collector required.
 - **Download / upload split** per device, plus the combined total
 - **All traffic or internet only** — the latter counts flows at the WAN,
   so purely local traffic is excluded
+- **VPN clients counted from the tunnel** (0.4.0): their real traffic, internet included, in every range within 50 hours
 - **Filter** by network (LAN / IOT / GUEST / …), or free-text on hostname or IP
 - **Sort** on any column, ascending or descending (NetFlow ranges; Live keeps its
   own order)
@@ -116,19 +117,43 @@ address, so domain-to-IP correlation is not possible either. Real per-flow
 domains require deep packet inspection (Zenarmor, Suricata), which is a
 different tool entirely.
 
-## WireGuard peers and the internet-only scope
+## WireGuard clients: counted from the tunnel
 
-WireGuard peers show traffic under *All traffic* but nothing under *Internet
-only*, and that is correct rather than a filtering bug. Measured over 7 days on
-the reference install: a peer address appears as a flow endpoint only alongside
-*local* peers (on `igb1`/`vlan01`). Tunnel-interface flows carrying the
-peer's internet traffic have **neither** endpoint local (on `wg0`) —
-the peer address is already translated away. NetFlow therefore never attributes
-a byte of VPN internet traffic to the peer address, on any interface, so there
-is nothing for the widget to count.
+NetFlow never sees a WireGuard client's internet traffic. Capture attaches to an
+interface's Ethernet node and a `wg` interface has none, so a ticked tunnel interface
+gets no collector (the NetFlow status's collector count is two per interface that
+works). What NetFlow does record is the client's traffic with *local* devices, on the
+LAN or VLAN side. Its internet traffic leaves the WAN after NAT, carrying the
+firewall's address.
 
-The **Live** view does attribute it: the pf state table keeps each connection's
-address from before NAT, so a WireGuard client appears under its tunnel address.
+Since 0.4.0 the plugin counts VPN clients from the kernel's per-peer tunnel counters
+instead, the ones the WireGuard widget shows: every minute
+`/usr/local/opnsense/scripts/topdevices/tunnels.py` (a second line in the plugin's
+cron file) appends each peer's received and sent bytes to `/var/log/topdevices/tunnels.<UTC day>`,
+and `flows.py` differences consecutive samples into per-minute traffic.
+
+- **All traffic** for a VPN client is its tunnel figure. It counts the encrypted
+  packets, so it includes WireGuard's own overhead (handshakes, keepalives, headers):
+  a few percent on bulk traffic.
+- **Internet only** is the tunnel figure less the local traffic NetFlow did see, never
+  below zero: an estimate, a few percent high for the same reason.
+- **Down** is what the firewall sent to the client, as the widget's columns read for
+  every device. The WireGuard widget's arrows are the firewall's: its ↑ is this Down.
+- Such rows carry a small **tunnel** tag; the caption says "VPN figures cover from …"
+  when the samples start later than the range. The client's panel adds a line with its
+  internet figure, counted from the tunnel, in both scopes (the row shows the figure
+  of the scope you picked); its peers and ports stay the local ones NetFlow recorded
+  (internet peers are not in the counters).
+- **From install time.** The samples begin when 0.4.0 is installed and are kept 51
+  hours, like the flow log. Ranges served from NetFlow's records (Last 7 days, custom
+  ranges older than 50 hours) still show VPN clients local-only.
+- **A peer's device address** is the first IPv4 `/32` among its allowed IPs. A peer
+  with none (a whole subnet) is not counted; one with several is credited to the first
+  and the others named in the system log.
+- Without WireGuard, or without peers, the sampler writes nothing and nothing changes.
+
+The **Live** view attributes VPN internet traffic by itself: the pf state table keeps
+each connection's address from before NAT.
 
 ## Live traffic
 
@@ -289,6 +314,8 @@ is exact.
   /var/log is a RAM disk). Resetting NetFlow's data (Reporting → Settings) also clears
   the kept log within 10 minutes.
 - **What it holds.** Raw flow records, readable by root only, as core's are.
+- **The tunnel samples** live beside the kept files (`tunnels.<UTC day>`, root only,
+  about 130 KB a day per peer) and are pruned by the same 51-hour rule.
 - **After install** the kept log starts with what core still holds, so Yesterday is
   exact from the first midnight after install, as long as the install day's first
   records were still in core's log. Until then, and wherever the kept log has a gap
@@ -341,6 +368,12 @@ height keeps it until you drag it taller under Edit Dashboard and save (see *Hei
 **Upgrading from 0.3.3 to 0.3.4:** nothing to do: the same eleven files. The two API
 controllers declare their types and the scripts carry the new version number; nothing
 you can see changes.
+
+**Upgrading from 0.3.x to 0.4.0:** run the bootstrap command once, or
+`configctl topdevices install` twice. The 0.3.x installer only knows its eleven
+files, so its first run installs those from 0.4.0 (the new installer among them) and
+the second adds `tunnels.py` and the two-line cron file, completing all 12. VPN clients
+stay local-only until the sampler has run twice.
 
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
@@ -411,6 +444,7 @@ Verified by measurement against a live firewall, not by reading the code:
   character, including the timezone abbreviation.
 - **Cron self-heal works unattended** — observed pulling a new build and swapping
   the widget on schedule with no manual trigger.
+- **VPN clients from the tunnel counters (0.4.0)**: verified on the reference firewall — see the 0.4.0 note below once measured.
 
 **Live (0.1.0)**, measured on the reference install (OPNsense 26.7.4)
 on 2026-09-23:
