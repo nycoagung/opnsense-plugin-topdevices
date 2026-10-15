@@ -231,6 +231,89 @@ class Hourly(unittest.TestCase):
         self.assertEqual(got, {IP('192.168.1.10'): [4000 * 0.75 + 800 * 0.5, 1000 * 0.75]})
 
 
+def write_tunnels(dirpath, files):
+    """Write tunnels.py day files [(name, text, mtime)] into dirpath/topdevices."""
+    kept = os.path.join(dirpath, 'topdevices')
+    os.makedirs(kept, exist_ok=True)
+    for name, text, mtime in files:
+        p = os.path.join(kept, name)
+        with open(p, 'w') as f:
+            f.write(text)
+        os.utime(p, (mtime, mtime))
+    return os.path.join(dirpath, 'flowd.log')
+
+
+def samples(ip, points, iface='wg0'):
+    """Lines for one peer: points = [(t, rx, tx)]."""
+    return ''.join('%d %s %s %d %d\n' % (t, iface, ip, rx, tx) for t, rx, tx in points)
+
+
+class Tunnels(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def read(self, files):
+        return flows.read_tunnels(write_tunnels(self.tmp.name, files))
+
+    def test_samples_are_read_per_peer_in_file_then_line_order(self):
+        s = self.read([('tunnels.20260922', samples('10.8.0.2', [(T0 + 60, 10, 20)]), T0 + 60),
+                       ('tunnels.20260921', samples('10.8.0.2', [(T0, 0, 0)]) + samples('10.8.0.3', [(T0, 5, 5)], 'wg1'), T0)])
+        self.assertEqual(s, {('wg0', IP('10.8.0.2')): [(T0, 0, 0), (T0 + 60, 10, 20)],
+                             ('wg1', IP('10.8.0.3')): [(T0, 5, 5)]})
+        self.assertEqual(flows.tunnel_start(s), T0)
+
+    def test_no_files_is_an_empty_series_and_no_start(self):
+        log = os.path.join(self.tmp.name, 'flowd.log')
+        self.assertEqual(flows.read_tunnels(log), {})
+        self.assertIsNone(flows.tunnel_start({}))
+
+    def test_a_torn_or_malformed_line_is_skipped(self):
+        text = samples('10.8.0.2', [(T0, 0, 0)]) + '%d wg0 10.8.0.2 7' % (T0 + 60) + '\n' \
+            + '%d wg0 not-an-ip 1 2\n' % (T0 + 60) + '%d wg0 10.8.0.2 x 2\n' % (T0 + 60) \
+            + samples('10.8.0.2', [(T0 + 120, 30, 40)])[:-3]            # torn: the last line cut short
+        s = self.read([('tunnels.20260921', text, T0)])
+        self.assertEqual(s, {('wg0', IP('10.8.0.2')): [(T0, 0, 0)]})
+
+    # --- differencing (spec §4) ---
+
+    def series(self, points, ip='10.8.0.2', iface='wg0'):
+        return {(iface, IP(ip)): points}
+
+    def test_growth_is_spread_over_its_interval_and_the_part_inside_the_range_counted(self):
+        s = self.series([(T0, 0, 0), (T0 + 60, 600, 60)])
+        self.assertEqual(flows.tunnel_totals(s, T0, T0 + 60), {IP('10.8.0.2'): [60.0, 600.0]})      # down from tx, up from rx
+        self.assertEqual(flows.tunnel_totals(s, T0 + 30, T0 + 60), {IP('10.8.0.2'): [30.0, 300.0]})  # half the interval
+        self.assertEqual(flows.tunnel_totals(s, T0 + 60, T0 + 120), {IP('10.8.0.2'): [0.0, 0.0]})   # nothing after it
+
+    def test_the_midnight_split_is_by_time(self):
+        M = T0 + 1000
+        s = self.series([(M - 30, 0, 0), (M + 30, 600, 0)])
+        self.assertEqual(flows.tunnel_totals(s, M - 3600, M)[IP('10.8.0.2')], [0.0, 300.0])
+        self.assertEqual(flows.tunnel_totals(s, M, M + 3600)[IP('10.8.0.2')], [0.0, 300.0])
+
+    def test_a_counter_reset_counts_the_new_value(self):
+        s = self.series([(T0, 1000, 1000), (T0 + 60, 50, 70), (T0 + 120, 150, 170)])
+        self.assertEqual(flows.tunnel_totals(s, T0, T0 + 120), {IP('10.8.0.2'): [170.0, 150.0]})
+
+    def test_a_gap_is_one_long_interval(self):
+        s = self.series([(T0, 0, 0), (T0 + 600, 1000, 0)])                        # the sampler was down 9 minutes
+        self.assertEqual(flows.tunnel_totals(s, T0 + 540, T0 + 600), {IP('10.8.0.2'): [0.0, 100.0]})
+
+    def test_a_negative_or_zero_interval_is_skipped(self):
+        s = self.series([(T0 + 60, 0, 0), (T0, 500, 500), (T0, 600, 600), (T0 + 120, 700, 700)])
+        # only (T0, 600) -> (T0 + 120, 700) is an interval: +100 each way
+        self.assertEqual(flows.tunnel_totals(s, T0 - 3600, T0 + 3600), {IP('10.8.0.2'): [100.0, 100.0]})
+
+    def test_one_device_on_two_instances_is_summed(self):
+        s = {('wg0', IP('10.8.0.2')): [(T0, 0, 0), (T0 + 60, 10, 0)],
+             ('wg1', IP('10.8.0.2')): [(T0, 0, 0), (T0 + 60, 0, 5)]}
+        self.assertEqual(flows.tunnel_totals(s, T0, T0 + 60), {IP('10.8.0.2'): [5.0, 10.0]})
+
+    def test_a_single_sample_bounds_nothing(self):
+        self.assertEqual(flows.tunnel_totals(self.series([(T0, 100, 100)]), T0 - 60, T0 + 60), {IP('10.8.0.2'): [0.0, 0.0]})
+
+
 IFNAME = {1: 'em0', 2: 'igb1', 3: 'vlan01'}      # the interface numbers the synthetic logs use
 
 

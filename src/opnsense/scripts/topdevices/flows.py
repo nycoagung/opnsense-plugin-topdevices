@@ -29,6 +29,7 @@ VERSION = '0.3.4'
 
 LOG = '/var/log/flowd.log'
 KEPT_DIR = 'topdevices'          # keep.py's links beside the log: rotated files core deleted, or will (2026-09-24 spec §5)
+TUNNELS = 'tunnels.'     # tunnels.py's day files beside the kept log: epoch interface address rx tx
 NETFLOW_LIB = '/usr/local/opnsense/scripts/netflow'  # core's parser, interface map, aggregates
 HOUR = 3600
 DAY = 86400
@@ -326,6 +327,66 @@ def files_for(opened, lo):
     at or after lo, since a record received before lo ended before it - biggest
     first, so the last file a worker starts is a small one."""
     return sorted((f for f in opened if f[1] >= lo), key=lambda f: -f[2])
+
+
+# ---------------------------------------------------------------- the tunnels
+
+
+def read_tunnels(log=LOG):
+    """Every tunnels.py sample beside the kept log: {(interface, address): [(t, rx, tx)]}
+    in file-name (UTC day) order, then line order (2026-10-15 spec §6). A malformed
+    or torn line is skipped. No file: {}."""
+    kept = os.path.join(glob.escape(os.path.dirname(log)), KEPT_DIR)
+    series = {}
+    for path in sorted(glob.glob(os.path.join(kept, TUNNELS + '*'))):
+        try:
+            with open(path, 'rb') as f:
+                data = f.read()
+        except FileNotFoundError:
+            continue                                  # pruned since the listing
+        for line in data.split(b'\n'):
+            parts = line.split()
+            if len(parts) != 5:
+                continue
+            try:
+                t, rx, tx = int(parts[0]), int(parts[3]), int(parts[4])
+                ip = _ip4(parts[2].decode('ascii'))
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if ip is None:
+                continue
+            series.setdefault((parts[1].decode('ascii', 'replace'), ip), []).append((t, rx, tx))
+    return series
+
+
+def tunnel_start(series):
+    """The oldest sample time, or None."""
+    times = [pts[0][0] for pts in series.values() if pts]
+    return min(times) if times else None
+
+
+def tunnel_totals(series, lo, hi):
+    """{address: [down, up]} over [lo, hi) from the samples (spec §4): the growth
+    between consecutive samples, spread evenly over its interval, the part inside
+    the span counted. A counter that went down restarted at 0: its growth is the
+    new value. A zero or negative interval (a clock jump) bounds nothing. down is
+    what the firewall sent to the peer, up what it received."""
+    out = {}
+    for (_, ip), pts in series.items():
+        t = out.get(ip) or out.setdefault(ip, [0.0, 0.0])
+        for (t0, rx0, tx0), (t1, rx1, tx1) in zip(pts, pts[1:]):
+            if t1 <= t0:
+                continue
+            ov = min(t1, hi) - max(t0, lo)
+            if ov <= 0:
+                continue
+            w = ov / (t1 - t0)
+            t[0] += w * (tx1 - tx0 if tx1 >= tx0 else tx1)
+            t[1] += w * (rx1 - rx0 if rx1 >= rx0 else rx1)
+    return out
+
+
+# ---------------------------------------------------------------- totals
 
 
 def scan_totals(job):
