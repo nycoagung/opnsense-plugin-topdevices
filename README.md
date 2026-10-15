@@ -370,9 +370,9 @@ height keeps it until you drag it taller under Edit Dashboard and save (see *Hei
 controllers declare their types and the scripts carry the new version number; nothing
 you can see changes.
 
-**Upgrading from 0.3.x to 0.4.0:** run the bootstrap command once, or
-`configctl topdevices install` twice. The 0.3.x installer only knows its eleven
-files, so its first run installs those from 0.4.0, the new installer and the new cron
+**Upgrading from 0.3.1 through 0.3.4 to 0.4.0:** run the bootstrap command once, or
+`configctl topdevices install` twice. Those installers only know their eleven
+files, so the first run installs those from 0.4.0, the new installer and the new cron
 file among them: the cron file's sampler line then fails silently every minute until
 the second run adds `tunnels.py`, completing all 12. Hence the bootstrap once, or
 `configctl topdevices install` twice straight away. VPN clients stay local-only until

@@ -134,7 +134,8 @@ Its own line in the plugin's own file: nothing shared with any other plugin.
 6. Deletes `tunnels.*` files whose last write is more than 183600 s (51 h) ago.
 
 **Output.** Nothing on success. On an unexpected error, one syslog line
-(`topdevices tunnels: <reason>`, LOG_ERR), then exit 1.
+(`topdevices tunnels: <reason>`, LOG_ERR), then exit 1. A `wg` that does not
+answer within 10 s is such an error, not "no WireGuard".
 
 **Self-contained.** Standard library only, imports nothing from the plugin, so a
 rollback that replaces `flows.py` leaves it working, as `keep.py` is.
@@ -170,18 +171,20 @@ file boundaries never interact.
   with tunnel figures in this answer]}`; `devices[address]` keeps its four-number
   shape. Device gains `"tunnel": {"from": S or null, "all": [down, up],
   "inet": [down, up]}` or `null` for a non-tunnel device.
-- **Which addresses are tunnel devices:** those in the samples, nothing else. The
-  interface name is never consulted.
+- **Which addresses are tunnel devices:** those in the samples that lie in the
+  firewall's local subnets (the device answer's own rule), nothing else. A peer
+  address outside them gets no row. The interface name is never consulted.
 - **Cost.** Three files of ~2 MB, parsed in one pass: well under the 2 s budget
   (0.3.0 §1), measured in §11.
 
 ## 7. Widget
 
 - **Rows.** A tunnel-counted device shows the new figures in the usual columns and
-  a small `tunnel` tag after its name, with the title "Counted from the WireGuard
+  a small `tunnel` tag after its address, with the title "Counted from the WireGuard
   tunnel: includes the tunnel's own overhead; internet only is the tunnel figure
-  less local traffic." The tag is text in the name cell, so sorting and the filter
-  are unaffected.
+  less local traffic." The tag is markup in the name cell, never part of the name,
+  so sorting and the filter are unaffected. It follows the address (short) rather
+  than the name, which a long hostname's ellipsis would cut.
 - **Caption note.** When the loaded raw answer has tunnel devices and
   `tunnel.from` is later than the request's start: "VPN figures cover from
   <day time>" (the same formatter as the existing "NetFlow has no records before"
@@ -292,6 +295,10 @@ file boundaries never interact.
   in syslog; the user can see it and pick the right address in the peer's config.
 - Clock jumps: a negative interval is skipped; a forward jump stretches one
   interval, which §4 treats as one interval.
+- A backward clock step across a UTC midnight writes later samples into the
+  earlier day's file, so file-then-line order no longer matches time order and the
+  next pair reads as a counter restart worth the whole counter value, for up to 51
+  hours. ntpd slews rather than steps in normal operation; accepted.
 - The folder on tmpfs (`/var/log` in RAM on some installs): the files are small
   and the keeper's free-space floor (0.3.0 §5) still applies to its own files;
   the sampler writes at most a few MB.
