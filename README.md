@@ -447,7 +447,8 @@ Verified by measurement against a live firewall, not by reading the code:
   character, including the timezone abbreviation.
 - **Cron self-heal works unattended** — observed pulling a new build and swapping
   the widget on schedule with no manual trigger.
-- **VPN clients from the tunnel counters (0.4.0)**: verified on the reference firewall — see the 0.4.0 note below once measured.
+- **VPN clients from the tunnel counters (0.4.0)**: the Today figures track the
+  WireGuard widget's own counters (see the 0.4.0 note below).
 
 **Live (0.1.0)**, measured on the reference install (OPNsense 26.7.4)
 on 2026-09-23:
@@ -610,6 +611,27 @@ now holds it at the height of all its rows at the time.
 the NetFlow ranges, since 0.2.0 the raw flow log reader, run against core's own
 parser and aggregators, and since 0.3.0 the keeper, run against core's own
 rotation (see *Tests*).
+
+**Tunnel counters (0.4.0)**, measured on the reference install (OPNsense 26.7.6,
+WireGuard in core) over 11 minutes right after installing, against the WireGuard
+widget's own per-peer counters read once a minute:
+
+- **Agreement.** A peer moving several GB in those minutes: TopDevices' Today
+  download and upload grew within 0.01% of the counters (Down against the widget's
+  "sent to the peer"). A peer moving a few hundred KB: within 0.05%. A peer moving a
+  few tens of KB: 13-18% lower, because the samples are a minute old at most and the
+  counters were read up to a minute after the last sample; over longer ranges that lag
+  disappears in the total.
+- **Internet only** came out lower than all traffic for the peers with local traffic,
+  and never negative; zero for a peer that only watched local streams.
+- **Unchanged elsewhere.** The totals answer for a past window read before the
+  install was byte-identical afterwards for all 36 non-VPN devices; a LAN device's
+  panel answer carries no tunnel block; Live still lists VPN clients.
+- **Cost.** A totals request took 530-600 ms with the first minutes of samples, and
+  Yesterday 1.1 s; the sampler logged nothing. The first sample landed on the minute
+  after the install, and the first non-zero figures a minute later.
+- **Not measured:** the reading cost once 51 hours of samples exist for many peers
+  (estimated to stay under 2 s), and a tunnel restart in production.
 
 **Static analysis (0.3.4)**, on 2026-10-08. PHPStan 2.3 at its strictest level (9),
 with OPNsense core 26.7.5's sources on its scan path, reports nothing for the two API
