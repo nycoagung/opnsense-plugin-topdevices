@@ -409,6 +409,19 @@ class TunnelAnswers(unittest.TestCase):
             self.assertEqual(a['inet'], {'from': T0, 'to': T0 + 100})
             self.assertEqual(a['devices']['10.8.0.2'], [3000, rx, 2500, inet_up], rx)
 
+    def test_local_traffic_before_the_first_sample_is_not_subtracted(self):
+        # the review's case: the samples begin at T0+80, inside setUp's local flow (500 B over
+        # [T0+10, T0+90)), and move 430 B: 362 down, 68 up. Only the local bytes from T0+80 on
+        # (500 * 10/80 = 62.5) are in the tunnel figure, so only they come off it:
+        # 362 - 62.5 = 299.5, rounded half to even = 300 (subtracting all 500 would give 0)
+        series = {('wg0', IP('10.8.0.2')): [(T0 + 80, 0, 0), (T0 + 100, 68, 362)]}
+        a = self.totals(T0, T0 + 100, series)
+        self.assertEqual(a['tunnel'], {'from': T0 + 80, 'devices': ['10.8.0.2']})
+        self.assertEqual(a['devices']['10.8.0.2'], [362, 68, 300, 68])
+        d = flows.answer_device(IP('10.8.0.2'), T0, T0 + 100, T0 + 200, self.opened, NET_VPN, 1, tunnels=series)
+        self.assertEqual(d['tunnel'], {'from': T0 + 80, 'all': [362, 68], 'inet': [300, 68]})
+        self.assertEqual(d['peers']['all'], [['192.168.1.10', 500]])          # the lists still cover [T0, T0+100)
+
     def test_the_device_answer_carries_its_tunnel_figures(self):
         a = flows.answer_device(IP('10.8.0.2'), T0, T0 + 100, T0 + 200, self.opened, NET_VPN, 1, tunnels=self.series)
         self.assertEqual(a['tunnel'], {'from': T0, 'all': [3000, 1000], 'inet': [2500, 1000]})
@@ -657,11 +670,11 @@ class Reading(unittest.TestCase):
 
 
 class Attribution(unittest.TestCase):
-    def scan(self, data, a, i):
+    def scan(self, data, a, i, l_lo=None):
         with tempfile.TemporaryDirectory() as d:
             opened = flows.open_log(write_log(d, [('flowd.log', data, T0 + 100)]))
             try:
-                return flows.scan_totals((opened[0][0], a[0], a[1], i[0], i[1], NET))
+                return flows.scan_totals((opened[0][0], a[0], a[1], i[0], i[1], i[0] if l_lo is None else l_lo, NET))
             finally:
                 flows.close_log(opened)
 
@@ -676,6 +689,11 @@ class Attribution(unittest.TestCase):
         self.assertEqual(got, {IP('192.168.1.10'): [500.0, 0.0, 500.0, 0.0, 500.0, 0.0]})
         got = self.scan(KINDS[0], (T0, T0 + 30), (T0 + 50, T0 + 100))   # all traffic 20 of 80 s, internet span 40
         self.assertEqual(got, {IP('192.168.1.10'): [250.0, 0.0, 500.0, 0.0, 500.0, 0.0]})
+
+    def test_the_local_figure_counts_over_the_sampled_part_of_the_internet_span(self):
+        # tunnel samples from T0+70: the last two cover [T0+70, T0+100), 20 of the flow's 80 s
+        got = self.scan(KINDS[0], (T0, T0 + 100), (T0, T0 + 100), l_lo=T0 + 70)
+        self.assertEqual(got, {IP('192.168.1.10'): [1000.0, 0.0, 1000.0, 0.0, 250.0, 0.0]})
 
     def test_a_record_received_before_the_span_is_skipped_and_one_straddling_it_is_split(self):
         early = flow('8.8.8.8', '192.168.1.10', 9999, recv=T0 + 40, start=T0, end=T0 + 40, if_in=1)
@@ -695,7 +713,7 @@ class Totals(unittest.TestCase):
         self.addCleanup(flows.close_log, self.opened)
 
     def test_three_workers_give_exactly_what_one_gives(self):
-        jobs = [(fd, T0, T0 + 1000, T0, T0 + 1000, NET) for fd, _, _ in flows.files_for(self.opened, T0)]
+        jobs = [(fd, T0, T0 + 1000, T0, T0 + 1000, T0 + 300, NET) for fd, _, _ in flows.files_for(self.opened, T0)]
         one = flows.merge_totals(flows.run_parallel(flows.scan_totals, jobs, 1))
         three = flows.merge_totals(flows.run_parallel(flows.scan_totals, jobs, 3))
         self.assertEqual(set(one), set(three))
@@ -1017,7 +1035,7 @@ class CoreParity(unittest.TestCase):
                 t[k] += row['octets']
                 if row['if'] == 'em0':
                     t[2 + k] += row['octets']
-            ours = flows.scan_totals((self.opened[0][0], lo, hi, lo, hi, NET))
+            ours = flows.scan_totals((self.opened[0][0], lo, hi, lo, hi, lo, NET))
             self.assertEqual(set(ours), set(core))
             for ip in core:
                 for k in range(4):
@@ -1026,7 +1044,7 @@ class CoreParity(unittest.TestCase):
     def test_hourly_fill_reads_cores_totals_the_right_way_round(self):
         h = (T0 // 3600) * 3600
         fill = flows.hourly_fill(list(self.totals.get_data(h, h + 3600)), h, h + 3600, h + 7200, NET)
-        raw = flows.scan_totals((self.opened[0][0], h, h + 3600, h, h + 3600, NET))
+        raw = flows.scan_totals((self.opened[0][0], h, h + 3600, h, h + 3600, h, NET))
         self.assertEqual(set(fill), {ip for ip, v in raw.items() if v[0] or v[1]})
         for ip, (down, up) in fill.items():
             self.assertAlmostEqual(down, raw[ip][0], delta=1e-3)
@@ -1044,7 +1062,7 @@ class CoreParity(unittest.TestCase):
                 t[0] += row['octets']
                 if row['if'] == 'em0':
                     t[1] += row['octets']
-            peers, _, _ = flows.scan_device((self.opened[0][0], lo, hi, IP(dev), NET))
+            peers, _, _ = flows.scan_device((self.opened[0][0], lo, hi, lo, IP(dev), NET))
             self.assertEqual({flows._ip_str(p) for p in peers}, set(core), dev)
             for p, v in peers.items():
                 for k in (0, 1):

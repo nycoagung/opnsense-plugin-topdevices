@@ -391,12 +391,14 @@ def tunnel_totals(series, lo, hi):
 
 def scan_totals(job):
     """One file's bytes per device: {ip: [all_down, all_up, inet_down, inet_up,
-    span_down, span_up]}, all traffic over [a_lo, a_hi) and internet only over
-    [i_lo, i_hi) (spec §5.3); the last two: all traffic over the internet span, which
-    a tunnel device's internet only is its tunnel figure minus (2026-10-15 spec §6).
-    The destination device downloads, the source device uploads; a download is
-    internet when it came in upstream, an upload when it left upstream."""
-    fd, a_lo, a_hi, i_lo, i_hi, net = job
+    local_down, local_up]}, all traffic over [a_lo, a_hi) and internet only over
+    [i_lo, i_hi) (spec §5.3); the last two: all traffic over [l_lo, i_hi), the part of
+    the internet span the tunnel samples cover (from the first sample, or the whole
+    span), which a tunnel device's internet only is its tunnel figure minus
+    (2026-10-15 spec §6). l_lo is never before i_lo. The destination device
+    downloads, the source device uploads; a download is internet when it came in
+    upstream, an upload when it left upstream."""
+    fd, a_lo, a_hi, i_lo, i_hi, l_lo, net = job
     lo = min(a_lo, i_lo)
     acc = {}
     for recv, src, dst, _, _, octets, if_in, if_out, fs, fe, dur in records(_read(fd)):
@@ -405,17 +407,18 @@ def scan_totals(job):
         a = share(fs, fe, dur, octets, a_lo, a_hi) if a_hi > a_lo else 0.0
         i = share(fs, fe, dur, octets, i_lo, i_hi) if i_hi > i_lo else 0.0
         if not (a or i):
-            continue
+            continue                              # nothing in the local span either: it lies inside the internet one
+        l = i if l_lo <= i_lo else (share(fs, fe, dur, octets, l_lo, i_hi) if i_hi > l_lo else 0.0)
         if net.is_device(dst):
             t = acc.get(dst) or acc.setdefault(dst, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             t[0] += a
-            t[4] += i                                 # all traffic over the internet span (tunnel devices, spec §6)
+            t[4] += l                                 # all traffic over the sampled internet span (tunnel devices, spec §6)
             if if_in in net.upstream:
                 t[2] += i
         if net.is_device(src):
             t = acc.get(src) or acc.setdefault(src, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
             t[1] += a
-            t[5] += i
+            t[5] += l
             if if_out in net.upstream:
                 t[3] += i
     return acc
@@ -466,9 +469,16 @@ def answer_totals(frm, to, now, opened, net, hourly_rows, workers, tunnels=None)
     frm = min(to, max(frm, min(L, now - DAY - SLACK)))
     p = plan(frm, to, L)
     (a_lo, a_hi), (i_lo, i_hi) = p['raw_all'], p['inet']
+    # tunnel devices (2026-10-15 spec §6): the samples are read first, since the local
+    # traffic subtracted from a tunnel figure must cover the same span as that figure,
+    # which runs from the first sample at the earliest
+    tunnels = tunnels or {}
+    S = tunnel_start(tunnels)
+    tunnelled = S is not None and S < to          # some sample bounds an interval inside the range
+    l_lo = max(i_lo, S) if tunnelled else i_lo
     files = files_for(opened, min(a_lo, i_lo))
     _refuse_if_too_big(files)
-    jobs = [(fd, a_lo, a_hi, i_lo, i_hi, net) for fd, _, _ in files]
+    jobs = [(fd, a_lo, a_hi, i_lo, i_hi, l_lo, net) for fd, _, _ in files]
     acc = merge_totals(run_parallel(scan_totals, jobs, workers))
     if p['hourly']:
         h_lo, h_hi = p['hourly']
@@ -476,12 +486,10 @@ def answer_totals(frm, to, now, opened, net, hourly_rows, workers, tunnels=None)
             t = acc.setdefault(ip, [0.0] * 6)
             t[0] += down
             t[1] += up
-    # tunnel devices (2026-10-15 spec §6): the tunnel figure is their all traffic,
-    # and internet only is what is left after the local traffic NetFlow did see
-    tunnels = tunnels or {}
-    S = tunnel_start(tunnels)
+    # tunnel devices: the tunnel figure is their all traffic, and internet only is
+    # what is left after the local traffic NetFlow did see over the sampled span
     credited = []
-    if S is not None and S < to:                  # some sample bounds an interval inside the range
+    if tunnelled:
         t_all = tunnel_totals(tunnels, frm, to)
         t_inet = tunnel_totals(tunnels, i_lo, i_hi)
         for ip in sorted(t_all):
@@ -507,18 +515,19 @@ def answer_totals(frm, to, now, opened, net, hourly_rows, workers, tunnels=None)
 
 def scan_device(job):
     """One file's peers and ports for one device over [lo, hi), in both scopes,
-    and its all-traffic bytes per direction: ({peer: [all, inet]}, {port: [all, inet]},
-    [down, up]), the tables with both directions summed. A port is the service port
-    as core's details define it: the lower of the flow's two."""
-    fd, lo, hi, ip, net = job
+    and its all-traffic bytes per direction over [d_lo, hi) (d_lo never before lo:
+    the span the tunnel samples cover, 2026-10-15 spec §6): ({peer: [all, inet]},
+    {port: [all, inet]}, [down, up]), the tables with both directions summed. A port
+    is the service port as core's details define it: the lower of the flow's two."""
+    fd, lo, hi, d_lo, ip, net = job
     peers, ports, dirs = {}, {}, [0.0, 0.0]
     for recv, src, dst, sp, dp, octets, if_in, if_out, fs, fe, dur in records(_read(fd), ports=True):
         if recv < lo or (src != ip and dst != ip):
             continue
         b = share(fs, fe, dur, octets, lo, hi)
         if not b:
-            continue
-        dirs[0 if dst == ip else 1] += b
+            continue                      # nothing in [d_lo, hi) either: it lies inside [lo, hi)
+        dirs[0 if dst == ip else 1] += b if d_lo <= lo else (share(fs, fe, dur, octets, d_lo, hi) if hi > d_lo else 0.0)
         if dst == ip:                     # its download: internet when it came in upstream
             peer, inet = src, if_in in net.upstream
         else:                             # its upload: internet when it left upstream
@@ -554,27 +563,31 @@ def answer_device(ip, frm, to, now, opened, net, workers, tunnels=None):
     """One device's peers and ports over [max(frm, L), to), both scopes (spec §5.5).
     tunnels: the tunnel samples (read_tunnels()); None or {} = none. A device with
     samples also gets its tunnel figures over the same span (2026-10-15 spec §6):
-    all traffic from the tunnel, internet only = that minus NetFlow's figure; none
-    (tunnel None) for a range that ends before the first sample."""
+    all traffic from the tunnel, internet only = that minus NetFlow's figure over the
+    span the samples cover (from the first sample on); none (tunnel None) for a range
+    that ends before the first sample."""
     if not net.is_device(ip):
         raise ValueError('%s is not a local device' % _ip_str(ip))
     L = log_from(opened)
     if L is None:
         raise ValueError('the NetFlow flow log holds no flows yet')
     lo = max(frm, L)
+    # the samples first: the local traffic subtracted from the tunnel figure covers the
+    # same span as that figure, from the first sample at the earliest (2026-10-15 spec §6)
+    tunnels = tunnels or {}
+    S = tunnel_start(tunnels)
+    d_lo = max(lo, S) if S is not None and S < to else lo
     peers, ports, dirs, jobs = {}, {}, [0.0, 0.0], []
     if lo < to:
         files = files_for(opened, lo)
         _refuse_if_too_big(files)
-        jobs = [(fd, lo, to, ip, net) for fd, _, _ in files]
+        jobs = [(fd, lo, to, d_lo, ip, net) for fd, _, _ in files]
         for p, q, r in run_parallel(scan_device, jobs, workers):
             _merge2(peers, p)
             _merge2(ports, q)
             dirs[0] += r[0]
             dirs[1] += r[1]
     tunnel = None
-    tunnels = tunnels or {}
-    S = tunnel_start(tunnels)
     # as in the totals answer: only when some sample bounds an interval inside the range
     if S is not None and S < to and any(key[1] == ip for key in tunnels):
         t_all = tunnel_totals(tunnels, lo, to).get(ip, [0.0, 0.0])

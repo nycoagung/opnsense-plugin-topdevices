@@ -33,9 +33,11 @@ PEER_FIELDS = 9                  # wg(8) dump: a peer line; an interface line ha
 
 def parse_dump(text):
     """`wg show all dump` -> ([(interface, address, rx, tx)], lines of another
-    shape, [(interface, address, [other /32s])]). The device address is the first
-    IPv4 /32 among a peer's allowed IPs; a peer with none is skipped: there is no
-    one device to credit. Keys are parsed past and dropped."""
+    shape, [(interface, address, [its other IPv4 networks])]). The device address
+    is the first IPv4 /32 among a peer's allowed IPs; a peer with none is skipped:
+    there is no one device to credit. The peer's counters are all its traffic, so
+    any other /32 or network it carries (a site behind it) is credited to that
+    address too: such peers are reported. Keys are parsed past and dropped."""
     peers, skipped, extras = [], 0, []
     for line in text.splitlines():
         parts = line.split('\t')
@@ -44,7 +46,7 @@ def parse_dump(text):
         if len(parts) != PEER_FIELDS or not (parts[6].isdigit() and parts[7].isdigit()):
             skipped += 1
             continue
-        hosts = []
+        hosts, nets = [], []
         for item in parts[4].split(','):
             try:
                 net = ipaddress.ip_network(item.strip(), strict=False)
@@ -52,11 +54,14 @@ def parse_dump(text):
                 continue
             if net.version == 4 and net.prefixlen == 32:
                 hosts.append(str(net.network_address))
+            elif net.version == 4:
+                nets.append(str(net))                 # a whole network: its traffic is in this peer's counters
         if not hosts:
             continue
         peers.append((parts[0], hosts[0], int(parts[6]), int(parts[7])))
-        if len(hosts) > 1:
-            extras.append((parts[0], hosts[0], hosts[1:]))
+        others = hosts[1:] + nets
+        if others:
+            extras.append((parts[0], hosts[0], others))
     return peers, skipped, extras
 
 
@@ -104,7 +109,7 @@ def run(now, kept, dump, keep_s=KEEP_S):
         elif skipped:
             syslog.syslog(syslog.LOG_NOTICE, 'topdevices tunnels: wg show output not understood (%d lines skipped)' % skipped)
         if extras:
-            syslog.syslog(syslog.LOG_NOTICE, 'topdevices tunnels: credited to the first /32 only: ' + '; '.join(
+            syslog.syslog(syslog.LOG_NOTICE, 'topdevices tunnels: all the traffic credited to the first /32: ' +'; '.join(
                 '%s %s (also %s)' % (iface, ip, ', '.join(others)) for iface, ip, others in extras))
     prune(kept, now, keep_s)
     return written

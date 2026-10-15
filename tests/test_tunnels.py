@@ -43,6 +43,8 @@ DUMP = '\n'.join([
     '\t'.join(['wg1', KEY, '(none)', '(none)', '192.0.2.0/24', '0', '7', '7', 'off']),          # site-to-site: no /32
     '\t'.join(['wg1', KEY, '(none)', '(none)', '10.8.1.5/32,10.8.1.6/32', '0', '1', '2', 'off']),  # two /32s
 ]) + '\n'
+# a peer with a /32 and a whole network behind it (site-to-site with a tunnel address)
+SITE = '\t'.join(['wg1', KEY, '(none)', '(none)', '10.8.1.7/32,192.0.2.0/24', '0', '3', '4', 'off']) + '\n'
 
 
 class Parsing(unittest.TestCase):
@@ -55,6 +57,10 @@ class Parsing(unittest.TestCase):
     def test_the_first_ipv4_slash32_is_the_device_and_the_rest_are_reported(self):
         _, _, extras = tunnels.parse_dump(DUMP)
         self.assertEqual(extras, [('wg1', '10.8.1.5', ['10.8.1.6'])])
+        # a peer with a /32 and a whole network (a site behind it): credited to the /32, reported
+        peers, _, extras = tunnels.parse_dump(DUMP + SITE)
+        self.assertEqual(peers[-1], ('wg1', '10.8.1.7', 3, 4))
+        self.assertEqual(extras, [('wg1', '10.8.1.5', ['10.8.1.6']), ('wg1', '10.8.1.7', ['192.0.2.0/24'])])
 
     def test_a_peer_without_a_slash32_is_skipped_silently(self):
         peers, skipped, _ = tunnels.parse_dump('\t'.join(['wg1', KEY, '(none)', '(none)', '192.0.2.0/24', '0', '7', '7', 'off']) + '\n')
@@ -140,6 +146,10 @@ class Sampling(Scratch):
         self.logged.assert_called_once()
         self.assertEqual(self.logged.call_args[0][0], syslog.LOG_NOTICE)
         self.assertIn('10.8.1.6', self.logged.call_args[0][1])
+        self.logged.reset_mock()
+        tunnels.run(T0 + 60, self.kept, DUMP + SITE)
+        self.logged.assert_called_once()
+        self.assertIn('wg1 10.8.1.7 (also 192.0.2.0/24)', self.logged.call_args[0][1])
 
     def test_day_files_past_the_reach_are_deleted(self):
         os.makedirs(self.kept, mode=0o700)
