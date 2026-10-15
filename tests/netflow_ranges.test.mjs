@@ -942,10 +942,13 @@ test('a tunnel-counted row is tagged, in both scopes', async () => {
     w._applyRaw('wan');
     assert.deepEqual(byIp(w)['10.8.0.2'], [2500, 1000]);
     assert.match(rowsHtml(w), /tunnel/);
-    w.names = { '10.8.0.2': 'Phone' };                                       // a named device: the tag follows its name
+    // a named device: the tag follows the address, not the name a long hostname's ellipsis would cut
+    w.names = { '10.8.0.2': 'Phone' };
     w._applyRaw('all');
     assert.equal(w.state.rows.find(r => r.ip === '10.8.0.2').name, 'Phone');
-    assert.match(rowHtml(w, '10.8.0.2'), /tunnel<\/small><\/strong>/);
+    const named = rowHtml(w, '10.8.0.2');
+    assert.match(named, /tunnel<\/small><\/small>/);
+    assert.doesNotMatch(named.split('</strong>')[0], /tunnel/);             // nothing of it inside the clipped name
 });
 
 test('an answer without a tunnel block is read as before', async () => {

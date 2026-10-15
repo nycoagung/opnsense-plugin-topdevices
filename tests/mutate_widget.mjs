@@ -285,6 +285,8 @@ const mutants = [
      "$d.html('<small class=\"text-muted\">Measuring\\u2026</small>'); return 1; }"],
     // VPN devices counted from the tunnel (spec 2026-10-15)
     ['the tunnel tag never drawn', "const tag = r.tunnel ? `", "const tag = false ? `"],
+    ["the tunnel tag back inside a named device's clipped name",
+     '${this._esc(r.name)}</strong>`', '${this._esc(r.name)}${tag}</strong>`'],
     ['the VPN coverage note shown even when the samples cover the range', 't.from > q.from', 't.from >= q.from'],
     ['tunnel rows not flagged', 'tunnel: tunnel.has(d.ip)', 'tunnel: false'],
     ["the panel's internet line shows all traffic", 'down: d.tunnel.inet[0], up: d.tunnel.inet[1]', 'down: d.tunnel.all[0], up: d.tunnel.all[1]'],

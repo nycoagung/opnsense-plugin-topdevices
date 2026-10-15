@@ -364,6 +364,14 @@ class TunnelAnswers(unittest.TestCase):
         a = self.totals(T0, T0 + 100, series)
         self.assertEqual(a['devices']['10.8.0.9'], [40, 20, 40, 20])
 
+    def test_a_peer_outside_every_local_net_is_not_credited(self):
+        series = dict(self.series)
+        series[('wg0', IP('203.0.113.5'))] = [(T0, 0, 0), (T0 + 100, 20, 40)]
+        a = self.totals(T0, T0 + 100, series)
+        self.assertNotIn('203.0.113.5', a['devices'])
+        self.assertEqual(a['tunnel'], {'from': T0, 'devices': ['10.8.0.2']})
+        self.assertEqual(a['devices']['10.8.0.2'], [3000, 1000, 2500, 1000])
+
     def test_a_range_before_the_first_sample_keeps_netflows_rows(self):
         series = {('wg0', IP('10.8.0.2')): [(T0 + 150, 0, 0), (T0 + 200, 10, 10)]}
         a = self.totals(T0, T0 + 100, series)

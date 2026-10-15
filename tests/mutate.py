@@ -154,6 +154,8 @@ FLOW_MUTANTS = [
     ('the local upload taken over the all-traffic span', "            t[5] += i\n", "            t[5] += a\n"),
     ('internet only upload for a tunnel device not clamped at zero',
      "            t[3] = max(0.0, u - t[5])", "            t[3] = u - t[5]"),
+    ('a tunnel peer outside the local subnets credited as a device',
+     "            if not net.is_device(ip):             # a peer outside", "            if False:             # a peer outside"),
     ('a device panel given tunnel figures for a range before the first sample',
      "    if S is not None and S < to and any(key[1] == ip for key in tunnels):",
      "    if S is not None and any(key[1] == ip for key in tunnels):"),
@@ -239,6 +241,8 @@ TUNNEL_MUTANTS = [
     ('day files never pruned', "            if os.stat(path).st_mtime < now - keep_s:", "            if False:"),
     ('the folder left world-readable', "    os.chmod(kept, 0o700)", "    os.chmod(kept, 0o755)"),
     ('a peer with several /32s not reported', "        if len(hosts) > 1:", "        if False:"),
+    ('a hung wg taken as no WireGuard',
+     "        raise RuntimeError('wg show all dump did not finish within 10 s') from None", "        return None"),
 ]
 
 

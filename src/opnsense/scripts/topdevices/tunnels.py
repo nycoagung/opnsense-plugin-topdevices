@@ -111,11 +111,14 @@ def run(now, kept, dump, keep_s=KEEP_S):
 
 
 def wg_dump():
-    """`wg show all dump`, or None when there is no wg or it fails (no WireGuard)."""
+    """`wg show all dump`, or None when there is no wg or it fails (no WireGuard).
+    A wg that does not answer is an error, not "no WireGuard": it is raised."""
     try:
         proc = subprocess.run([WG, 'show', 'all', 'dump'], capture_output=True, text=True, timeout=10)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    except FileNotFoundError:
         return None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError('wg show all dump did not finish within 10 s') from None
     return proc.stdout if proc.returncode == 0 else None
 
 

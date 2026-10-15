@@ -485,6 +485,8 @@ def answer_totals(frm, to, now, opened, net, hourly_rows, workers, tunnels=None)
         t_all = tunnel_totals(tunnels, frm, to)
         t_inet = tunnel_totals(tunnels, i_lo, i_hi)
         for ip in sorted(t_all):
+            if not net.is_device(ip):             # a peer outside the local subnets: not a device here
+                continue
             t = acc.setdefault(ip, [0.0] * 6)
             t[0], t[1] = t_all[ip]
             d, u = t_inet.get(ip, [0.0, 0.0])

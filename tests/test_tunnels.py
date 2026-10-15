@@ -8,6 +8,7 @@ import importlib.util
 import os
 import pathlib
 import stat
+import subprocess
 import sys
 import syslog
 import tempfile
@@ -168,6 +169,23 @@ class Dump(unittest.TestCase):
     def test_a_working_wg_gives_its_output(self):
         with unittest.mock.patch.object(tunnels, 'WG', '/bin/echo'):
             self.assertEqual(tunnels.wg_dump(), 'show all dump\n')
+
+    def test_a_hung_wg_is_an_error_not_no_wireguard(self):
+        hung = subprocess.TimeoutExpired([tunnels.WG, 'show', 'all', 'dump'], 10)
+        with unittest.mock.patch.object(tunnels.subprocess, 'run', side_effect=hung):
+            with self.assertRaises(RuntimeError):
+                tunnels.wg_dump()
+
+    def test_main_logs_a_hung_wg_and_exits_1(self):
+        hung = subprocess.TimeoutExpired([tunnels.WG, 'show', 'all', 'dump'], 10)
+        with tempfile.TemporaryDirectory() as tmp, \
+             unittest.mock.patch.object(tunnels, 'KEPT', os.path.join(tmp, 'kept')), \
+             unittest.mock.patch.object(tunnels.subprocess, 'run', side_effect=hung), \
+             unittest.mock.patch.object(tunnels.syslog, 'syslog') as logged:
+            self.assertEqual(tunnels.main(), 1)
+            self.assertFalse(os.path.exists(os.path.join(tmp, 'kept')))       # nothing run, nothing written
+        self.assertEqual(logged.call_args[0][0], syslog.LOG_ERR)
+        self.assertIn('topdevices tunnels: wg show all dump did not finish', logged.call_args[0][1])
 
 
 if __name__ == '__main__':

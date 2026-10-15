@@ -1444,11 +1444,12 @@ export default class TopDevices extends BaseWidget {
         if (rows.length === 0) return `<tr><td colspan="5" class="text-muted">${this._esc(empty)}</td></tr>`;
         return rows.map((r) => {
             const clip = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-            // markup only: the tag is never part of r.name, so sorting and the search ignore it
+            // markup only: the tag is never part of r.name, so sorting and the search ignore it.
+            // It follows the address, which is short: after a long name the ellipsis would hide it.
             const tag = r.tunnel ? ` <small class="text-info" title="${this._esc(TUNNEL_TITLE)}">tunnel</small>` : '';
             const label = r.name
-                ? `<strong style="display:block;${clip}">${this._esc(r.name)}${tag}</strong>`
-                  + `<small class="text-muted" style="display:block;${clip}">${this._esc(r.ip)}</small>`
+                ? `<strong style="display:block;${clip}">${this._esc(r.name)}</strong>`
+                  + `<small class="text-muted" style="display:block;${clip}">${this._esc(r.ip)}${tag}</small>`
                 : `<strong style="display:block;${clip}">${this._esc(r.ip)}${tag}</strong>`;
             const net = this.networks.find(n => n.key === r.net);
             const sel = this.state.selected === r.ip ? ' class="info"' : '';
