@@ -56,8 +56,10 @@ edge, then **Save**. A widget shorter than its rows scrolls as a whole, with the
 table header staying on top, and a newly added one opens at up to 1,000 px. The
 dashboard keeps the height you save as the widget's *maximum* on every load, so a
 height saved while the widget was showing fewer rows stays in force until you drag
-it taller and save again. Beside a tall table, a device's panel opens level with its
-row (and follows it when you sort or filter), and never reaches below the table.
+it taller and save again. Beside the table, a device's panel starts level with the
+first row, just under the header, whichever row you click (0.3.3 to 0.4.0 opened it
+level with the row clicked). Sorting, filtering and Live's re-sorting leave it there,
+and in a widget that scrolls it stays just under the header.
 
 Nothing is hardcoded. Local networks are derived from the firewall's own
 interface configuration (anything outside RFC1918 is treated as upstream, so a
@@ -380,6 +382,10 @@ the second run adds `tunnels.py`, completing all 12. Hence the bootstrap once, o
 `configctl topdevices install` twice straight away. VPN clients stay local-only until
 the sampler has run twice.
 
+**Upgrading from 0.4.0 to 0.4.1:** nothing to do: the same twelve files, and only the
+widget changes (the scripts only carry the new version number). Reload the dashboard
+to pick it up.
+
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
 fail here — the **GitHub API** costs one rate-limited request per file (60/hour
@@ -634,6 +640,15 @@ widget's own per-peer counters read once a minute:
   after the install, and the first non-zero figures a minute later.
 - **Not measured:** the reading cost once 51 hours of samples exist for many peers
   (estimated to stay under 2 s), and a tunnel restart in production.
+
+**Device panel (0.4.1)**, in headless Chrome with OPNsense 26.7.7's own theme CSS,
+jQuery and BaseWidget, the widget inside the dashboard's own wrapper, and 20 rows.
+The header is 28.5 px tall and the panel opens 29 px down, level with the first row
+(half a pixel lower, from rounding), whether row 1, 6 or 18 is clicked and after
+sorting by name either way; 0.4.0 opened it 251 px down for row 6. In a 520 px widget
+scrolled by 60 to 400 px, the panel stays just under the header, where a sticky
+offset of 0, as before, left it beside the header, 29 px higher. The header keeps its
+height down to 784 px, the narrowest width with the panel beside the table.
 
 **Static analysis (0.3.4)**, on 2026-10-08. PHPStan 2.3 at its strictest level (9),
 with OPNsense core 26.7.5's sources on its scan path, reports nothing for the two API
