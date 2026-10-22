@@ -342,12 +342,6 @@ export function fmtSpan(seconds) {
 // The device panel's height beside the table, where it scrolls; stacked under it, it has none.
 const PANEL_MAX_PX = 420;
 
-// Where the device panel starts, in px down the table beside it (0.3.3): level with
-// its device's row, but never so low that it reaches below the table's last row.
-export function panelTop(rowOffset, tableHeight, panelHeight) {
-    return Math.max(0, Math.min(rowOffset, tableHeight - panelHeight));
-}
-
 const FALLBACK_NOTE = "The raw flow log could not be read: showing NetFlow's records";
 // the tag's tooltip on a row counted from the WireGuard tunnel (spec 2026-10-15)
 const TUNNEL_TITLE = "Counted from the WireGuard tunnel: includes the tunnel's own overhead; "
@@ -504,9 +498,7 @@ export default class TopDevices extends BaseWidget {
         this.chartObj = null;
         this.loading = false;
         this.refreshTimer = null;  // the next refresh (_schedule)
-        this.detailTop = 0;        // px down the table where the device panel starts (_alignDetails)
-        this.detailMaxH = 0;       // the panel's tallest since then, which _applyLayout clamps it by
-        this.detailIp = null;      // the device those two are for
+        this.detailTop = 0;        // px down the table where the device panel starts: its first row (_alignDetails)
         this.clockAhead = 0;       // seconds the browser's clock runs ahead of the firewall's (clockAhead)
         this.zoneAskedAt = 0;      // when the zone was last asked for (_loadZone), ms
         this.live = {
@@ -1405,7 +1397,7 @@ export default class TopDevices extends BaseWidget {
             $('.td-window small').append('<br>').append($('<span class="text-warning"></span>').text(caption.note));
         }
         if (!this.state.selected) $('.td-details').empty();
-        this._alignDetails();               // a sort, filter or refresh moves the rows: the panel follows its own
+        this._alignDetails();               // a sort, filter or refresh redraws the rows: measured again
         this._fitHeight();
     }
 
@@ -2034,7 +2026,7 @@ export default class TopDevices extends BaseWidget {
         // but resolving peer names can take a second or more
         $d.html('<div style="padding:12px 0;text-align:center;">'
               + '<i class="fa fa-spinner fa-spin" style="opacity:0.6;"></i></div>');
-        this._alignDetails();               // the placeholder already beside its row
+        this._alignDetails();               // the placeholder already in its place
         let d;
         try { d = await this._detailsData(ip); }
         catch (e) { $d.html('<small class="text-danger">Detail unavailable for this range</small>'); this._alignDetails(); this._fitHeight(); return; }
@@ -2094,21 +2086,18 @@ export default class TopDevices extends BaseWidget {
         this._fitHeight();
     }
 
-    // Beside a table as tall as its rows (since 0.3.3), the device panel starts level
-    // with its device's row - not at the table's top, which a tall widget may have
-    // scrolled out of view. Measured when a panel is drawn, and when the NetFlow table is
-    // re-rendered; _applyLayout keeps it, clamped inside the table, so Live's re-sorting
-    // every second never moves it.
+    // Beside the table, the device panel starts level with its first row, just under the
+    // header, whichever device it is for (since 0.4.1), so a click, a sort, a filter or
+    // Live's re-sorting every second never moves it. Measured when a panel is drawn and
+    // when the NetFlow table is re-rendered. A widget taller than the window scrolls the
+    // page, and a panel opened for a row far down then starts above what is shown, as in
+    // 0.3.2; 0.3.3 to 0.4.0 lined it up with its own row instead.
     _alignDetails() {
-        const ip = this.state.selected;
-        const tr = ip ? $('.td-body').children('tr[data-ip]').filter((i, el) => el.getAttribute('data-ip') === ip)[0] : null;
+        const first = this.state.selected ? $('.td-body').children('tr[data-ip]')[0] : null;
         const wrap = $('.td-tablewrap')[0];
-        // another device: its own height (a refresh redrawing the same one keeps the tallest,
-        // so its placeholder does not drop to the row and back)
-        if (ip !== this.detailIp) { this.detailIp = ip; this.detailMaxH = 0; }
-        // with no row to line up with - a sort took it past the row limit - the panel stays put
-        if (!ip) this.detailTop = 0;
-        else if (tr && wrap) this.detailTop = Math.round(tr.getBoundingClientRect().top - wrap.getBoundingClientRect().top);
+        // with no row to measure (a table between renders) the panel stays put
+        if (!this.state.selected) this.detailTop = 0;
+        else if (first && wrap) this.detailTop = Math.round(first.getBoundingClientRect().top - wrap.getBoundingClientRect().top);
         this._applyLayout();
     }
 
@@ -2118,16 +2107,8 @@ export default class TopDevices extends BaseWidget {
         const w = $('.td-wrap').width() || 0;
         const narrow = w > 0 && w < 780;
         const show = !!this.state.selected;
-        let top = 0;                                   // beside the table: level with its row (_alignDetails)
-        if (!narrow && show) {
-            const wrap = $('.td-tablewrap')[0];
-            // clamped by the tallest the panel has been since it was lined up: Live's lists
-            // change length every second, and a panel held at the table's foot must not jump
-            // (measured before this layout applies: never more than its limit beside the table,
-            // which a panel stacked under it, as it may just have been, does not have)
-            this.detailMaxH = Math.max(this.detailMaxH || 0, Math.min(PANEL_MAX_PX, $('.td-details').outerHeight() || 0));
-            top = panelTop(this.detailTop || 0, wrap ? wrap.offsetHeight : 0, this.detailMaxH);
-        }
+        // beside the table: level with its first row (_alignDetails)
+        const top = !narrow && show ? this.detailTop || 0 : 0;
         $('.td-main').css({ display: narrow ? 'block' : 'flex' });
         // hidden entirely when nothing is selected, so the table gets the full width
         $('.td-details').css({
@@ -2135,6 +2116,7 @@ export default class TopDevices extends BaseWidget {
             flex: narrow ? '' : '1 1 0',
             width: narrow ? '100%' : '',
             position: narrow ? 'static' : 'sticky',
+            top: narrow ? '' : `${top}px`,      // a scrolled widget: stuck just under its sticky header
             marginTop: narrow ? '8px' : (top ? `${top}px` : ''),
             maxHeight: narrow ? '' : `${PANEL_MAX_PX}px`,
             overflowY: narrow ? '' : 'auto'

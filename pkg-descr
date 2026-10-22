@@ -17,6 +17,13 @@ WWW: https://github.com/nycoagung/opnsense-plugin-topdevices
 Plugin Changelog
 ----------------
 
+0.4.1
+
+* Beside the table, a device's panel starts level with the first row, just
+  under the header, whichever device it is for, and stays there when the
+  table is sorted or filtered, as Live re-sorts, and as a widget shorter than
+  its rows scrolls; 0.3.3 to 0.4.0 opened it level with its own row
+
 0.4.0
 
 * WireGuard clients' ranges (Last hour, Today, Yesterday, Last 24 hours and

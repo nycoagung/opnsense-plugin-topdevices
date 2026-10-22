@@ -58,6 +58,7 @@ const element = (sel) => new Proxy(function () {}, {
             get: (t, q) => (q === 'filter'
                 ? (fn) => { const found = bodyRows.map(r => ({ ...box(r), getAttribute: () => r.ip })).filter((el, i) => fn(i, el));
                             return Object.assign(found, { length: found.length }); }
+                : q === '0' ? (bodyRows.length ? { ...box(bodyRows[0]), getAttribute: () => bodyRows[0].ip } : undefined)
                 : q === Symbol.toPrimitive ? () => '' : q === 'length' ? 0 : chain),
             apply: () => chain })
         : p === Symbol.toPrimitive ? () => '' : p === 'length' ? 0 : chain),
@@ -1504,32 +1505,26 @@ test('the device panel beside the table keeps its own scroll box; stacked under 
     } finally { wrapWidth = 0; }
 });
 
-test('the device panel starts level with the clicked row, and never reaches below the table', () => {
-    assert.equal(m.panelTop(200, 900, 369), 200);            // level with the row
-    assert.equal(m.panelTop(600, 900, 369), 531);            // near the bottom: its foot on the table's
-    assert.equal(m.panelTop(200, 300, 369), 0);              // a table shorter than the panel: at its top
-    assert.equal(m.panelTop(-5, 900, 369), 0);
-});
-
-test('a click lines the panel up with its row; later layouts keep it there, inside the table', () => {
+test('the device panel starts level with the first row, whichever row was clicked', () => {
     const w = widget('24h');
     w.state.selected = '192.168.1.10';
     boxes['.td-tablewrap'] = { top: 100, height: 900 };
     boxes['.td-details'] = { height: 369 };
-    bodyRows = [{ ip: '192.168.30.5', top: 130 }, { ip: '192.168.1.10', top: 400 }];
+    bodyRows = [{ ip: '192.168.30.5', top: 129 }, { ip: '192.168.1.10', top: 400 }];
     wrapWidth = 1200;
     try {
         w._alignDetails();
-        assert.equal(styles['.td-details'].marginTop, '300px');       // beside its row, 300 px down the table
-        bodyRows = [{ ip: '192.168.1.10', top: 130 }];                 // Live re-sorts: the row moves up
+        assert.equal(styles['.td-details'].marginTop, '29px');        // under the header, beside the first row
+        bodyRows = [{ ip: '192.168.1.10', top: 129 }, { ip: '192.168.30.5', top: 158 }];   // Live re-sorts
+        w._alignDetails();
+        assert.equal(styles['.td-details'].marginTop, '29px');        // the panel stays put
+        bodyRows = [];                                                 // a table caught between renders
+        w._alignDetails();
+        assert.equal(styles['.td-details'].marginTop, '29px');        // nothing to measure: it stays put
+        bodyRows = [{ ip: '192.168.1.10', top: 129 }];
+        boxes['.td-tablewrap'] = { top: 100, height: 60 };             // one row: a table shorter than the panel
         w._applyLayout();
-        assert.equal(styles['.td-details'].marginTop, '300px');       // the panel stays put
-        boxes['.td-tablewrap'] = { top: 100, height: 500 };            // fewer rows: the table shrinks
-        w._applyLayout();
-        assert.equal(styles['.td-details'].marginTop, '131px');       // kept inside it
-        boxes['.td-details'] = { height: 216 };                        // Live: its lists grow shorter
-        w._applyLayout();
-        assert.equal(styles['.td-details'].marginTop, '131px');       // its top stays: it only moves up, as it grows
+        assert.equal(styles['.td-details'].marginTop, '29px');        // still at the top
         wrapWidth = 600;                                               // stacked under the table
         w._applyLayout();
         assert.equal(styles['.td-details'].marginTop, '8px');
@@ -1549,35 +1544,30 @@ test('the loading spinner shows near the top of a widget as tall as its rows', (
     assert.match(loading[1], /align-items:flex-start;/);
 });
 
-test("a refresh that redraws the device panel lines it up with its row's new place", async () => {
-    const { w } = await loadRaw('1h', (url) => (url.includes('/device/') ? deviceAnswer(NOW - 3600, NOW)
-        : totalsAnswer(NOW - 3600, NOW)));
-    w.state.selected = '192.168.1.10';
-    boxes['.td-tablewrap'] = { top: 100, height: 900 };
-    boxes['.td-details'] = { height: 369 };
-    bodyRows = [{ ip: '192.168.1.10', top: 350 }];
-    wrapWidth = 1200;
-    try {
-        await w.renderDetails('192.168.1.10');
-        assert.equal(styles['.td-details'].marginTop, '250px');
-    } finally {
-        wrapWidth = 0; bodyRows = [];
-        delete boxes['.td-tablewrap']; delete boxes['.td-details'];
-    }
-});
-
 // a widget on `range` with the device panel's boxes laid out: the table 900 px tall at y 100,
-// the panel 369 px, and the selected device's row at y `rowY`
+// its first row another device's at y 129 (under a 29 px header), the panel 369 px, and the
+// selected device's row at y `rowY`
 function laidOut(w, rowY) {
     w.state.selected = '192.168.1.10';
     boxes['.td-tablewrap'] = { top: 100, height: 900 };
     boxes['.td-details'] = { height: 369 };
-    bodyRows = [{ ip: '192.168.1.10', top: rowY }];
+    bodyRows = [{ ip: '192.168.30.5', top: 129 }, { ip: '192.168.1.10', top: rowY }];
     wrapWidth = 1200;
+    delete styles['.td-details'];      // so a test reads what its own code set, not the last test's
 }
+
+test('a refresh that redraws the device panel keeps it level with the first row', async () => {
+    const { w } = await loadRaw('1h', (url) => (url.includes('/device/') ? deviceAnswer(NOW - 3600, NOW)
+        : totalsAnswer(NOW - 3600, NOW)));
+    laidOut(w, 350);
+    try {
+        await w.renderDetails('192.168.1.10');
+        assert.equal(styles['.td-details'].marginTop, '29px');
+    } finally { unlaid(); }
+});
 function unlaid() { wrapWidth = 0; bodyRows = []; delete boxes['.td-tablewrap']; delete boxes['.td-details']; }
 
-test('the placeholder a click draws already sits level with its row, and so does an error in its place', async () => {
+test('the placeholder a click draws, and an error in its place, sit level with the first row', async () => {
     let answer;
     const { w } = await loadRaw('1h', (url) => (url.includes('/device/') ? new Promise((r) => { answer = r; })
         : totalsAnswer(NOW - 3600, NOW)));
@@ -1585,32 +1575,32 @@ test('the placeholder a click draws already sits level with its row, and so does
     try {
         const drawing = w.renderDetails('192.168.1.10');
         await tick(); await tick();
-        assert.equal(styles['.td-details'].marginTop, '250px');       // while the lists are still being read
-        bodyRows = [{ ip: '192.168.1.10', top: 300 }];
+        assert.equal(styles['.td-details'].marginTop, '29px');        // while the lists are still being read
+        bodyRows = [{ ip: '192.168.30.5', top: 129 }, { ip: '192.168.1.10', top: 300 }];
         answer({ error: 'no such device' });                          // the read fails: its note takes the place
         await drawing;
-        assert.equal(styles['.td-details'].marginTop, '200px');
+        assert.equal(styles['.td-details'].marginTop, '29px');
     } finally { unlaid(); }
 });
 
-test('sorting, filtering or refreshing the table lines the panel up with its row again', async () => {
+test('sorting, filtering or refreshing the table leaves the panel level with the first row', async () => {
     const { w } = await loadRaw('1h', () => totalsAnswer(NOW - 3600, NOW));
     laidOut(w, 400);
     try {
         await w.render();
-        assert.equal(styles['.td-details'].marginTop, '300px');
-        bodyRows = [{ ip: '192.168.1.10', top: 200 }];                 // sorted by name: the row moved up
+        assert.equal(styles['.td-details'].marginTop, '29px');
+        bodyRows = [{ ip: '192.168.30.5', top: 129 }, { ip: '192.168.1.10', top: 200 }];   // sorted: the row moved up
         await w.render();
-        assert.equal(styles['.td-details'].marginTop, '100px');
+        assert.equal(styles['.td-details'].marginTop, '29px');
     } finally { unlaid(); }
 });
 
-test("Live's panel lines up with the row clicked", async () => {
+test("Live's panel sits level with the first row, not with the row clicked", async () => {
     const w = widget('live');
     laidOut(w, 400);
     try {
         await w.renderDetails('192.168.1.10');
-        assert.equal(styles['.td-details'].marginTop, '300px');
+        assert.equal(styles['.td-details'].marginTop, '29px');
     } finally { unlaid(); }
 });
 
@@ -1618,7 +1608,7 @@ test('the loading spinner stays in view while a widget shorter than its rows scr
     assert.match(markupOf(widget('24h')) || '', /<i class="fa fa-spinner fa-spin fa-2x" style="[^"]*position:sticky;top:96px;/);
 });
 
-test("near the table's foot, the panel is kept inside the table once its lists are in", async () => {
+test("a row near the table's foot opens its panel at the top, placeholder and lists alike", async () => {
     let answer;
     const { w } = await loadRaw('1h', (url) => (url.includes('/device/') ? new Promise((r) => { answer = r; })
         : totalsAnswer(NOW - 3600, NOW)));
@@ -1627,57 +1617,70 @@ test("near the table's foot, the panel is kept inside the table once its lists a
     try {
         const drawing = w.renderDetails('192.168.1.10');
         await tick(); await tick();
-        assert.equal(styles['.td-details'].marginTop, '700px');
+        assert.equal(styles['.td-details'].marginTop, '29px');
         boxes['.td-details'] = { height: 369 };                        // the lists, once read
         answer(deviceAnswer(NOW - 3600, NOW));
         await drawing;
-        assert.equal(styles['.td-details'].marginTop, '531px');       // its foot on the table's
+        assert.equal(styles['.td-details'].marginTop, '29px');
     } finally { unlaid(); }
 });
 
-test("a refresh redrawing the same device's panel keeps it where it was, placeholder and all", async () => {
+test("a refresh redrawing the same device's panel keeps it at the top, placeholder and all", async () => {
     let answer;
     const { w } = await loadRaw('1h', (url) => (url.includes('/device/') ? new Promise((r) => { answer = r; })
         : totalsAnswer(NOW - 3600, NOW)));
-    laidOut(w, 800);                                                   // near the foot: held at 531 px
+    laidOut(w, 800);
     try {
         let drawing = w.renderDetails('192.168.1.10');
         await tick(); await tick();
         answer(deviceAnswer(NOW - 3600, NOW)); await drawing;
-        assert.equal(styles['.td-details'].marginTop, '531px');
+        assert.equal(styles['.td-details'].marginTop, '29px');
         boxes['.td-details'] = { height: 50 };                         // the refresh's placeholder
         drawing = w.renderDetails('192.168.1.10');
         await tick(); await tick();
-        assert.equal(styles['.td-details'].marginTop, '531px');       // not down at its row and back
+        assert.equal(styles['.td-details'].marginTop, '29px');        // not down at its row and back
         boxes['.td-details'] = { height: 369 };
         answer(deviceAnswer(NOW - 3600, NOW)); await drawing;
-        assert.equal(styles['.td-details'].marginTop, '531px');
+        assert.equal(styles['.td-details'].marginTop, '29px');
     } finally { unlaid(); }
 });
 
-test('back beside the table after being stacked under it, the panel is lined up by its height beside it', () => {
+test('back beside the table after being stacked under it, the panel is level with the first row again', () => {
     const w = widget('24h');
     laidOut(w, 400);
     try {
         w._alignDetails();
-        assert.equal(styles['.td-details'].marginTop, '300px');
+        assert.equal(styles['.td-details'].marginTop, '29px');
         wrapWidth = 600;
         boxes['.td-details'] = { height: 1529 };                       // stacked, with no height limit of its own
         w._applyLayout();
-        wrapWidth = 1200;                                              // wide again: measured before its 420 px limit returns
+        assert.equal(styles['.td-details'].marginTop, '8px');
+        wrapWidth = 1200;
         w._applyLayout();
-        assert.equal(styles['.td-details'].marginTop, '300px');
+        assert.equal(styles['.td-details'].marginTop, '29px');
     } finally { unlaid(); }
 });
 
-test("a panel whose row a sort has taken off the table stays where it was", async () => {
+test('in a widget that scrolls, the panel sticks under the header, level with the first row in view', () => {
+    const w = widget('24h');
+    laidOut(w, 400);
+    try {
+        w._alignDetails();
+        assert.equal(styles['.td-details'].top, '29px');              // not up beside the header, 29 px higher
+        wrapWidth = 600;                                               // stacked under the table: not sticky
+        w._applyLayout();
+        assert.equal(styles['.td-details'].top, '');
+    } finally { unlaid(); }
+});
+
+test("a panel whose row a sort has taken off the table stays at the top", async () => {
     const { w } = await loadRaw('1h', () => totalsAnswer(NOW - 3600, NOW));
     laidOut(w, 400);
     try {
         await w.render();
-        assert.equal(styles['.td-details'].marginTop, '300px');
-        bodyRows = [{ ip: '192.168.30.5', top: 130 }];                 // its row is past the row limit now
+        assert.equal(styles['.td-details'].marginTop, '29px');
+        bodyRows = [{ ip: '192.168.30.5', top: 129 }];                 // its row is past the row limit now
         await w.render();
-        assert.equal(styles['.td-details'].marginTop, '300px');
+        assert.equal(styles['.td-details'].marginTop, '29px');
     } finally { unlaid(); }
 });
