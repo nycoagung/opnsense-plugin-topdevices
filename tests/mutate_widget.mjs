@@ -318,6 +318,13 @@ const connectedMutants = [
     ['Space scrolls the page as well', '                e.preventDefault();\n', ''],
     ['the toggle drawn without its class', '<span class="cd-recent-toggle" role="button"', '<span class="cd-toggle" role="button"'],
     ['the toggle out of the keyboard order', 'role="button" tabindex="0" aria-expanded', 'role="button" aria-expanded'],
+    // the status: a dot, with how long when known; the words for screen readers and the tooltip
+    ['no "Connected" for screen readers', '<span class="sr-only">Connected</span>', ''],
+    ['how long a device has been connected not shown', "${d.for ? ` ${escapeHtml(d.for)}` : ''}", ''],
+    ['a connected device drawn with the hollow dot', "${dot('fa-circle text-success')}", "${dot('fa-circle-o text-muted')}"],
+    ['the tooltip silent on a start before tracking',
+     ": d.before ? `Connected since before ${dateTimeText(d.before, zone)} (when tracking began)` : 'Connected'", ": 'Connected'"],
+    ['the tooltip without a word when no time is known', "(when tracking began)` : 'Connected');", "(when tracking began)` : '');"],
 ];
 
 const targets = [

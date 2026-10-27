@@ -74,20 +74,24 @@ export function seenText(at, now, zone) {
     return `${WEEKDAYS[dow]} ${clockText(at, zone)}`;
 }
 
-// "Connected 2 h 14 min", "Connected before 10:15", or "Connected" while tracking is off;
-// "Last seen …" for a device not connected now.
+// A filled dot with how long this visit has lasted ("2 h 14 min"), or alone when that isn't
+// known (there before tracking began, or tracking off), "Connected" in words for screen
+// readers; a hollow dot and "Last seen …" for a device not connected now.
 export function statusHtml(d, connected, now, zone) {
-    if (!connected) return `Last seen ${escapeHtml(seenText(d.last_seen, now, zone))}`;
-    const how = d.for ? ` ${escapeHtml(d.for)}` : d.before ? ` before ${clockText(d.before, zone)}` : '';
-    return `<span class="text-success">Connected</span>${how}`;
+    const dot = (look) => `<i class="fa ${look}" style="font-size:11px;margin-right:4px;" aria-hidden="true"></i>`;
+    if (!connected) return `${dot('fa-circle-o text-muted')} Last seen ${escapeHtml(seenText(d.last_seen, now, zone))}`;
+    return `${dot('fa-circle text-success')}<span class="sr-only">Connected</span>${d.for ? ` ${escapeHtml(d.for)}` : ''}`;
 }
 
 // The exact times behind the status, then the vendor and when Host discovery first saw it.
 export function statusTitle(d, vpn, connected, zone) {
     const lines = [];
-    if (connected && d.since) lines.push(`Connected at ${dateTimeText(d.since, zone)}`);
-    if (connected && d.before) lines.push(`Connected before ${dateTimeText(d.before, zone)}`);
-    if (!connected) lines.push(`${vpn ? 'Latest handshake' : 'Last heard from'}: ${dateTimeText(d.last_seen, zone)}`);
+    if (connected) {
+        lines.push(d.since ? `Connected at ${dateTimeText(d.since, zone)}`
+            : d.before ? `Connected since before ${dateTimeText(d.before, zone)} (when tracking began)` : 'Connected');
+    } else {
+        lines.push(`${vpn ? 'Latest handshake' : 'Last heard from'}: ${dateTimeText(d.last_seen, zone)}`);
+    }
     if (d.vendor) lines.push(`Vendor: ${d.vendor}`);
     if (d.first_seen) lines.push(`First seen on the network: ${dateText(d.first_seen, zone)}`);
     return lines.join('\n');
@@ -123,17 +127,16 @@ export function noteTexts(answer) {
     return notes;
 }
 
-// One device: a dot (filled when connected, hollow when not) before its name, its address
-// and MAC, and its status in words, so the state never rests on colour alone.
+// One device: its name, address and MAC, and its status, whose dots differ in shape so the
+// state never rests on colour alone.
 function rowHtml(d, vpn, connected, hidden, now, zone) {
     const clip = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-    const dot = connected ? 'fa fa-circle text-success' : 'fa fa-circle-o text-muted';
     const name = d.name !== '' ? escapeHtml(d.name) : '<i>(unnamed)</i>';
     const nameTitle = d.name !== '' ? escapeHtml(d.name) : 'No DHCP reservation and no name from DHCP';
     const mac = vpn ? '—' : escapeHtml(d.mac);
     const attrs = connected ? '' : ` class="cd-recent text-muted"${hidden ? ' style="display:none"' : ''}`;
     return `<tr${attrs}>`
-        + `<td style="text-align:left;${clip}" title="${nameTitle}"><i class="${dot}" style="font-size:11px;margin-right:6px;" aria-hidden="true"></i>${name}</td>`
+        + `<td style="text-align:left;${clip}" title="${nameTitle}">${name}</td>`
         + `<td style="text-align:left;${clip}" title="${escapeHtml(d.ip)}">${escapeHtml(d.ip)}</td>`
         + `<td style="text-align:left;${clip}" title="${mac}">${mac}</td>`
         + `<td style="text-align:left;${clip}" title="${escapeHtml(statusTitle(d, vpn, connected, zone))}">${statusHtml(d, connected, now, zone)}</td></tr>`;

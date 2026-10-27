@@ -79,17 +79,20 @@ Anti-goals:
 - **Host name** and **IP address** as in §7; *(unnamed)* is in italics, with a tooltip
   saying there is no DHCP reservation and no name from DHCP. **MAC address** in lower
   case with colons; a VPN client shows "—".
-- **Status** of a connected device: a filled green dot before its name, and "Connected
-  2 h 14 min", how long ago this visit began ("under 1 min", "6 min", "2 h 14 min",
-  "3 d 4 h"). Its tooltip gives the time it connected, the vendor (from the MAC) and
-  when Host discovery first saw the device. A device already connected when tracking
-  began reads "Connected before 10:15" (when tracking began), its tooltip giving that
-  date and time. While tracking isn't running it reads "Connected", and a line under
-  the table says why.
+- **Status** of a connected device: a filled green dot, and how long ago this visit
+  began ("under 1 min", "6 min", "2 h 14 min", "3 d 4 h"); "Connected" stays in words
+  for screen readers only. Its tooltip gives the time it connected, the vendor (from
+  the MAC) and when Host discovery first saw the device. A device already connected
+  when tracking began shows the dot alone, its tooltip saying "Connected since before"
+  that date and time "(when tracking began)". While tracking isn't running every
+  device shows the dot alone, and a line under the table says why. (Changed with the
+  maintainer on 2026-10-27, after the first install: the words "Connected before
+  17:31" on every row read as noise, and the time of day alone misleads once the day
+  has passed.)
 - **Not connected · seen in the last 7 days (3)**: a section under the connected
   groups, newest first. It starts closed; a click on its header, or Enter or Space on
   it (it takes keyboard focus, and keeps it), opens and closes it; it stays as left in
-  that browser. Each row has a hollow dot and is greyed, and its status reads "Last
+  that browser. Each row is greyed, and its status is a hollow dot and "Last
   seen 3 h ago" ("25 min ago") when seen earlier the same local day, else "Last seen
   Sat 09:29". The tooltip gives the date and time ("Last heard from …", or "Latest
   handshake …" for a VPN client), the vendor and the first sighting. A muted line ends
@@ -106,13 +109,11 @@ Anti-goals:
   and lists nothing. A stale list is never left standing.
 - It refreshes every 60 seconds, and at once from the refresh button; a click while a
   read is under way starts no second one.
-- The state never rests on colour alone: the dots differ in shape, and the status says
-  it in words.
+- The state never rests on colour alone: the dots differ in shape, screen readers hear
+  "Connected", and the rows not connected say "Last seen".
 - Column widths: in a widget about 620 px wide, names of about 25 characters, any IPv4
   address, MACs and the status texts fit on one line, and the header stays on one
   line. A narrower widget cuts long values with "…" and shows them whole on hover.
-  (In a browser set to a 12-hour clock, "Connected before 12:47 pm" may be cut at that
-  width.)
 
 Mockup (documentation values):
 
@@ -121,13 +122,13 @@ Mockup (documentation values):
 | Host name | IP address | MAC address | Status |
 |---|---|---|---|
 | **LAN · 2 connected** | | | |
-| ● Laptop-Example | 192.0.2.10 | 00:00:5e:00:53:01 | Connected 2 h 14 min |
-| ● *(unnamed)* | 192.0.2.88 | 00:00:5e:00:53:02 | Connected 6 min |
+| Laptop-Example | 192.0.2.10 | 00:00:5e:00:53:01 | ● 2 h 14 min |
+| *(unnamed)* | 192.0.2.88 | 00:00:5e:00:53:02 | ● |
 | **VPN · 1 connected** | | | |
-| ● Phone-Example | 198.51.100.3 | — | Connected 45 min |
+| Phone-Example | 198.51.100.3 | — | ● 45 min |
 | **▾ Not connected · seen in the last 7 days (2)** | | | |
-| ○ Tablet-Example | 192.0.2.40 | 00:00:5e:00:53:04 | Last seen 3 h ago |
-| ○ Phone-Example-2 | 198.51.100.4 | — | Last seen Sat 09:29 |
+| Tablet-Example | 192.0.2.40 | 00:00:5e:00:53:04 | ○ Last seen 3 h ago |
+| Phone-Example-2 | 198.51.100.4 | — | ○ Last seen Sat 09:29 |
 
 ## 4. Who counts as connected
 
@@ -379,6 +380,10 @@ group is never silent:
   (approved from a mockup).
 - The widget belongs to Top Devices, as its own widget; the earlier version in the
   other plugin is retired.
+- After the first install (2026-10-27): the status is a dot, not words. The dot moves
+  from the name into the Status column, with how long when that is known and alone
+  when it isn't; the start before tracking moves into the tooltip, with its date
+  (approved from a mockup).
 
 ## 17. My calls (open to the maintainer's veto)
 

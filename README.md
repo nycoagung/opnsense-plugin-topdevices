@@ -234,17 +234,18 @@ from the widget picker like Top Devices, which it leaves unchanged.
   internal network in the order the interfaces are assigned (LAN, then OPT1, OPT2 and
   so on), each group's header with its count ("LAN · 12 connected"), then a **VPN**
   group for WireGuard clients. Within a group, named devices come first in natural
-  order (9 before 10), then the unnamed ones by address. A connected device has a
-  filled green dot and reads *Connected 2 h 14 min*, how long ago this visit began;
-  its tooltip gives the time it connected, the vendor and when Host discovery first
-  saw it. One already connected when tracking began reads *Connected before 10:15*.
+  order (9 before 10), then the unnamed ones by address. A connected device's status
+  is a filled green dot with how long ago this visit began (*2 h 14 min*); its
+  tooltip gives the time it connected, the vendor and when Host discovery first saw
+  it. One already connected when tracking began shows the dot alone, its tooltip
+  saying *Connected since before* that time (with the date).
 - **Not connected · seen in the last 7 days.** A section under the groups, newest
   first, its rows greyed with a hollow dot: *Last seen 25 min ago* when seen earlier
   the same day, else *Last seen Sat 09:29*. It starts closed; a click on its header,
   or Enter or Space on it, opens and closes it, and each browser remembers how you
   left it. A device unseen for longer than 7 days drops off the widget; it stays under
   Interfaces → Neighbors. The state never rests on colour alone: the dots differ in
-  shape, and the status says it in words.
+  shape, screen readers hear "Connected", and the rows not connected say *Last seen*.
 - **Refresh.** Every 60 seconds, and at once from the refresh button before the link
   icon, which opens core's host discovery page; a click while a read is under way
   starts no second one. Clock times, and "the same day", follow the firewall's time
@@ -262,11 +263,11 @@ from the widget picker like Top Devices, which it leaves unchanged.
   (root only, written atomically). A visit goes on while the device is heard from again
   within 30 minutes; a longer gap ends it, and the next sighting starts a new one. A
   device that moves to another network keeps its visit. The devices already there at
-  the first run read "before" that run's time, as do those there when tracking starts
-  afresh after a pause longer than the gap, or after the clock went back. A device that
-  arrived since the last run reads just *Connected* until the next one, as every
-  device does once tracking has not run for over 3 minutes, with a note saying so.
-  Its errors go to the system log.
+  the first run date their visit "before" that run's time, as do those there when
+  tracking starts afresh after a pause longer than the gap, or after the clock went
+  back; they show the dot alone. So does a device that arrived since the last run,
+  until the next one, and every device once tracking has not run for over 3 minutes,
+  with a note saying so. Its errors go to the system log.
 - **Seen in the last 7 days** is Host discovery's newest sighting of a device not
   connected now, within 7 days, or, for a VPN client, its latest handshake.
 - **Names and addresses.** The address is the device's unexpired Dnsmasq lease on an
@@ -800,7 +801,8 @@ height down to 784 px, the narrowest width with the panel beside the table.
   - the served widget files are byte-identical to the branch, and Top Devices' own are
     unchanged from 0.4.1; configd restarted once, at the install;
   - the tracker ran every minute from the first minute after the install, with nothing
-    in the system log, and every device connected then read "before" that first run;
+    in the system log, and every device connected then dated its visit "before" that
+    first run;
   - the connected list matched the firewall's own in both reads: the ARP table and the
     WireGuard peers online, with the names from the reservations and leases, and each
     last-seen time Host discovery's newest sighting; so did the seen-this-week list,

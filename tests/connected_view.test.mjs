@@ -89,15 +89,16 @@ test("seenText: the day is the zone's", () => {
     assert.deepEqual([seenText(at, now, 'UTC'), seenText(at, now, 'Asia/Tokyo')], ['6 h ago', 'Mon 23:00']);
 });
 
-test('statusHtml: how long, before when, or just connected; when last seen', () => {
+test('statusHtml: a filled dot with how long when that is known, else alone; a hollow one with when last seen', () => {
     const [laptop, unnamed] = answer().groups[0].devices;
+    // the word stays for screen readers; the dot itself is decoration
+    const on = '<i class="fa fa-circle text-success" style="font-size:11px;margin-right:4px;" aria-hidden="true"></i>'
+        + '<span class="sr-only">Connected</span>';
+    const off = '<i class="fa fa-circle-o text-muted" style="font-size:11px;margin-right:4px;" aria-hidden="true"></i>';
     assert.deepEqual([statusHtml(laptop, true, T0, 'UTC'), statusHtml(unnamed, true, T0, 'UTC'),
                       statusHtml(dev('X', '192.0.2.9', '00:00:5e:00:53:09'), true, T0, 'UTC'),
                       statusHtml({ last_seen: T0 - 1500 }, false, T0, 'UTC')],
-                     ['<span class="text-success">Connected</span> 2 h 14 min',
-                      '<span class="text-success">Connected</span> before 05:33',
-                      '<span class="text-success">Connected</span>',
-                      'Last seen 25 min ago']);
+                     [`${on} 2 h 14 min`, on, on, `${off} Last seen 25 min ago`]);
 });
 
 test('statusTitle: the exact times, the vendor and the first sighting', () => {
@@ -105,8 +106,11 @@ test('statusTitle: the exact times, the vendor and the first sighting', () => {
         { since: T0 - 8040, vendor: 'Example Inc', first_seen: Date.UTC(2026, 8, 19, 1, 0, 0) / 1000 });
     assert.equal(statusTitle(laptop, false, true, 'UTC'),
                  'Connected at Mon 26 Oct 2026 05:19\nVendor: Example Inc\nFirst seen on the network: 19 Sep 2026');
+    // the dot alone stands for these two: the tooltip says what it knows in words
     assert.equal(statusTitle(dev('', '192.0.2.50', 'm', { before: T0 - 7200 }), false, true, 'UTC'),
-                 'Connected before Mon 26 Oct 2026 05:33');
+                 'Connected since before Mon 26 Oct 2026 05:33 (when tracking began)');
+    assert.equal(statusTitle(dev('', '192.0.2.51', 'm', { vendor: 'Example Inc' }), false, true, 'UTC'),
+                 'Connected\nVendor: Example Inc');
     assert.deepEqual([statusTitle(answer().recent[0], true, false, 'UTC'), statusTitle(answer().recent[1], false, false, 'UTC')],
                      ['Latest handshake: Mon 26 Oct 2026 07:18', 'Last heard from: Sun 25 Oct 2026 07:33']);
 });
@@ -136,7 +140,10 @@ test('bodyHtml: groups, dots, names, MACs', () => {
     const html = bodyHtml(answer(), false, 'UTC');
     assert.ok(html.includes('<strong>LAN · 2 connected</strong>') && html.includes('<strong>VPN · 1 connected</strong>'));
     const lan = rows(html)[1];
-    assert.ok(lan.includes('fa fa-circle text-success') && lan.includes('Laptop-Example') && lan.includes('00:00:5e:00:53:01'));
+    assert.ok(lan.includes('Laptop-Example') && lan.includes('00:00:5e:00:53:01'));
+    // the dot is the status: in its cell, not before the name
+    const cells = lan.split('</td>');
+    assert.ok(!cells[0].includes('fa-circle') && cells[3].includes('fa fa-circle text-success') && cells[3].includes('2 h 14 min'));
     assert.ok(rows(html)[2].includes('<i>(unnamed)</i>') && rows(html)[2].includes('title="No DHCP reservation and no name from DHCP"'));
     assert.ok(rows(html)[4].includes('>—</td>'), 'a VPN client shows no MAC');
 });
@@ -149,7 +156,9 @@ test('bodyHtml: the not-connected section, closed and open', () => {
     const recent = closed.filter((r) => /class="cd-recent[ "]/.test(r));    // not the header's cd-recent-head
     assert.equal(recent.length, 3);                                   // two devices and the note
     assert.ok(recent.every((r) => r.includes('display:none')));
-    assert.ok(recent[0].includes('fa fa-circle-o text-muted') && recent[0].includes('Last seen 15 min ago') && recent[0].includes('>—</td>'));
+    assert.ok(recent[0].includes('Last seen 15 min ago') && recent[0].includes('>—</td>'));
+    const away = recent[0].split('</td>');
+    assert.ok(!away[0].includes('fa-circle') && away[3].includes('fa fa-circle-o text-muted'));
     assert.ok(recent[1].includes('Last seen Sun 07:33') && recent[1].includes('00:00:5e:00:53:04'));
     assert.ok(recent[2].includes('Devices not seen for 7 days drop off the widget. They stay under Interfaces → Neighbors.'));
     const open = rows(bodyHtml(answer(), true, 'UTC'));
