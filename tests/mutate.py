@@ -13,6 +13,7 @@ LIVE = ROOT / 'src/opnsense/scripts/topdevices/live.py'
 FLOWS = ROOT / 'src/opnsense/scripts/topdevices/flows.py'
 KEEP = ROOT / 'src/opnsense/scripts/topdevices/keep.py'
 TUNNELS = ROOT / 'src/opnsense/scripts/topdevices/tunnels.py'
+CONNECTED = ROOT / 'src/opnsense/scripts/topdevices/connected.py'
 
 MUTANTS = [
     ('port-forward direction not swapped',
@@ -250,6 +251,57 @@ TUNNEL_MUTANTS = [
      "        raise RuntimeError('wg show all dump did not finish within 10 s') from None", "        return None"),
 ]
 
+# Connected devices (spec 2026-10-27)
+CONNECTED_MUTANTS = [
+    ('the 20-minute window made exclusive',
+     "if s['last'] >= now - PRESENT_WINDOW}", "if s['last'] > now - PRESENT_WINDOW}"),
+    ('expired ARP entries counted',
+     "or row.get('expired') is True or address_on(ip, intf) is None):", "or address_on(ip, intf) is None):"),
+    ("the firewall's own MAC listed under an alias address",
+     "        if mac in own_macs:\n            return\n", ""),
+    ('IPv6 sightings no longer keep a device present',
+     "            if len(row) < 6 or row[0] not in by_device:\n                continue\n            last",
+     "            if len(row) < 6 or row[0] not in by_device or ':' in row[2]:\n                continue\n            last"),
+    ('a gateway of "none" taken as upstream',
+     "iface['gateway'] not in ('', 'none')", "iface['gateway'] != ''"),
+    ('heard taken from the ARP table',
+     "        if timed and (s['heard'] is None or at > s['heard']):", "        if s['heard'] is None or at > s['heard']:"),
+    ('a future sighting kept in the future',
+     "see(row[1], row[2], row[0], min(last, now), True,", "see(row[1], row[2], row[0], last, True,"),
+    ('a /24 allowed IP taken as the peer\'s address',
+     "            if net.version == 4 and net.prefixlen == 32:\n                ips.setdefault",
+     "            if net.version == 4:\n                ips.setdefault"),
+    ('the 7-day window made exclusive',
+     "now - seen['heard'] <= RECENT_WINDOW", "now - seen['heard'] < RECENT_WINDOW"),
+    ("a VPN client's last seen set to now",
+     "'first_seen': None, 'last_seen': peer['handshake']}", "'first_seen': None, 'last_seen': now}"),
+    ('VPN clients left out of the not-connected list', "    recent += away.values()\n", ""),
+    ('the not-connected list oldest first',
+     "recent.sort(key=lambda d: (-d['last_seen'], _order(d)))", "recent.sort(key=lambda d: (d['last_seen'], _order(d)))"),
+    ('the visit gap made exclusive',
+     "if at - visit['last'] <= VISIT_GAP else", "if at - visit['last'] < VISIT_GAP else"),
+    ('the visits file created 0644', "    os.chmod(tmp, 0o600)", "    os.chmod(tmp, 0o644)"),
+    ('the visits folder left as it was', "    os.chmod(folder, 0o700)\n", ""),
+    ('a long pause does not restart tracking',
+     "if state['run'] is None or now < state['run'] or now - state['run'] > VISIT_GAP:",
+     "if state['run'] is None or now < state['run']:"),
+    ('a hung wg taken as no WireGuard',
+     "        except (OSError, subprocess.TimeoutExpired):\n            return None\n        if proc.returncode != 0:\n"
+     "            return None\n        outputs",
+     "        except subprocess.TimeoutExpired:\n            return []\n        except OSError:\n            return None\n"
+     "        if proc.returncode != 0:\n            return None\n        outputs"),
+    ('an unreadable ARP table fails the whole answer',
+     "(inputs['arp'] is None and inputs['hostwatch'] is None)", "inputs['arp'] is None"),
+    ('unreadable Host discovery fails the whole answer',
+     "(inputs['arp'] is None and inputs['hostwatch'] is None)", "inputs['hostwatch'] is None"),
+    ('a failed read still advances the visits', "    if _unreadable(inputs):\n        state['error']",
+     "    if inputs['config'] is None:\n        state['error']"),
+    ('tracking reported running however old its last run',
+     "tracking = state['run'] is not None and now - state['run'] <= TRACKING_STALE", "tracking = state['run'] is not None"),
+    ('an unreadable WireGuard not noted', ", ('wireguard', 'wg'))", ")"),
+    ('a failed list prints nothing', "            print(json.dumps(_failed()))\n", ""),
+]
+
 
 def run(target, env_name, pattern, mutants, survivors):
     source = target.read_text()
@@ -275,7 +327,8 @@ def main():
     survivors = []
     for args in ((LIVE, 'LIVE_PY', 'test_live.py', MUTANTS), (FLOWS, 'FLOWS_PY', 'test_flows.py', FLOW_MUTANTS),
                  (KEEP, 'KEEP_PY', 'test_keep.py', KEEP_MUTANTS),
-                 (TUNNELS, 'TUNNELS_PY', 'test_tunnels.py', TUNNEL_MUTANTS)):
+                 (TUNNELS, 'TUNNELS_PY', 'test_tunnels.py', TUNNEL_MUTANTS),
+                 (CONNECTED, 'CONNECTED_PY', 'test_connected.py', CONNECTED_MUTANTS)):
         if not run(*args, survivors):
             return 2
     return 1 if survivors else 0

@@ -9,9 +9,10 @@
 # that starts with a dash before the action ever sees it.
 #
 # It undoes install.sh: the weekly GUI cron job that would otherwise put it all
-# back, the cron file (keeper and tunnel sampler) and the kept logs, the widget, its backends and
-# their configd actions. It touches nothing of core's: core's own flow log files
-# lose only the second name the keeper gave them. Running it twice is harmless.
+# back, the cron file (keeper, tunnel sampler and connected devices tracker), the
+# kept logs and the tracker's state, both widgets, their backends and their configd
+# actions. It touches nothing of core's: core's own flow log files lose only the
+# second name the keeper gave them. Running it twice is harmless.
 #
 # Everything, warnings included, goes to stdout: run as a configd script_output
 # action, stderr reaches only the system log, and the action says errors:no so a
@@ -51,6 +52,7 @@ MVC=/usr/local/opnsense/mvc/app
 ACTIONS=/usr/local/opnsense/service/conf/actions.d/actions_topdevices.conf
 CRON=/usr/local/etc/cron.d/topdevices
 KEPT=/var/log/topdevices
+STATE=/var/db/topdevices
 JOB_TITLE="Install/refresh TopDevices dashboard widget"
 
 [ -n "$DRY" ] && echo "TopDevices uninstall: dry run, nothing is changed"
@@ -111,24 +113,27 @@ else
     esac
 fi
 
-# --- 2. the keeper's cron file, then the kept log -------------------------------
-# The cron file goes first so no new run starts, and a run already going (under a
-# second each: keep.py every 10 minutes, tunnels.py every minute) gets to finish,
-# or it could recreate the directory.
+# --- 2. the cron file, then the kept log and the tracker's state ----------------
+# The cron file goes first so no new run starts, and a run already going (keep.py
+# every 10 minutes, tunnels.py and connected.py every minute) gets to finish, or it
+# could recreate its directory.
 # Each kept file is a hard link; unlinking it leaves core's own name untouched.
 remove "$CRON"
 if [ -z "$DRY" ]; then
     i=0
-    while [ $i -lt 30 ] && pgrep -qf "$SCRIPTS/(keep|tunnels).py" 2>/dev/null; do sleep 1; i=$((i + 1)); done
-    [ $i -lt 30 ] || warn "a keep.py or tunnels.py run is still going after 30 s; if $KEPT comes back, remove it by hand"
+    while [ $i -lt 30 ] && pgrep -qf "$SCRIPTS/(keep|tunnels|connected).py" 2>/dev/null; do sleep 1; i=$((i + 1)); done
+    [ $i -lt 30 ] || warn "a keep.py, tunnels.py or connected.py run is still going after 30 s; if $KEPT or $STATE comes back, remove it by hand"
 fi
 remove "$KEPT"
+remove "$STATE"
 
-# --- 3. the widget, its backends, and last of all this script's own directory ---
+# --- 3. the widgets, their backends, and last of all this script's own directory ---
 # Removing the directory a running sh script lives in is safe: the shell reads
 # from an open descriptor, and nothing below runs anything from SCRIPTS.
 remove "$WIDGETS/TopDevices.js"
 remove "$WIDGETS/Metadata/TopDevices.xml"
+remove "$WIDGETS/ConnectedDevices.js"
+remove "$WIDGETS/Metadata/ConnectedDevices.xml"
 remove "$MVC/controllers/OPNsense/TopDevices"
 remove "$MVC/models/OPNsense/TopDevices"
 remove "$SCRIPTS"
@@ -148,8 +153,8 @@ if [ -n "$ONBOX" ] && [ -z "$DRY" ]; then
 fi
 
 cat <<'LEFT'
-left as they are: the widget's slot in your dashboard layout (an empty tile until
-you remove it there), the browser's saved widget settings, and the bootstrap's
+left as they are: the widgets' slots in your dashboard layout (empty tiles until
+you remove them there), the browser's saved widget settings, and the bootstrap's
 /tmp/tdx and /tmp/td.tgz. A 'topdevices install' cron job registered by something
 other than the Cron page (origin not 'cron') stays too.
 LEFT

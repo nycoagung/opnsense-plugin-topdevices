@@ -13,12 +13,15 @@ UN=src/opnsense/scripts/topdevices/uninstall.sh
 OURS="
 $U/www/js/widgets/TopDevices.js
 $U/www/js/widgets/Metadata/TopDevices.xml
+$U/www/js/widgets/ConnectedDevices.js
+$U/www/js/widgets/Metadata/ConnectedDevices.xml
 $U/scripts/topdevices
 $U/mvc/app/controllers/OPNsense/TopDevices
 $U/mvc/app/models/OPNsense/TopDevices
 $U/service/conf/actions.d/actions_topdevices.conf
 /usr/local/etc/cron.d/topdevices
 /var/log/topdevices
+/var/db/topdevices
 "
 THEIRS="
 $U/www/js/widgets/Other.js
@@ -30,11 +33,13 @@ $U/mvc/app/models/OPNsense/Other
 $U/www/js/widgets/Metadata
 $U/service/conf/actions.d
 /var/log/flowd.log.000001
+/var/db/dnsmasq.leases
 "
 
-# A fresh root with a full install, what the keeper and the dashboard leave on a
-# real install, and some of core's neighbours that must survive. Core's rotated
-# flow log file is hard-linked into the kept directory, as keep.py does.
+# A fresh root with a full install, what the keeper, the connected devices tracker
+# and the dashboard leave on a real install, and some of core's neighbours that must
+# survive. Core's rotated flow log file is hard-linked into the kept directory, as
+# keep.py does.
 fresh() {
     R=$(mktemp -d "$W/root.XXXXXX")
     mkdir -p "$R$U/www/js/widgets/Metadata" "$R$U/service/conf/actions.d"
@@ -45,6 +50,9 @@ fresh() {
     ln "$R/var/log/flowd.log.000001" "$R/var/log/topdevices/flowd.1000.2000"
     : > "$R/var/log/topdevices/.current"
     echo '1760000000 peer 1 2' > "$R/var/log/topdevices/tunnels.20260921"
+    mkdir -p "$R/var/db/topdevices"
+    echo '{"run": 1760000000, "visits": {}}' > "$R/var/db/topdevices/connected.json"
+    : > "$R/var/db/dnsmasq.leases"
     : > "$R$U/scripts/topdevices/__pycache__/flows.cpython-313.pyc"
     : > "$R$U/www/js/widgets/Other.js"; : > "$R$U/www/js/widgets/Metadata/Other.xml"
     : > "$R$U/service/conf/actions.d/actions_other.conf"; : > "$R/usr/local/etc/cron.d/other"
@@ -70,8 +78,18 @@ done
 echo "$dry" | grep -q "weekly" || fail "--dry-run did not mention the weekly job"
 echo "$dry" | grep -q "configd" || fail "--dry-run did not mention configd"
 
-# 2. for real, from the installed copy: it removes its own directory while running
-out=$(ROOT="$R" sh "$R$U/scripts/topdevices/uninstall.sh" 2>&1) || fail "uninstall exited non-zero: $out"
+# 2. for real, from the installed copy: it removes its own directory while running.
+# A stand-in pgrep (no process found) records the pattern the wait looks for.
+PG="$W/pgrep"; mkdir -p "$PG"
+printf '#!/bin/sh\nfor a; do last=$a; done\nprintf "%%s\\n" "$last" >> "%s/log"\nexit 1\n' "$PG" > "$PG/pgrep"
+chmod 755 "$PG/pgrep"
+out=$(PATH="$PG:$PATH" ROOT="$R" sh "$R$U/scripts/topdevices/uninstall.sh" 2>&1) || fail "uninstall exited non-zero: $out"
+# the wait covers a run of every cron job (pgrep -f matches the whole command line)
+[ -s "$PG/log" ] || fail "the uninstaller did not wait for running jobs"
+for job in keep.py tunnels.py 'connected.py track'; do
+    echo "/usr/local/bin/python3 /usr/local/opnsense/scripts/topdevices/$job" | grep -Eq "$(tail -1 "$PG/log")" \
+        || fail "the wait does not cover a running $job: $(tail -1 "$PG/log")"
+done
 all_gone "$R" "real run"
 [ "$(cat "$R/var/log/flowd.log.000001")" = flows ] || fail "core's flow log file changed"
 [ "$(nlink "$R/var/log/flowd.log.000001")" = 1 ] || fail "core's flow log file still has the kept name"
@@ -84,6 +102,9 @@ echo "$out" | grep -qF "/tmp/tdx" || fail "the closing lines do not mention /tmp
 cron_at=$(echo "$out" | grep -nF "removed $R/usr/local/etc/cron.d/topdevices" | cut -d: -f1)
 kept_at=$(echo "$out" | grep -nF "removed $R/var/log/topdevices" | cut -d: -f1)
 [ -n "$cron_at" ] && [ -n "$kept_at" ] && [ "$cron_at" -lt "$kept_at" ] || fail "the cron file was not removed before the kept log ($cron_at vs $kept_at)"
+# likewise the tracker's state: a track run starting in between would write it back
+state_at=$(echo "$out" | grep -nF "removed $R/var/db/topdevices" | cut -d: -f1)
+[ -n "$state_at" ] && [ "$cron_at" -lt "$state_at" ] || fail "the cron file was not removed before the tracker's state ($cron_at vs $state_at)"
 [ -z "$(find "$R" -name '*topdevices*' -o -name 'TopDevices*')" ] || fail "something named topdevices survived: $(find "$R" -name '*topdevices*' -o -name 'TopDevices*')"
 
 # 3. again, with nothing left: still exit 0, nothing removed, nothing of core's touched

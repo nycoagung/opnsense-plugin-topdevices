@@ -6,4 +6,10 @@
             <pattern>api/topdevices/flows/*</pattern>
         </patterns>
     </page-dashboard-topdevices-live>
+    <page-dashboard-topdevices-connected>
+        <name>Dashboard: Connected devices</name>
+        <patterns>
+            <pattern>api/topdevices/connected/*</pattern>
+        </patterns>
+    </page-dashboard-topdevices-connected>
 </acl>

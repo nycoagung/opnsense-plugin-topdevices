@@ -32,6 +32,10 @@ src/opnsense/scripts/topdevices/keep.py|/usr/local/opnsense/scripts/topdevices/k
 src/opnsense/scripts/topdevices/tunnels.py|/usr/local/opnsense/scripts/topdevices/tunnels.py|755
 src/etc/cron.d/topdevices|/usr/local/etc/cron.d/topdevices|644
 src/opnsense/scripts/topdevices/uninstall.sh|/usr/local/opnsense/scripts/topdevices/uninstall.sh|755
+src/opnsense/scripts/topdevices/connected.py|/usr/local/opnsense/scripts/topdevices/connected.py|755
+src/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/ConnectedController.php|/usr/local/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/ConnectedController.php|644
+src/opnsense/www/js/widgets/ConnectedDevices.js|/usr/local/opnsense/www/js/widgets/ConnectedDevices.js|644
+src/opnsense/www/js/widgets/Metadata/ConnectedDevices.xml|/usr/local/opnsense/www/js/widgets/Metadata/ConnectedDevices.xml|644
 LIST
 
 A="$R/usr/local/opnsense/service/conf/actions.d/actions_topdevices.conf"
@@ -56,8 +60,28 @@ echo "$block" | grep -q '^description:' && fail "[uninstall] has a description, 
 echo "$block" | grep -qx 'parameters:%s' || fail "[uninstall] does not pass one parameter through"
 # a non-zero exit would otherwise come back as "Execute error" without the output
 echo "$block" | grep -qx 'errors:no' || fail "[uninstall] does not disable configd's exit-status check"
-grep -q '<pattern>api/topdevices/flows/\*</pattern>' "$R/usr/local/opnsense/mvc/app/models/OPNsense/TopDevices/ACL/ACL.xml" \
-    || fail "the ACL does not cover the flows endpoints"
+# the connected devices list takes no parameters: an empty line, so configd drops any
+# argument a caller adds instead of passing it on to connected.py
+[ "$(awk '$0 == "[connected]" {on = 1; next} /^\[/ {on = 0} on && NF' "$A")" = \
+  "$(printf 'command:/usr/local/opnsense/scripts/topdevices/connected.py list\nparameters:\ntype:script_output\nmessage:TopDevices connected devices')" ] \
+    || fail "[connected] block wrong: $(awk '$0 == "[connected]" {on = 1; next} /^\[/ {on = 0} on' "$A")"
+ACL="$R/usr/local/opnsense/mvc/app/models/OPNsense/TopDevices/ACL/ACL.xml"
+grep -q '<pattern>api/topdevices/flows/\*</pattern>' "$ACL" || fail "the ACL does not cover the flows endpoints"
+python3 -c 'import sys, xml.etree.ElementTree as E; E.parse(sys.argv[1])' "$ACL" || fail "the ACL is not well-formed XML"
+# its own privilege: Top Devices alone must not open the connected list
+priv=$(awk '/<page-dashboard-topdevices-connected>/,/<\/page-dashboard-topdevices-connected>/' "$ACL")
+echo "$priv" | grep -q '<name>Dashboard: Connected devices</name>' || fail "the connected privilege's name is wrong"
+echo "$priv" | grep -q '<pattern>api/topdevices/connected/\*</pattern>' || fail "the connected privilege does not cover its endpoint"
+awk '/<page-dashboard-topdevices-live>/,/<\/page-dashboard-topdevices-live>/' "$ACL" | grep -q connected \
+    && fail "the Top Devices privilege covers the connected endpoint too"
+# core's dashboard offers a widget only to users allowed every endpoint its metadata
+# names, so the list names core's ARP table too: the very URL the controller checks
+[ "$(python3 -c 'import sys, xml.etree.ElementTree as E; print(" ".join(e.text for e in E.parse(sys.argv[1]).iter("endpoint")))' \
+     "$R/usr/local/opnsense/www/js/widgets/Metadata/ConnectedDevices.xml")" = \
+  "/api/topdevices/connected/* /api/diagnostics/interface/get_arp" ] || fail "the connected widget's endpoints are wrong"
+grep -qF "'/api/diagnostics/interface/get_arp'" \
+    "$R/usr/local/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/ConnectedController.php" \
+    || fail "the controller does not check the ARP table URL the widget names"
 [ -z "$(find "$R" -name '*.tdnew' -o -name '.actions_topdevices.new')" ] || fail "staging files left behind"
 # the keep job: every 10 minutes as root; a dry run never runs it - keep.py uses
 # the absolute path, so nothing under $R could prove that either way, and the
@@ -66,7 +90,9 @@ grep -qxF "$(printf '*/10\t*\t*\t*\t*\troot\t/usr/local/opnsense/scripts/topdevi
     "$R/usr/local/etc/cron.d/topdevices" || fail "the cron line is wrong"
 grep -qxF "$(printf '*\t*\t*\t*\t*\troot\t/usr/local/opnsense/scripts/topdevices/tunnels.py >/dev/null 2>&1')" \
     "$R/usr/local/etc/cron.d/topdevices" || fail "the sampler cron line is wrong"
-[ "$(grep -c 'topdevices/' "$R/usr/local/etc/cron.d/topdevices")" = 2 ] || fail "the cron file should hold exactly two jobs"
+grep -qxF "$(printf '*\t*\t*\t*\t*\troot\t/usr/local/opnsense/scripts/topdevices/connected.py track >/dev/null 2>&1')" \
+    "$R/usr/local/etc/cron.d/topdevices" || fail "the connected devices cron line is wrong"
+[ "$(grep -c 'topdevices/' "$R/usr/local/etc/cron.d/topdevices")" = 3 ] || fail "the cron file should hold exactly three jobs"
 echo "$first" | grep -q 'keep.py not run (ROOT=' || fail "the dry run did not say it skipped keep.py"
 # A download that fails must not leave the installer's scratch directory behind.
 F="$R/fetchfail"; mkdir -p "$F"

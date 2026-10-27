@@ -1,7 +1,8 @@
 # os-topdevices
 
-OPNsense dashboard widget: top local devices by traffic, from the built-in
-NetFlow/Insight aggregator. No extra collector required.
+OPNsense dashboard widgets: top local devices by traffic, from the built-in
+NetFlow/Insight aggregator, and since 0.5.0 the devices connected now (see
+*Connected devices*). No extra collector required.
 
 ## Features
 
@@ -31,6 +32,8 @@ NetFlow/Insight aggregator. No extra collector required.
 - The widget **resizes to its content** after filtering, via gridstack's
   `resizeToContent`, and can be made as tall as all its rows (see *Height*)
 - **Configurable** — rows to show, default range, default chart, refresh interval
+- **Connected devices** (0.5.0) — a second widget: the devices on each network now and
+  since when, and those seen in the last 7 days (see *Connected devices*)
 
 The active window is shown in OPNsense's own date format, to the second and with
 the timezone, e.g. `Tue Sep 22 12:11:42 VST 2026`. Midnights, the custom range
@@ -220,6 +223,100 @@ way core's own Traffic Graph streams interface counters.
   at all. The recent ranges also need *Diagnostics: Network Insight*, so they
   never show more than core's own NetFlow pages would.
 
+## Connected devices
+
+Since 0.5.0 a second widget, **Connected devices**, shows who is on the network right
+now and since when, and when each device that left this week was last seen. Add it
+from the widget picker like Top Devices, which it leaves unchanged.
+
+- **What it shows.** A line counting both lists ("12 connected · 3 seen this week"),
+  then one table, *Host name*, *IP address*, *MAC address* and *Status*, grouped by
+  internal network in the order the interfaces are assigned (LAN, then OPT1, OPT2 and
+  so on), each group's header with its count ("LAN · 12 connected"), then a **VPN**
+  group for WireGuard clients. A click on a group's header, or Enter or Space on it,
+  closes and opens that group; the groups start open, and each browser remembers the
+  ones you closed. Within a group, named devices come first in natural
+  order (9 before 10), then the unnamed ones by address. A connected device's status
+  is a filled green dot with how long ago this visit began (*2 h 14 min*); its
+  tooltip gives the time it connected, the vendor and when Host discovery first saw
+  it. One already connected when tracking began shows the dot alone, its tooltip
+  saying *Connected since before* that time (with the date).
+- **Not connected · seen in the last 7 days.** A section under the groups, newest
+  first, its rows greyed with a hollow dot: *Last seen 25 min ago* when seen earlier
+  the same day, else *Last seen Sat 09:29*. It starts closed; a click on its header,
+  or Enter or Space on it, opens and closes it, and each browser remembers how you
+  left it. A device unseen for longer than 7 days drops off the widget; it stays under
+  Interfaces → Neighbors. The state never rests on colour alone: the dots differ in
+  shape, screen readers hear "Connected", and the rows not connected say *Last seen*.
+- **Refresh.** Every 60 seconds, and at once from the refresh button before the link
+  icon, which opens core's host discovery page; a click while a read is under way
+  starts no second one. Clock times, and "the same day", follow the firewall's time
+  zone, as in Top Devices.
+- **Connected** means heard from within the last 20 minutes: in the ARP table now (the
+  firewall keeps an entry that long), or seen by Host discovery through any of the
+  device's addresses, IPv4 or IPv6. A device is its MAC address. Only internal
+  networks count: enabled interfaces with a static IPv4 address and no upstream
+  gateway in their settings, as core's NAT reflection decides. The firewall's own
+  addresses, and the ARP table's permanent and expired entries, are never listed. A
+  WireGuard peer is connected when its latest handshake is at most 5 minutes old,
+  core's own "online" rule; one that never completed a handshake is never listed.
+- **Visits.** A cron job runs `connected.py track` every minute and records when each
+  connected device's current visit began, in `/var/db/topdevices/connected.json`
+  (root only, written atomically). A visit goes on while the device is heard from again
+  within 30 minutes; a longer gap ends it, and the next sighting starts a new one. A
+  device that moves to another network keeps its visit. The devices already there at
+  the first run date their visit "before" that run's time, as do those there when
+  tracking starts afresh after a pause longer than the gap, or after the clock went
+  back; they show the dot alone. So does a device that arrived since the last run,
+  until the next one, and every device once tracking has not run for over 3 minutes,
+  with a note saying so. Its errors go to the system log.
+- **Seen in the last 7 days** is Host discovery's newest sighting of a device not
+  connected now, within 7 days, or, for a VPN client, its latest handshake.
+- **Names and addresses.** The address is the device's unexpired Dnsmasq lease on an
+  internal network (the longest-lasting one), else its newest IPv4 sighting there, and
+  that address's network is its group. A VPN client's address is the first /32 among
+  its allowed IPs. The name is the Dnsmasq reservation holding the MAC, else the one
+  holding the address, else the host name the device gave DHCP, else *(unnamed)*; a VPN
+  client's is its peer's name. Reservations come first, as in Top Devices, so the two
+  widgets agree.
+- **Host discovery** (Interfaces → Neighbors → Automatic Discovery, on by default in
+  26.7). *On*, it gives the first sightings, and it remembers the devices that left
+  for the 7-day list. *Idle* (it answers, but has heard nothing on the internal
+  networks for 20 minutes): presence rests on the ARP table, its history is still
+  used, and a note says that last-seen times may be earlier than the devices really
+  left. *Off*: the devices come from the ARP table alone, without first sightings, and
+  the 7-day section lists VPN clients only.
+- **When a source can't be read**, the widget shows the rest and a note for each one
+  missing: Host discovery (read as off), the ARP table (Host discovery alone), or
+  WireGuard (no VPN rows). Without `wg`, or with no tunnels, there is simply no VPN
+  group, and without Dnsmasq's lease file no names from leases. Only when both host
+  sources fail, or `config.xml` can't be read, does it say *Cannot read the host
+  list.*, and it then lists nothing: a stale list is never left standing.
+- **Access.** The endpoint, `GET /api/topdevices/connected/list`, is read-only and
+  needs the *Dashboard: Connected devices* privilege and core's *Diagnostics: ARP
+  Table*, as it shows what the ARP table page shows and more; the dashboard offers
+  the widget only to users who hold both. *Dashboard: Top Devices* does not open it,
+  nor it the Top Devices widget. No key material is read: WireGuard's public keys,
+  handshakes and allowed IPs only, and the keys never reach the browser.
+
+**Known limits.**
+
+- A device that leaves stays connected for up to 20 minutes: the firewall keeps it in
+  its ARP table that long. An absence of under 30 minutes, and sometimes one of up to
+  50, keeps its visit going.
+- A battery device that sleeps between events shows as connected only while awake.
+- A device that only talks to others on its own network, such as a server used only
+  from the LAN, can show as not connected while it runs: the firewall hears a device
+  only when it uses the firewall or announces itself.
+- Without Host discovery, the 7-day section lists VPN clients only, and a reboot
+  clears those: WireGuard forgets its handshakes.
+- Names from Dnsmasq only (with Kea or ISC DHCP, every device but the VPN clients
+  reads *(unnamed)*), and IPv4 addresses only.
+- A WAN with a static address and no upstream gateway in its settings counts as
+  internal, as it does for core's NAT reflection, so its modem is listed.
+- The upgrade from 0.4.x needs the bootstrap command once, or two installs (see
+  *Install without building*).
+
 ## Upstream API limitations
 
 Both were measured against a live firewall, not assumed:
@@ -335,8 +432,9 @@ Run once on the firewall as root:
       rm -rf /tmp/tdx && mkdir -p /tmp/tdx && tar -xzf /tmp/td.tgz -C /tmp/tdx && \
       sh /tmp/tdx/opnsense-plugin-topdevices-main/install.sh
 
-Then hard-refresh the dashboard (Cmd+Shift+R) and add **Top Devices** from the
-widget picker. Afterwards `configctl topdevices install` does the same thing.
+Then hard-refresh the dashboard (Cmd+Shift+R) and add **Top Devices**, and since
+0.5.0 **Connected devices**, from the widget picker. Afterwards
+`configctl topdevices install` does the same thing.
 
 **Upgrading from 0.0.1:** run the bootstrap command above once. The 0.0.1
 installer only knows its own three files, so `configctl topdevices install` (or
@@ -385,6 +483,15 @@ the sampler has run twice.
 **Upgrading from 0.4.0 to 0.4.1:** nothing to do: the same twelve files, and only the
 widget changes (the scripts only carry the new version number). Reload the dashboard
 to pick it up.
+
+**Upgrading from 0.4.0 or 0.4.1 to 0.5.0:** run the bootstrap command once, or
+`configctl topdevices install` twice straight away. Those installers only know their
+twelve files, so the first run installs those from 0.5.0, the new installer, the
+three-line cron file and the new privilege among them, but not `connected.py`, its
+controller or the Connected devices widget, and its actions file has no `connected`
+action: the tracker's cron line fails silently every minute until the second run
+completes all 16. Non-root users need *Dashboard: Connected devices* and *Diagnostics:
+ARP Table* to be offered the new widget (see *Access* under *Connected devices*).
 
 Sources come from **codeload**, which serves the git ref directly: one request
 for the whole tree, no rate limit, current content. The two alternatives both
@@ -650,6 +757,67 @@ scrolled by 60 to 400 px, the panel stays just under the header, where a sticky
 offset of 0, as before, left it beside the header, 29 px higher. The header keeps its
 height down to 784 px, the narrowest width with the panel beside the table.
 
+**Connected devices (0.5.0)**, before it reaches a firewall:
+
+- **The rules**, in `tests/test_connected.py`'s 70 tests: the 20-minute window and its
+  inclusive edge, the ARP table counted as now against Host discovery's times, IPv6
+  keeping a device present, the firewall's own, expired and upstream entries left
+  out, internal networks, addresses and names, the groups and their order, the VPN
+  rules, the 7-day list and its edge, the visits (the first run, a visit continued and
+  a new one after the gap, a pause or a clock gone back starting afresh), the state
+  file (its modes, the atomic write, junk read as empty), each case under *When a
+  source can't be read*, and `list` and `track` themselves. With `OPNSENSE_CORE` set,
+  core's own `list_hosts.py`, run over a scratch Host discovery database, prints what
+  `connected.py` reads.
+- **The widget**, in `tests/connected_view.test.mjs`'s 24 tests: rows, dots, status
+  texts, the time formats (the same day against a day and time), the section (closed
+  at first; a click, Enter or Space on its header toggles it and no other key does;
+  remembered, kept across a refresh), the groups (each closes by itself, remembered by
+  name, junk in storage read as none), the refresh guard and the failure message.
+- **Planted bugs**: `tests/mutate.py` plants 23 in `connected.py` and
+  `tests/mutate_widget.mjs` 41 in the widget; the tests catch every one.
+- **Layout**, in headless Chrome with OPNsense 26.7.7's own CSS, fonts, jQuery and
+  BaseWidget, the widget inside the dashboard's own wrapper, 620 px wide, loaded from
+  its HTML as the dashboard loads it: names of 25 characters, any IPv4 address, MACs
+  and the status texts fit on one line, and the header stays on one. The section and
+  each group open and close on a click, Enter and Space, closing a group leaves the
+  others as they are, and both stay as left across a refresh. The refresh
+  button sits before the link icon and hides with it while the dashboard is edited,
+  and two quick clicks make one read.
+- **On real data**: over a capture of the reference install's own inputs, the
+  connected and seen-this-week lists came out device for device as those of the
+  prototype this widget replaces.
+- **The endpoint**, run against stand-ins for core's classes, refuses a user without
+  *Diagnostics: ARP Table* before asking configd, adds the firewall's time zone, and
+  turns an empty or unreadable answer into a failure. Core 26.7.7's own URL matching
+  confirms that each privilege reaches exactly the endpoints meant, *Dashboard: Top
+  Devices* not this one.
+- **Static analysis**: PHPStan at level 9 reports nothing for the three controllers.
+  Semgrep's PHP, JavaScript, Python, secrets and security-audit rules, over the new and
+  changed files, report two findings, both in `connected.py` and both by design: the
+  standard library's XML parser reading `config.xml`, root's own file, as core's own
+  configd reads it (`defusedxml` is not in the standard library), and the state
+  directory's mode `0o700`, owner-only, as in `keep.py`.
+- **Install and removal**: `test_install.sh` and `test_uninstall.sh` cover the four new
+  files, the `connected` action, the cron line, the privilege and the widget's
+  endpoints, and that the uninstaller removes the cron file before the tracker's state
+  and waits for a tracker run under way.
+- **On the reference install** (OPNsense 26.7.7, installed from the branch on
+  2026-10-27, then again with the status dot half an hour later), read through the API
+  three times:
+  - the served widget files are byte-identical to the branch, and Top Devices' own are
+    unchanged from 0.4.1; configd restarted once, at the first install (the second
+    changed no action);
+  - the tracker ran every minute from the first minute after the install, with nothing
+    in the system log; every device connected then dated its visit "before" that first
+    run, and the devices that arrived later showed how long ago they arrived;
+  - the connected list matched the firewall's own in every read: the ARP table and the
+    WireGuard peers online, with the names from the reservations and leases, and each
+    last-seen time Host discovery's newest sighting; so did the seen-this-week list,
+    against Host discovery's devices seen within 7 days but not now and the peers by
+    handshake, times included;
+  - Top Devices' flows and Live answers carry 0.5.0; the list answered in 0.29 to 0.35 s.
+
 **Static analysis (0.3.4)**, on 2026-10-08. PHPStan 2.3 at its strictest level (9),
 with OPNsense core 26.7.5's sources on its scan path, reports nothing for the two API
 controllers. Semgrep's PHP, JavaScript, Python, secrets and security-audit rules, run
@@ -673,6 +841,9 @@ and all ten of 0.3.0, byte-identically.
     node --test tests/netflow_ranges.test.mjs    # widget: NetFlow exports, buckets, windows, captions
     OPNSENSE_CORE=<core checkout> python3 -m unittest tests.test_flows -v   # flows.py against core's parser and aggregators
     OPNSENSE_CORE=<core checkout> python3 -m unittest tests.test_keep -v    # keep.py against core's own rotation
+    python3 -m unittest tests.test_connected -v  # connected devices: presence, visits, 7 days, names, failures
+    node --test tests/connected_view.test.mjs    # Connected devices widget: rows, status, section, refresh
+    python3 -m unittest tests.test_version -v    # one version number in the Makefile, pkg-descr and scripts
     sh tests/test_install.sh                     # installer dry run into a scratch root
     sh tests/test_uninstall.sh                   # uninstaller over such a root: rehearsal, real, repeat
     python3 tests/mutate.py                      # each planted sampler bug must fail the suite
@@ -682,6 +853,10 @@ and all ten of 0.3.0, byte-identically.
 fixture: point `OPNSENSE_CORE` at an opnsense/core checkout, or `CORE_STATES_PY` at
 its `states.py`. On the firewall, `python3 tests/parity_live.py` does the same
 over the live state table.
+
+With `OPNSENSE_CORE` set, `tests.test_connected` also runs core's own `list_hosts.py`
+over a scratch Host discovery database and checks that `connected.py` reads what it
+prints.
 
 On the firewall, `python3 tests/parity_flows.py` compares `flows.py` with core's
 own code over the live log and times it through configd. Once the kept log reaches
@@ -695,10 +870,12 @@ Since 0.3.1, as root:
 
 It removes everything the installer put in place: the weekly *Install/refresh
 TopDevices dashboard widget* job under System → Settings → Cron (through core's own
-Cron model, then a cron reload), the plugin's cron file (keeper and sampler) and `/var/log/topdevices`
-(each kept file is a second name for one of core's, so core's log is untouched), the
-widget and its metadata, the two controllers, the ACL, the scripts directory and the
-configd actions file, after which configd restarts by itself a second later. It
+Cron model, then a cron reload), the plugin's cron file (keeper, sampler and connected
+devices tracker), `/var/log/topdevices` (each kept file is a second name for one of
+core's, so core's log is untouched) and the tracker's `/var/db/topdevices`, both
+widgets (`TopDevices.js`, `ConnectedDevices.js`) and their metadata, the three
+controllers, the ACL, the scripts directory and the configd actions file, after which
+configd restarts by itself a second later. It
 touches nothing of core's, and running it twice is harmless. To see what it would do
 first:
 
@@ -706,8 +883,8 @@ first:
 
 (The bare word, because configctl's own option parser rejects `--dry-run`; run as
 `sh /usr/local/opnsense/scripts/topdevices/uninstall.sh --dry-run` the dashes work.)
-It leaves the widget's slot in your dashboard layout (an empty tile until you remove
-it there), the browser's saved widget settings, and the bootstrap's `/tmp/tdx` and
+It leaves the widgets' slots in your dashboard layout (empty tiles until you remove
+them there), the browser's saved widget settings, and the bootstrap's `/tmp/tdx` and
 `/tmp/td.tgz`. If it cannot delete the weekly job it says so in its output, finishes
 the rest, and exits 1: delete the job by hand then, or it fails every Sunday from
 then on, its action being gone. Any other step it could not finish is reported the
@@ -750,7 +927,20 @@ core's files. Remove them with `rm /usr/local/etc/cron.d/topdevices
 Rolling back to 0.3.x rewrites the cron file to one line, so the sampler stops;
 `tunnels.py` and the `tunnels.*` day files stay behind, inert (`rm` them if you like).
 
+Rolling back to 0.4.x rewrites the cron file to two lines, so the tracker stops, and
+drops the `connected` action and the *Dashboard: Connected devices* privilege. The
+widget's files stay behind, so administrators are still offered it, but it cannot read
+its list. Remove what stays, as root:
+
+    rm /usr/local/opnsense/www/js/widgets/ConnectedDevices.js \
+       /usr/local/opnsense/www/js/widgets/Metadata/ConnectedDevices.xml \
+       /usr/local/opnsense/scripts/topdevices/connected.py \
+       /usr/local/opnsense/mvc/app/controllers/OPNsense/TopDevices/Api/ConnectedController.php
+    rm -r /var/db/topdevices
+
 ## Requirements
 
 Reporting → NetFlow must be enabled with local aggregation on, for the
-historical ranges. Live needs nothing extra.
+historical ranges. Live needs nothing extra, and neither does Connected devices,
+though without Host discovery (on by default) it cannot list the devices that have
+left (see *Connected devices*).
