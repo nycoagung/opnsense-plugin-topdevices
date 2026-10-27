@@ -22,6 +22,9 @@ import ipaddress
 import json
 import os
 import re
+import subprocess
+import sys
+import syslog
 import time
 import xml.etree.ElementTree as ET
 
@@ -432,3 +435,139 @@ def duration_text(seconds):
         return '%d h' % hours + (' %d min' % rest if rest else '')
     days, rest = divmod(hours, 24)
     return '%d d' % days + (' %d h' % rest if rest else '')
+
+
+# --- reading the firewall --------------------------------------------------------
+
+def run_json(argv, timeout=WG_TIMEOUT):
+    """A program's JSON output; None when it is missing, fails, takes longer than
+    `timeout` seconds, or prints anything else."""
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return json.loads(proc.stdout)
+    except ValueError:
+        return None
+
+
+def hostwatch_from(data):
+    """core's `hostwatch dump_full` answer as {source, rows}, each row at least six
+    fields, as text. None when `data` isn't that answer."""
+    if not isinstance(data, dict) or not isinstance(data.get('source'), str) or not isinstance(data.get('rows'), list):
+        return None
+    text = lambda v: v if isinstance(v, str) else str(v) if isinstance(v, (int, float)) else ''
+    return {'source': data['source'],
+            'rows': [[text(v) for v in row] for row in data['rows'] if isinstance(row, list) and len(row) >= 6]}
+
+
+def wg_read():
+    """The WireGuard peers (parse_wg): [] when there is no wg or no tunnel; None when wg
+    fails or does not answer within WG_TIMEOUT, which is an error, not "no WireGuard"."""
+    outputs = []
+    for what in ('latest-handshakes', 'allowed-ips'):
+        try:
+            proc = subprocess.run([WG, 'show', 'all', what], capture_output=True, text=True, timeout=WG_TIMEOUT)
+        except FileNotFoundError:
+            return []
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if proc.returncode != 0:
+            return None
+        outputs.append(proc.stdout)
+    return parse_wg(*outputs)
+
+
+def read_inputs():
+    """Everything the lists are made from: {arp, hostwatch, wg, config, leases}, each None
+    when it could not be read; the leases are [] when Dnsmasq keeps none."""
+    arp = run_json([LIST_ARP, 'json'])
+    try:
+        with open(CONFIG, encoding='utf-8') as f:
+            config = config_inputs(f.read())
+    except (OSError, ValueError):
+        config = None
+    try:
+        with open(LEASES, encoding='utf-8') as f:
+            leases = dnsmasq_leases(f.read(), int(time.time()))
+    except (OSError, ValueError):
+        leases = []
+    return {'arp': [row for row in arp if isinstance(row, dict)] if isinstance(arp, list) else None,
+            'hostwatch': hostwatch_from(run_json([LIST_HOSTS, '-v', '-n'])),
+            'wg': wg_read(), 'config': config, 'leases': leases}
+
+
+# --- the two commands --------------------------------------------------------------
+
+def _failed():
+    return {'v': VERSION, 'status': 'failed', 'message': 'could not read the host list'}
+
+
+def _unreadable(inputs):
+    """Nothing can be listed: no configuration (so no internal network is known), or
+    neither the ARP table nor Host discovery."""
+    return inputs['config'] is None or (inputs['arp'] is None and inputs['hostwatch'] is None)
+
+
+def answer(inputs, state, now):
+    """The widget's answer (spec §8): the connected groups and the not-connected list, what
+    Host discovery is doing, which inputs could not be read (spec §5a), and whether
+    tracking runs. Times are epoch seconds; the widget only renders."""
+    if _unreadable(inputs):
+        return _failed()
+    networks = internal_networks(inputs['config']['interfaces'])
+    tracking = state['run'] is not None and now - state['run'] <= TRACKING_STALE
+    lists = connected_list(networks, sightings(networks, inputs['arp'], inputs['hostwatch'], now), inputs['leases'],
+                           inputs['config']['reservations'], inputs['wg'] or [], inputs['config']['peer_names'],
+                           state, tracking, now)
+    unread = [name for name, key in (('hostdiscovery', 'hostwatch'), ('arp', 'arp'), ('wireguard', 'wg'))
+              if inputs[key] is None]
+    return {'v': VERSION, 'status': 'ok', 'now': now, 'discovery': discovery_state(inputs['hostwatch'], networks, now),
+            'unread': unread, 'tracking': {'active': tracking, 'started': state['started'], 'run': state['run']},
+            'groups': lists['groups'], 'recent': lists['recent']}
+
+
+def track(inputs, path, now):
+    """One per-minute run (spec §5): the visits advanced and written. A failed read keeps
+    the visits and the last run as they were and records the error, which it returns, so
+    tracking reads as not running once that has lasted TRACKING_STALE."""
+    state = read_state(path)
+    if _unreadable(inputs):
+        state['error'] = 'could not read the host list'
+        write_state(path, state)
+        return state['error']
+    networks = internal_networks(inputs['config']['interfaces'])
+    present = present_keys(sightings(networks, inputs['arp'], inputs['hostwatch'], now), inputs['wg'] or [], now)
+    state = track_visits(state, present, now)
+    state['error'] = ''
+    write_state(path, state)
+    return None
+
+
+def main(argv):
+    command = argv[1] if len(argv) == 2 else ''
+    if command == 'list':
+        try:
+            print(json.dumps(answer(read_inputs(), read_state(STATE), int(time.time()))))
+        except Exception as exc:         # configd hands the caller only what is printed
+            syslog.syslog(syslog.LOG_ERR, 'topdevices connected: %s' % (str(exc) or exc.__class__.__name__))
+            print(json.dumps(_failed()))
+        return 0
+    if command == 'track':
+        try:
+            error = track(read_inputs(), STATE, int(time.time()))
+        except Exception as exc:         # cron discards the output: the system log is where this shows
+            error = str(exc) or exc.__class__.__name__
+        if error:
+            syslog.syslog(syslog.LOG_ERR, 'topdevices connected: %s' % error)
+            return 1
+        return 0
+    print('usage: %s list|track' % os.path.basename(argv[0] if argv else 'connected.py'), file=sys.stderr)
+    return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))

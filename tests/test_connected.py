@@ -2,17 +2,24 @@
 Standard library only; no OPNsense needed.
 Run:  python3 -m unittest tests.test_connected -v
 CONNECTED_PY=<path> points the suite at another copy (used by mutate.py).
+OPNSENSE_CORE=<opnsense/core checkout> also runs core's own list_hosts.py against a
+scratch database, so a change in what it prints is caught.
 """
 import calendar
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import pathlib
+import sqlite3
 import stat
+import subprocess
 import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 
 HERE = pathlib.Path(__file__).resolve().parent
 CONNECTED_PY = os.environ.get('CONNECTED_PY') or str(HERE.parent / 'src/opnsense/scripts/topdevices/connected.py')
@@ -433,6 +440,244 @@ class StateFile(unittest.TestCase):
                 'ok': {'start': None, 'last': T0}, 'bad': {'start': 'x', 'last': T0}, 'worse': [1, 2]}}, f)
         self.assertEqual(connected.read_state(self.path),
                          {'run': T0, 'started': None, 'error': '', 'visits': {'ok': {'start': None, 'last': T0}}})
+
+
+class Scratch(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def file(self, name, text, mode=0o644):
+        path = os.path.join(self.tmp.name, name)
+        with open(path, 'w') as f:
+            f.write(text)
+        os.chmod(path, mode)
+        return path
+
+    def script(self, name, body):
+        """A small program standing in for one of core's, or for wg."""
+        return self.file(name, '#!/bin/sh\n' + body + '\n', 0o755)
+
+    def patch(self, **constants):
+        for name, value in constants.items():
+            patcher = unittest.mock.patch.object(connected, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+
+# `wg show all <what>`: the arguments are checked, as core's scripts' are below
+WG_GOOD = ('case "$1 $2 $3" in\n'
+           "  'show all latest-handshakes') printf 'wg0\\tKEYA\\t1792999700\\n' ;;\n"
+           "  'show all allowed-ips') printf 'wg0\\tKEYA\\t198.51.100.3/32\\n' ;;\n"
+           '  *) exit 1 ;;\nesac')
+
+
+class Reading(Scratch):
+    def test_run_json_none_on_missing_failing_or_junk(self):
+        self.assertEqual([connected.run_json([os.path.join(self.tmp.name, 'missing')]),
+                          connected.run_json([self.script('fails', 'echo "{}"; exit 1')]),
+                          connected.run_json([self.script('junk', 'echo not json')]),
+                          connected.run_json([self.script('good', 'echo \'{"a": [1]}\'')])],
+                         [None, None, None, {'a': [1]}])
+
+    def test_wg_read_absent_empty_failed_and_hung(self):
+        got = []
+        for wg in (os.path.join(self.tmp.name, 'missing'), self.script('empty', 'exit 0'),
+                   self.script('fails', 'exit 1'), self.script('hangs', 'exec sleep 5'), self.script('wg', WG_GOOD)):
+            with unittest.mock.patch.object(connected, 'WG', wg), unittest.mock.patch.object(connected, 'WG_TIMEOUT', 0.5):
+                got.append(connected.wg_read())
+        self.assertEqual(got, [[], [], None, None, [{'key': 'KEYA', 'handshake': 1_792_999_700, 'ip': '198.51.100.3'}]])
+
+    def test_hostwatch_from_keeps_its_answer_shape_only(self):
+        self.assertEqual([connected.hostwatch_from(None), connected.hostwatch_from({'rows': []}),
+                          connected.hostwatch_from({'source': 'discovery', 'rows': 'x'}),
+                          connected.hostwatch_from({'source': 'discovery', 'rows': [
+                              ['igb1', '00:00:5e:00:53:01', '192.0.2.10', None, ago(60), ago(30)],
+                              ['igb1', '00:00:5e:00:53:02', '192.0.2.11'], 'junk']})],
+                         [None, None, None, {'source': 'discovery', 'rows': [
+                             ['igb1', '00:00:5e:00:53:01', '192.0.2.10', '', ago(60), ago(30)]]}])
+
+    def test_read_inputs_reads_each_source(self):
+        arp = '[{"mac": "00:00:5e:00:53:42", "ip": "192.0.2.42", "intf": "igb1"}, "junk"]'
+        hosts = '{"source": "discovery", "rows": [["igb1", "00:00:5e:00:53:41", "192.0.2.41", "Example", "%s", "%s"]]}' % (
+            ago(600), ago(30))
+        self.patch(LIST_ARP=self.script('list_arp.py', '[ "$*" = json ] || exit 1\necho \'%s\'' % arp),
+                   LIST_HOSTS=self.script('list_hosts.py', '[ "$*" = "-v -n" ] || exit 1\necho \'%s\'' % hosts),
+                   WG=self.script('wg', WG_GOOD),
+                   CONFIG=self.file('config.xml', Config.XML),
+                   LEASES=self.file('dnsmasq.leases', '4102444800 00:00:5e:00:53:41 192.0.2.41 desk *\n'))
+        inputs = connected.read_inputs()
+        self.assertEqual(inputs, {
+            'arp': [{'mac': '00:00:5e:00:53:42', 'ip': '192.0.2.42', 'intf': 'igb1'}],
+            'hostwatch': {'source': 'discovery', 'rows': [['igb1', '00:00:5e:00:53:41', '192.0.2.41', 'Example',
+                                                           ago(600), ago(30)]]},
+            'wg': [{'key': 'KEYA', 'handshake': 1_792_999_700, 'ip': '198.51.100.3'}],
+            'config': connected.config_inputs(Config.XML),
+            'leases': [{'mac': '00:00:5e:00:53:41', 'ip': '192.0.2.41', 'hostname': 'desk', 'expires': 4_102_444_800}]})
+
+    def test_read_inputs_marks_what_could_not_be_read(self):
+        missing = os.path.join(self.tmp.name, 'missing')
+        self.patch(LIST_ARP=missing, LIST_HOSTS=self.script('list_hosts.py', 'exit 1'), WG=self.script('wg', 'exit 1'),
+                   CONFIG=self.file('config.xml', 'not xml <'), LEASES=missing)
+        self.assertEqual(connected.read_inputs(),
+                         {'arp': None, 'hostwatch': None, 'wg': None, 'config': None, 'leases': []})
+
+
+GOOD_ARP = [{'mac': '00:00:5e:00:53:42', 'ip': '192.0.2.42', 'intf': 'igb1', 'permanent': False, 'expired': False,
+             'manufacturer': ''}]
+GOOD_HW = {'source': 'discovery', 'rows': [['igb1', '00:00:5e:00:53:41', '192.0.2.41', 'Example', '2026-09-20T01:00:00Z',
+                                            ago(30)]]}
+GOOD = {'arp': GOOD_ARP, 'hostwatch': GOOD_HW, 'wg': [{'key': 'KEYD', 'handshake': T0 - 20, 'ip': '198.51.100.9'}],
+        'config': {'interfaces': IFACES, 'reservations': [], 'peer_names': {}}, 'leases': []}
+FAILED = {'v': connected.VERSION, 'status': 'failed', 'message': 'could not read the host list'}
+
+
+def answer(state=EMPTY, **changes):
+    return connected.answer({**GOOD, **changes}, state, T0)
+
+
+def ips(got):
+    return [d['ip'] for g in got['groups'] for d in g['devices']]
+
+
+class Answer(unittest.TestCase):
+    def test_answer_host_discovery_unreadable_is_off_and_noted(self):
+        got = answer(hostwatch=None)
+        self.assertEqual([got['status'], got['discovery'], got['unread'], ips(got)],
+                         ['ok', {'state': 'off', 'last': None}, ['hostdiscovery'], ['192.0.2.42', '198.51.100.9']])
+
+    def test_answer_arp_unreadable_keeps_host_discovery(self):
+        got = answer(arp=None)
+        self.assertEqual([got['status'], got['unread'], ips(got)], ['ok', ['arp'], ['192.0.2.41', '198.51.100.9']])
+
+    def test_answer_fails_without_both_host_sources(self):
+        self.assertEqual(answer(arp=None, hostwatch=None), FAILED)
+
+    def test_answer_fails_without_config(self):
+        self.assertEqual(answer(config=None), FAILED)
+
+    def test_answer_wireguard_absent_has_no_vpn_group_and_no_note(self):
+        got = answer(wg=[])
+        self.assertEqual([[g['name'] for g in got['groups']], got['unread']], [['LAN'], []])
+
+    def test_answer_wireguard_failed_is_noted(self):
+        got = answer(wg=None)
+        self.assertEqual([[g['name'] for g in got['groups']], got['unread']], [['LAN'], ['wireguard']])
+
+    def test_answer_missing_leases_is_fine(self):
+        got = answer(leases=[])
+        self.assertEqual([got['status'], got['unread'], ips(got)],
+                         ['ok', [], ['192.0.2.41', '192.0.2.42', '198.51.100.9']])
+
+    def test_answer_discovery_on_idle_off(self):
+        idle = {'source': 'discovery', 'rows': [['igb1', '00:00:5e:00:53:41', '192.0.2.41', '', ago(9000), ago(1201)]]}
+        self.assertEqual([answer()['discovery'], answer(hostwatch=idle)['discovery'],
+                          answer(hostwatch={'source': 'arp-ndp', 'rows': []})['discovery']],
+                         [{'state': 'on', 'last': T0 - 30}, {'state': 'idle', 'last': T0 - 1201},
+                          {'state': 'off', 'last': None}])
+
+    def test_answer_tracking_active_at_180_not_181(self):
+        self.assertEqual([answer({**EMPTY, 'run': T0 - 180, 'started': T0 - 999})['tracking'],
+                          answer({**EMPTY, 'run': T0 - 181})['tracking']['active'],
+                          answer(EMPTY)['tracking']['active']],
+                         [{'active': True, 'started': T0 - 999, 'run': T0 - 180}, False, False])
+
+    def test_answer_carries_version(self):
+        self.assertEqual([answer()['v'], answer(config=None)['v']], [connected.VERSION, connected.VERSION])
+
+    def test_answer_carries_the_lists_and_now(self):
+        got = answer()
+        self.assertEqual([got['now'], got['recent'], [g['vpn'] for g in got['groups']]], [T0, [], [False, True]])
+
+
+class Track(Scratch):
+    def setUp(self):
+        super().setUp()
+        self.path = os.path.join(self.tmp.name, 'topdevices', 'connected.json')
+        connected.write_state(self.path, STATE)
+
+    def test_track_failed_read_keeps_visits_and_run(self):
+        error = connected.track({**GOOD, 'arp': None, 'hostwatch': None}, self.path, T0)
+        after = connected.read_state(self.path)
+        self.assertEqual([error, after['run'], after['visits'], after['error']],
+                         ['could not read the host list', STATE['run'], STATE['visits'], 'could not read the host list'])
+
+    def test_track_good_read_writes_visits(self):
+        error = connected.track(GOOD, self.path, T0)
+        after = connected.read_state(self.path)
+        self.assertEqual([error, after['run'], list(after['visits']), after['error']],
+                         [None, T0, ['a', 'd', '00:00:5e:00:53:42', '00:00:5e:00:53:41', 'wg:KEYD'], ''])
+
+
+class Main(Scratch):
+    def run_main(self, *args):
+        """main() as cron or configd run it, its clock at T0 (the fixtures' now)."""
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                unittest.mock.patch.object(connected.syslog, 'syslog') as log, \
+                unittest.mock.patch.object(connected.time, 'time', return_value=T0 + 0.4):
+            code = connected.main(['connected.py', *args])
+        return code, out.getvalue(), err.getvalue(), log.call_args_list
+
+    def test_main_list_prints_json(self):
+        self.patch(read_inputs=lambda: GOOD, STATE=os.path.join(self.tmp.name, 'none.json'))
+        code, out, _, log = self.run_main('list')
+        got = json.loads(out)
+        self.assertEqual([code, got['status'], got['tracking']['active'], log], [0, 'ok', False, []])
+
+    def test_main_list_prints_the_failed_answer_on_error(self):
+        def broken():
+            raise RuntimeError('boom')
+        self.patch(read_inputs=broken)
+        code, out, _, log = self.run_main('list')
+        self.assertEqual([code, json.loads(out), [c.args for c in log]],
+                         [0, FAILED, [(connected.syslog.LOG_ERR, 'topdevices connected: boom')]])
+
+    def test_main_track_returns_1_and_logs_a_failed_read(self):
+        self.patch(read_inputs=lambda: {**GOOD, 'config': None},
+                   STATE=os.path.join(self.tmp.name, 'topdevices', 'connected.json'))
+        code, _, _, log = self.run_main('track')
+        self.assertEqual([code, [c.args for c in log]],
+                         [1, [(connected.syslog.LOG_ERR, 'topdevices connected: could not read the host list')]])
+
+    def test_main_track_returns_0_when_it_records(self):
+        self.patch(read_inputs=lambda: GOOD, STATE=os.path.join(self.tmp.name, 'topdevices', 'connected.json'))
+        code, _, _, log = self.run_main('track')
+        self.assertEqual([code, log, list(connected.read_state(connected.STATE)['visits'])],
+                         [0, [], ['00:00:5e:00:53:42', '00:00:5e:00:53:41', 'wg:KEYD']])
+
+    def test_main_unknown_command_is_usage(self):
+        code, out, err, _ = self.run_main('nope')
+        self.assertEqual([code, out, 'usage' in err], [2, '', True])
+
+
+CORE_LIST_HOSTS = pathlib.Path(os.environ.get('OPNSENSE_CORE', '/nonexistent')) / 'src/opnsense/scripts/interfaces/list_hosts.py'
+
+
+@unittest.skipUnless(CORE_LIST_HOSTS.is_file(), 'set OPNSENSE_CORE to an opnsense/core checkout')
+class CoreParity(Scratch):
+    def test_reads_core_list_hosts_output(self):
+        # core's own script, over a scratch database shaped like hostwatch's view; ujson
+        # (not in the standard library) is stood in for by json
+        self.file('ujson.py', 'from json import dumps, loads\n')
+        rc = self.file('hostwatch', 'hostwatch_enable="YES"\n')
+        db = os.path.join(self.tmp.name, 'hosts.db')
+        con = sqlite3.connect(db)
+        con.execute('CREATE TABLE v_hosts (interface_name, ether_address, ip_address, protocol, organization_name,'
+                    ' first_seen, last_seen)')
+        con.execute('INSERT INTO v_hosts VALUES (?, ?, ?, ?, ?, ?, ?)', ('igb1', '00:00:5e:00:53:01', '192.0.2.10', 'inet',
+                    'Example', '2026-10-27 01:00:00', '2026-10-27 02:00:00'))
+        con.commit()
+        con.close()
+        proc = subprocess.run([sys.executable, str(CORE_LIST_HOSTS), '-v', '-n', '--rc_file', rc, '--db_file', db],
+                              capture_output=True, text=True, env={**os.environ, 'PYTHONPATH': self.tmp.name})
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        hw = connected.hostwatch_from(json.loads(proc.stdout))
+        seen = connected.sightings(NETS, [], hw, utc('2026-10-27T02:10:00Z'))['00:00:5e:00:53:01']
+        self.assertEqual([seen['ip'], seen['vendor'], seen['first'], seen['heard']],
+                         ['192.0.2.10', 'Example', utc('2026-10-27T01:00:00Z'), utc('2026-10-27T02:00:00Z')])
 
 
 if __name__ == '__main__':

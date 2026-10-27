@@ -285,6 +285,21 @@ CONNECTED_MUTANTS = [
     ('a long pause does not restart tracking',
      "if state['run'] is None or now < state['run'] or now - state['run'] > VISIT_GAP:",
      "if state['run'] is None or now < state['run']:"),
+    ('a hung wg taken as no WireGuard',
+     "        except (OSError, subprocess.TimeoutExpired):\n            return None\n        if proc.returncode != 0:\n"
+     "            return None\n        outputs",
+     "        except subprocess.TimeoutExpired:\n            return []\n        except OSError:\n            return None\n"
+     "        if proc.returncode != 0:\n            return None\n        outputs"),
+    ('an unreadable ARP table fails the whole answer',
+     "(inputs['arp'] is None and inputs['hostwatch'] is None)", "inputs['arp'] is None"),
+    ('unreadable Host discovery fails the whole answer',
+     "(inputs['arp'] is None and inputs['hostwatch'] is None)", "inputs['hostwatch'] is None"),
+    ('a failed read still advances the visits', "    if _unreadable(inputs):\n        state['error']",
+     "    if inputs['config'] is None:\n        state['error']"),
+    ('tracking reported running however old its last run',
+     "tracking = state['run'] is not None and now - state['run'] <= TRACKING_STALE", "tracking = state['run'] is not None"),
+    ('an unreadable WireGuard not noted', ", ('wireguard', 'wg'))", ")"),
+    ('a failed list prints nothing', "            print(json.dumps(_failed()))\n", ""),
 ]
 
 
