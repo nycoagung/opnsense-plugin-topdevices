@@ -766,12 +766,12 @@ height down to 784 px, the narrowest width with the panel beside the table.
   source can't be read*, and `list` and `track` themselves. With `OPNSENSE_CORE` set,
   core's own `list_hosts.py`, run over a scratch Host discovery database, prints what
   `connected.py` reads.
-- **The widget**, in `tests/connected_view.test.mjs`'s 18 tests: rows, dots, status
+- **The widget**, in `tests/connected_view.test.mjs`'s 19 tests: rows, dots, status
   texts, the time formats (the same day against a day and time), the section (closed
-  at first, click, Enter and Space, remembered, kept across a refresh), the refresh
-  guard and the failure message.
+  at first; a click, Enter or Space on its header toggles it and no other key does;
+  remembered, kept across a refresh), the refresh guard and the failure message.
 - **Planted bugs**: `tests/mutate.py` plants 23 in `connected.py` and
-  `tests/mutate_widget.mjs` 12 in the widget; the tests catch every one.
+  `tests/mutate_widget.mjs` 21 in the widget; the tests catch every one.
 - **Layout**, in headless Chrome with OPNsense 26.7.7's own CSS, fonts, jQuery and
   BaseWidget, the widget inside the dashboard's own wrapper, 620 px wide: names of 25
   characters, any IPv4 address, MACs and the status texts fit on one line, and the

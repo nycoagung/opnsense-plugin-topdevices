@@ -7,8 +7,10 @@ globalThis.BaseWidget = class {
     constructor(config) { this.config = config; }
 };
 // jQuery: each selector records what the widget wrote to it. Elements the widget looks
-// up but the test page lacks (the grid item, the header) have length 0.
+// up but the test page lacks (the grid item, the header) have length 0. Event listeners
+// are recorded with the element they were set on and, when delegated, the selector.
 let page = {};
+const listeners = [];
 const node = (selector) => {
     const r = page[selector] || (page[selector] = { css: {}, attr: {} });
     const api = {
@@ -18,7 +20,11 @@ const node = (selector) => {
         css(k, v) { if (typeof k === 'object') Object.assign(r.css, k); else r.css[k] = v; return api; },
         attr(k, v) { r.attr[k] = v; return api; },
         empty() { r.html = ''; return api; },
-        on() { return api; }, first() { return api; }, before() { return api; }, prepend() { return api; },
+        on(event, a, b) {
+            listeners.push({ on: selector, event, selector: typeof a === 'string' ? a : null, handler: typeof a === 'string' ? b : a });
+            return api;
+        },
+        first() { return api; }, before() { return api; }, prepend() { return api; },
         removeClass() { return api; }, addClass(c) { r.added = c; return api; },
         find() { return node('(none)'); }, closest() { return node('(none)'); },
     };
@@ -161,6 +167,7 @@ test('bodyHtml: no section without recent devices, and a line when nobody is con
 
 const widget = (stored) => {
     page = {};
+    listeners.length = 0;
     for (const k of Object.keys(storage)) delete storage[k];
     if (stored !== undefined) storage['topdevices.connected.recent'] = stored;
     return new ConnectedDevices({});
@@ -203,6 +210,35 @@ test('the section opens closed, and a toggle is saved and outlives a refresh', a
     w._toggleRecent();
     assert.deepEqual([storage['topdevices.connected.recent'], page['.cd-recent'].css.display], ['0', 'none']);
     assert.ok(widget('1')._recentOpen && !widget('0')._recentOpen && !widget()._recentOpen);
+});
+
+test('the section header toggles on a click, Enter or Space, and no other key', async () => {
+    const w = widget();
+    w.ajaxCall = async () => answer();
+    w.getMarkup();
+    await w.refresh();
+    // each listener is set on the widget's markup and delegated to an element the rows draw;
+    // the toggle is a button in the keyboard order
+    const head = rows(page['.cd-body'].html).find((r) => r.includes('cd-recent-head'));
+    for (const [event, selector] of [['click', '.cd-recent-head'], ['keydown', '.cd-recent-toggle']]) {
+        assert.ok(listeners.some((l) => l.on === '(markup)' && l.event === event && l.selector === selector), `${event} on ${selector}`);
+        assert.ok(head.includes(`class="${selector.slice(1)}"`), `${selector} is drawn`);
+    }
+    assert.ok(head.includes('<span class="cd-recent-toggle" role="button" tabindex="0"'));
+    const fire = (event, e) => listeners.filter((l) => l.on === '(markup)' && l.event === event).forEach((l) => l.handler(e));
+    // a key's toggle also keeps the browser's own action (Space scrolls the page) from running
+    const press = (key) => {
+        let prevented = false;
+        fire('keydown', { key, preventDefault() { prevented = true; } });
+        return [prevented, storage['topdevices.connected.recent']];
+    };
+    fire('click', {});
+    assert.equal(storage['topdevices.connected.recent'], '1');
+    assert.deepEqual(press('Enter'), [true, '0']);
+    assert.deepEqual(press(' '), [true, '1']);
+    assert.deepEqual(press('a'), [false, '1']);
+    assert.deepEqual(press('Tab'), [false, '1']);
+    assert.equal(page['.cd-recent'].css.display, '');
 });
 
 test('unknown zone falls back to the browser', async () => {
