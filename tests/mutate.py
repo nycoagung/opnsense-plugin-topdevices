@@ -13,6 +13,7 @@ LIVE = ROOT / 'src/opnsense/scripts/topdevices/live.py'
 FLOWS = ROOT / 'src/opnsense/scripts/topdevices/flows.py'
 KEEP = ROOT / 'src/opnsense/scripts/topdevices/keep.py'
 TUNNELS = ROOT / 'src/opnsense/scripts/topdevices/tunnels.py'
+CONNECTED = ROOT / 'src/opnsense/scripts/topdevices/connected.py'
 
 MUTANTS = [
     ('port-forward direction not swapped',
@@ -250,6 +251,28 @@ TUNNEL_MUTANTS = [
      "        raise RuntimeError('wg show all dump did not finish within 10 s') from None", "        return None"),
 ]
 
+# Connected devices (spec 2026-10-27)
+CONNECTED_MUTANTS = [
+    ('the 20-minute window made exclusive',
+     "if s['last'] >= now - PRESENT_WINDOW}", "if s['last'] > now - PRESENT_WINDOW}"),
+    ('expired ARP entries counted',
+     "or row.get('expired') is True or address_on(ip, intf) is None):", "or address_on(ip, intf) is None):"),
+    ("the firewall's own MAC listed under an alias address",
+     "        if mac in own_macs:\n            return\n", ""),
+    ('IPv6 sightings no longer keep a device present',
+     "            if len(row) < 6 or row[0] not in by_device:\n                continue\n            last",
+     "            if len(row) < 6 or row[0] not in by_device or ':' in row[2]:\n                continue\n            last"),
+    ('a gateway of "none" taken as upstream',
+     "iface['gateway'] not in ('', 'none')", "iface['gateway'] != ''"),
+    ('heard taken from the ARP table',
+     "        if timed and (s['heard'] is None or at > s['heard']):", "        if s['heard'] is None or at > s['heard']:"),
+    ('a future sighting kept in the future',
+     "see(row[1], row[2], row[0], min(last, now), True,", "see(row[1], row[2], row[0], last, True,"),
+    ('a /24 allowed IP taken as the peer\'s address',
+     "            if net.version == 4 and net.prefixlen == 32:\n                ips.setdefault",
+     "            if net.version == 4:\n                ips.setdefault"),
+]
+
 
 def run(target, env_name, pattern, mutants, survivors):
     source = target.read_text()
@@ -275,7 +298,8 @@ def main():
     survivors = []
     for args in ((LIVE, 'LIVE_PY', 'test_live.py', MUTANTS), (FLOWS, 'FLOWS_PY', 'test_flows.py', FLOW_MUTANTS),
                  (KEEP, 'KEEP_PY', 'test_keep.py', KEEP_MUTANTS),
-                 (TUNNELS, 'TUNNELS_PY', 'test_tunnels.py', TUNNEL_MUTANTS)):
+                 (TUNNELS, 'TUNNELS_PY', 'test_tunnels.py', TUNNEL_MUTANTS),
+                 (CONNECTED, 'CONNECTED_PY', 'test_connected.py', CONNECTED_MUTANTS)):
         if not run(*args, survivors):
             return 2
     return 1 if survivors else 0
