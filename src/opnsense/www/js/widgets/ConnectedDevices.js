@@ -15,6 +15,7 @@
 
 /* whether the "Not connected" section is open, remembered in this browser */
 const RECENT_KEY = 'topdevices.connected.recent';
+const EVENTS = '.connecteddevices';         // its document listeners' namespace; Top Devices drops '.topdevices'
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const FORMATS = new Map();                 // one formatter per zone; the browser's is made afresh
@@ -193,15 +194,22 @@ export default class ConnectedDevices extends BaseWidget {
             </table>
             <div class="cd-msg"></div>
         </div>`);
-        // the rows are redrawn on every refresh, so the section's toggle is listened for here
-        $markup.on('click', '.cd-recent-head', () => this._toggleRecent());
-        $markup.on('keydown', '.cd-recent-toggle', (e) => {
+        return $markup;
+    }
+
+    // The dashboard draws this widget from getMarkup()'s HTML (opnsense_widget_manager.js
+    // takes its outerHTML), so a listener on that element would be lost, and the rows are
+    // redrawn on every refresh: the section's toggle is listened for on the document, as
+    // Top Devices does, dropped first so that a second render adds no second listener.
+    _bind() {
+        $(document).off(EVENTS);
+        $(document).on(`click${EVENTS}`, '.cd-recent-head', () => this._toggleRecent());
+        $(document).on(`keydown${EVENTS}`, '.cd-recent-toggle', (e) => {
             if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
                 this._toggleRecent();
             }
         });
-        return $markup;
     }
 
     _busy(on) {
@@ -225,6 +233,7 @@ export default class ConnectedDevices extends BaseWidget {
 
     async onMarkupRendered() {
         this._installRefreshButton();
+        this._bind();
         await this.refresh();
     }
 

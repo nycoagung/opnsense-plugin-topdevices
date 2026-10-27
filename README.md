@@ -772,12 +772,14 @@ height down to 784 px, the narrowest width with the panel beside the table.
   at first; a click, Enter or Space on its header toggles it and no other key does;
   remembered, kept across a refresh), the refresh guard and the failure message.
 - **Planted bugs**: `tests/mutate.py` plants 23 in `connected.py` and
-  `tests/mutate_widget.mjs` 26 in the widget; the tests catch every one.
+  `tests/mutate_widget.mjs` 29 in the widget; the tests catch every one.
 - **Layout**, in headless Chrome with OPNsense 26.7.7's own CSS, fonts, jQuery and
-  BaseWidget, the widget inside the dashboard's own wrapper, 620 px wide: names of 25
-  characters, any IPv4 address, MACs and the status texts fit on one line, and the
-  header stays on one. The refresh button sits before the link icon and hides with it
-  while the dashboard is edited, and two quick clicks make one read.
+  BaseWidget, the widget inside the dashboard's own wrapper, 620 px wide, loaded from
+  its HTML as the dashboard loads it: names of 25 characters, any IPv4 address, MACs
+  and the status texts fit on one line, and the header stays on one. The section opens
+  and closes on a click, Enter and Space, and stays open across a refresh. The refresh
+  button sits before the link icon and hides with it while the dashboard is edited,
+  and two quick clicks make one read.
 - **On real data**: over a capture of the reference install's own inputs, the
   connected and seen-this-week lists came out device for device as those of the
   prototype this widget replaces.

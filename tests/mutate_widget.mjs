@@ -308,10 +308,14 @@ const connectedMutants = [
     ['the section open on a first visit', "localStorage.getItem(RECENT_KEY) === '1'", "localStorage.getItem(RECENT_KEY) !== '0'"],
     ['the summary without the not-connected count', "(recent ? ` · ${recent} seen this week` : '')", "''"],
     ['no note when tracking has stopped', 'if (!answer.tracking || !answer.tracking.active) {', 'if (false) {'],
-    // the section's header: a click, Enter or Space toggles it, and no other key
-    ['a click on the section header does nothing', "        $markup.on('click', '.cd-recent-head', () => this._toggleRecent());\n", ''],
-    ['the click listened for on an element never drawn', "$markup.on('click', '.cd-recent-head',", "$markup.on('click', '.cd-recent-none',"],
-    ['the keys listened for on an element never drawn', "$markup.on('keydown', '.cd-recent-toggle',", "$markup.on('keydown', '.cd-recent-none',"],
+    // the section's header: a click, Enter or Space toggles it, and no other key; the
+    // listeners live on the document (the dashboard keeps only the markup's HTML)
+    ['a click on the section header does nothing', "        $(document).on(`click${EVENTS}`, '.cd-recent-head', () => this._toggleRecent());\n", ''],
+    ['the click listened for on an element never drawn', "$(document).on(`click${EVENTS}`, '.cd-recent-head',", "$(document).on(`click${EVENTS}`, '.cd-recent-none',"],
+    ['the keys listened for on an element never drawn', "$(document).on(`keydown${EVENTS}`, '.cd-recent-toggle',", "$(document).on(`keydown${EVENTS}`, '.cd-recent-none',"],
+    ['no listeners set when the markup is rendered', '        this._bind();\n', ''],
+    ['a second render adds a second set of listeners', '        $(document).off(EVENTS);\n', ''],
+    ["the listeners in Top Devices' namespace, which it drops", "const EVENTS = '.connecteddevices';", "const EVENTS = '.topdevices';"],
     ['Space does not toggle the section', "if (e.key === 'Enter' || e.key === ' ') {", "if (e.key === 'Enter') {"],
     ['Enter does not toggle the section', "if (e.key === 'Enter' || e.key === ' ') {", "if (e.key === ' ') {"],
     ['every key toggles the section', "if (e.key === 'Enter' || e.key === ' ') {", 'if (true) {'],

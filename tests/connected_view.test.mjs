@@ -24,13 +24,21 @@ const node = (selector) => {
             listeners.push({ on: selector, event, selector: typeof a === 'string' ? a : null, handler: typeof a === 'string' ? b : a });
             return api;
         },
+        off(namespace) {            // jQuery's off('.ns'): every listener of that namespace here
+            for (let i = listeners.length - 1; i >= 0; i--) {
+                if (listeners[i].on === selector && listeners[i].event.endsWith(namespace)) listeners.splice(i, 1);
+            }
+            return api;
+        },
         first() { return api; }, before() { return api; }, prepend() { return api; },
         removeClass() { return api; }, addClass(c) { r.added = c; return api; },
         find() { return node('(none)'); }, closest() { return node('(none)'); },
     };
     return api;
 };
-globalThis.$ = (s) => node(typeof s === 'string' && s.trim().startsWith('<') ? '(markup)' : s);
+globalThis.document = {};
+globalThis.$ = (s) => node(s === globalThis.document ? '(document)'
+                           : typeof s === 'string' && s.trim().startsWith('<') ? '(markup)' : s);
 const storage = {};
 globalThis.localStorage = { getItem: (k) => (k in storage ? storage[k] : null), setItem: (k, v) => { storage[k] = String(v); } };
 
@@ -225,16 +233,24 @@ test('the section header toggles on a click, Enter or Space, and no other key', 
     const w = widget();
     w.ajaxCall = async () => answer();
     w.getMarkup();
-    await w.refresh();
-    // each listener is set on the widget's markup and delegated to an element the rows draw;
-    // the toggle is a button in the keyboard order
+    // The dashboard keeps only getMarkup()'s HTML (opnsense_widget_manager.js takes its
+    // outerHTML), so a listener on that element is lost: they belong on the document, set
+    // once the markup is rendered. A second render adds no second set, and Top Devices
+    // dropping its own listeners leaves these.
+    await w.onMarkupRendered();
+    await w.onMarkupRendered();
+    $(document).off('.topdevices');
+    assert.equal(listeners.filter((l) => l.on === '(markup)').length, 0, 'a listener on the element the dashboard throws away');
+    // each is delegated to an element the rows draw; the toggle is a button in the keyboard order
     const head = rows(page['.cd-body'].html).find((r) => r.includes('cd-recent-head'));
+    const kind = (l) => l.event.split('.')[0];
     for (const [event, selector] of [['click', '.cd-recent-head'], ['keydown', '.cd-recent-toggle']]) {
-        assert.ok(listeners.some((l) => l.on === '(markup)' && l.event === event && l.selector === selector), `${event} on ${selector}`);
+        assert.equal(listeners.filter((l) => l.on === '(document)' && kind(l) === event && l.selector === selector).length, 1,
+                     `one ${event} listener for ${selector}`);
         assert.ok(head.includes(`class="${selector.slice(1)}"`), `${selector} is drawn`);
     }
     assert.ok(head.includes('<span class="cd-recent-toggle" role="button" tabindex="0"'));
-    const fire = (event, e) => listeners.filter((l) => l.on === '(markup)' && l.event === event).forEach((l) => l.handler(e));
+    const fire = (event, e) => listeners.filter((l) => l.on === '(document)' && kind(l) === event).forEach((l) => l.handler(e));
     // a key's toggle also keeps the browser's own action (Space scrolls the page) from running
     const press = (key) => {
         let prevented = false;
