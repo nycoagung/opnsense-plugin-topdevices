@@ -795,15 +795,19 @@ height down to 784 px, the narrowest width with the panel beside the table.
   files, the `connected` action, the cron line, the privilege and the widget's
   endpoints, and that the uninstaller removes the cron file before the tracker's state
   and waits for a tracker run under way.
-- **Still to check on the reference install**, before merge: the installed files
-  byte-identical to the branch, configd restarted once; the tracker running every
-  minute, with nothing in the system log; the connected list matching, by MAC, the ARP
-  table, Host discovery's last 20 minutes and the WireGuard peers online, and the names
-  the reservations and leases; the seen-this-week list matching Host discovery's
-  devices seen within 7 days but not 20 minutes, and the peers by handshake, times
-  included; a device arriving after the install showing its arrival, the others
-  "before" the first run; Top Devices' flows and Live answers unchanged but for the
-  version; the list answering in well under a second.
+- **On the reference install** (OPNsense 26.7.7, installed from the branch on
+  2026-10-27), read through the API twice, a minute apart:
+  - the served widget files are byte-identical to the branch, and Top Devices' own are
+    unchanged from 0.4.1; configd restarted once, at the install;
+  - the tracker ran every minute from the first minute after the install, with nothing
+    in the system log, and every device connected then read "before" that first run;
+  - the connected list matched the firewall's own in both reads: the ARP table and the
+    WireGuard peers online, with the names from the reservations and leases, and each
+    last-seen time Host discovery's newest sighting; so did the seen-this-week list,
+    against Host discovery's devices seen within 7 days but not now and the peers by
+    handshake, times included;
+  - Top Devices' flows and Live answers carry 0.5.0; the list answered in 0.29 to 0.35 s.
+  - Still to see: a device arriving after the install showing its arrival time.
 
 **Static analysis (0.3.4)**, on 2026-10-08. PHPStan 2.3 at its strictest level (9),
 with OPNsense core 26.7.5's sources on its scan path, reports nothing for the two API
