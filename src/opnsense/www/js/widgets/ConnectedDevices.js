@@ -75,8 +75,9 @@ export function seenText(at, now, zone) {
 }
 
 // A filled dot with how long this visit has lasted ("2 h 14 min"), or alone when that isn't
-// known (there before tracking began, or tracking off), "Connected" in words for screen
-// readers; a hollow dot and "Last seen …" for a device not connected now.
+// known (there before tracking began, arrived since the last run, or tracking off),
+// "Connected" in words for screen readers; a hollow dot and "Last seen …" for a device not
+// connected now.
 export function statusHtml(d, connected, now, zone) {
     const dot = (look) => `<i class="fa ${look}" style="font-size:11px;margin-right:4px;" aria-hidden="true"></i>`;
     if (!connected) return `${dot('fa-circle-o text-muted')} Last seen ${escapeHtml(seenText(d.last_seen, now, zone))}`;

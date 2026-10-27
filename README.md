@@ -772,7 +772,7 @@ height down to 784 px, the narrowest width with the panel beside the table.
   at first; a click, Enter or Space on its header toggles it and no other key does;
   remembered, kept across a refresh), the refresh guard and the failure message.
 - **Planted bugs**: `tests/mutate.py` plants 23 in `connected.py` and
-  `tests/mutate_widget.mjs` 21 in the widget; the tests catch every one.
+  `tests/mutate_widget.mjs` 26 in the widget; the tests catch every one.
 - **Layout**, in headless Chrome with OPNsense 26.7.7's own CSS, fonts, jQuery and
   BaseWidget, the widget inside the dashboard's own wrapper, 620 px wide: names of 25
   characters, any IPv4 address, MACs and the status texts fit on one line, and the

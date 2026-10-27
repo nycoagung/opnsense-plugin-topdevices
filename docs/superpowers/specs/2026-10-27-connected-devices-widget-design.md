@@ -31,7 +31,7 @@ Success criteria, each checked on the firewall before merge (§12):
   networks in the last 20 minutes (ARP table or Host discovery), plus the WireGuard
   peers online by core's rule.
 - A device that arrives after install shows how long ago it arrived; one already there
-  when tracking began reads "before" that time.
+  when tracking began shows the dot alone, its tooltip saying "since before" that time.
 - The "Not connected" list is exactly the devices Host discovery saw within the last 7
   days but not the last 20 minutes, plus the WireGuard peers whose latest handshake is
   within 7 days but not 5 minutes; each one's last-seen time is Host discovery's
@@ -177,11 +177,12 @@ Mockup (documentation values):
   starts a new visit whose start is that sighting's time: Host discovery's time, or
   the run's own time when only the ARP table had it.
 - A device that moves to another network keeps its visit: it is the same MAC.
-- Devices already connected at the first run have no start; they read "before" that
-  run's time.
+- Devices already connected at the first run have no start; they date their visit
+  "before" that run's time (§3: the dot alone, with that time in the tooltip).
 - The file records each run's time. When the previous run is longer ago than the gap,
   or the clock went back, nothing is known about who left meanwhile: tracking starts
-  afresh as on the first run, and the devices connected then read "before" its time.
+  afresh as on the first run, and the devices connected then date their visit "before"
+  its time.
 - The file holds current visits only; a device gone for longer than the gap is
   dropped. VPN peers are tracked the same way, keyed by their public key.
 - The file is written atomically (a temporary file, then a rename).
@@ -315,8 +316,8 @@ group is never silent:
   reservations and leases.
 - The "Not connected" list matches Host discovery's devices seen within 7 days but not
   the last 20 minutes, and the peers by handshake, with the same times.
-- A device that arrives after install shows its arrival; the others read "before"
-  the first run.
+- A device that arrives after install shows its arrival; the others date their visit
+  "before" the first run.
 - The Top Devices widget's flows and Live answers are as before, apart from the
   version.
 - The list answers in well under a second.
