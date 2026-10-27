@@ -13,9 +13,22 @@
  * Design: docs/superpowers/specs/2026-10-27-connected-devices-widget-design.md
  */
 
-/* whether the "Not connected" section is open, remembered in this browser */
+/* whether the "Not connected" section is open, and which groups are closed (a JSON list of
+   their names), remembered in this browser */
 const RECENT_KEY = 'topdevices.connected.recent';
+const COLLAPSED_KEY = 'topdevices.connected.collapsed';
 const EVENTS = '.connecteddevices';         // its document listeners' namespace; Top Devices drops '.topdevices'
+const pressed = (e) => e.key === 'Enter' || e.key === ' ';    // on a header's toggle, these act as a click
+
+// The groups closed in this browser; anything but a list of names reads as none.
+function savedCollapsed() {
+    try {
+        const names = JSON.parse(localStorage.getItem(COLLAPSED_KEY));
+        return new Set(Array.isArray(names) ? names.filter((n) => typeof n === 'string') : []);
+    } catch (e) {
+        return new Set();               // junk, or storage blocked: every group open
+    }
+}
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const FORMATS = new Map();                 // one formatter per zone; the browser's is made afresh
@@ -130,13 +143,14 @@ export function noteTexts(answer) {
 }
 
 // One device: its name, address and MAC, and its status, whose dots differ in shape so the
-// state never rests on colour alone.
-function rowHtml(d, vpn, connected, hidden, now, zone) {
+// state never rests on colour alone. A connected device's row carries its group's class.
+function rowHtml(d, vpn, connected, hidden, now, zone, group) {
     const clip = 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
     const name = d.name !== '' ? escapeHtml(d.name) : '<i>(unnamed)</i>';
     const nameTitle = d.name !== '' ? escapeHtml(d.name) : 'No DHCP reservation and no name from DHCP';
     const mac = vpn ? '—' : escapeHtml(d.mac);
-    const attrs = connected ? '' : ` class="cd-recent text-muted"${hidden ? ' style="display:none"' : ''}`;
+    const shown = hidden ? ' style="display:none"' : '';
+    const attrs = connected ? ` class="${group}"${shown}` : ` class="cd-recent text-muted"${shown}`;
     return `<tr${attrs}>`
         + `<td style="text-align:left;${clip}" title="${nameTitle}">${name}</td>`
         + `<td style="text-align:left;${clip}" title="${escapeHtml(d.ip)}">${escapeHtml(d.ip)}</td>`
@@ -144,16 +158,24 @@ function rowHtml(d, vpn, connected, hidden, now, zone) {
         + `<td style="text-align:left;${clip}" title="${escapeHtml(statusTitle(d, vpn, connected, zone))}">${statusHtml(d, connected, now, zone)}</td></tr>`;
 }
 
-// The table's body: the connected groups, then the not-connected section, open or closed.
-export function bodyHtml(answer, open, zone) {
-    const groups = answer.groups.map((g) =>
-        `<tr><td colspan="4" style="text-align:left;"><strong>${escapeHtml(g.name)} · ${g.devices.length} connected</strong></td></tr>`
-        + g.devices.map((d) => rowHtml(d, g.vpn, true, false, answer.now, zone)).join('')).join('');
+// A header's chevron, down while it is open; the margin keeps it off the words.
+const chevron = (open) => `<i class="fa ${open ? 'fa-chevron-down' : 'fa-chevron-right'} cd-chevron" aria-hidden="true" style="width:12px;margin-right:6px;"></i>`;
+
+// The table's body: the connected groups, each open unless its name is in collapsed, then
+// the not-connected section, open or closed. Every header is a button. A group's rows are
+// found by its place in this answer (cd-rows-N), and its state is kept by name.
+export function bodyHtml(answer, open, zone, collapsed = new Set()) {
+    const groups = answer.groups.map((g, i) => {
+        const shut = collapsed.has(g.name);
+        return `<tr class="cd-group-head" data-group="${escapeHtml(g.name)}" data-index="${i}" style="cursor:pointer;"><td colspan="4" style="text-align:left;">`
+            + `<span class="cd-group-toggle" role="button" tabindex="0" aria-expanded="${!shut}">${chevron(!shut)}`
+            + `<strong>${escapeHtml(g.name)} · ${g.devices.length} connected</strong></span></td></tr>`
+            + g.devices.map((d) => rowHtml(d, g.vpn, true, shut, answer.now, zone, `cd-rows-${i}`)).join('');
+    }).join('');
     const recent = answer.recent || [];
     const section = recent.length === 0 ? '' :
         `<tr class="cd-recent-head" style="cursor:pointer;"><td colspan="4" style="text-align:left;">`
-        + `<span class="cd-recent-toggle" role="button" tabindex="0" aria-expanded="${open}">`
-        + `<i class="fa ${open ? 'fa-chevron-down' : 'fa-chevron-right'} cd-chevron" aria-hidden="true" style="width:12px;"></i>`
+        + `<span class="cd-recent-toggle" role="button" tabindex="0" aria-expanded="${open}">${chevron(open)}`
         + `<strong>Not connected · seen in the last 7 days (${recent.length})</strong></span></td></tr>`
         + recent.map((d) => rowHtml(d, d.vpn, false, !open, answer.now, zone)).join('')
         + `<tr class="cd-recent"${open ? '' : ' style="display:none"'}><td colspan="4" class="text-muted" style="text-align:left;">`
@@ -171,6 +193,7 @@ export default class ConnectedDevices extends BaseWidget {
         } catch (e) {
             this._recentOpen = false;   // storage blocked: closed, as on a first visit
         }
+        this._collapsed = savedCollapsed();
     }
 
     getGridOptions() { return { sizeToContent: 650 }; }
@@ -199,16 +222,18 @@ export default class ConnectedDevices extends BaseWidget {
 
     // The dashboard draws this widget from getMarkup()'s HTML (opnsense_widget_manager.js
     // takes its outerHTML), so a listener on that element would be lost, and the rows are
-    // redrawn on every refresh: the section's toggle is listened for on the document, as
+    // redrawn on every refresh: the headers' toggles are listened for on the document, as
     // Top Devices does, dropped first so that a second render adds no second listener.
+    // preventDefault keeps Space from scrolling the page as well.
     _bind() {
         $(document).off(EVENTS);
         $(document).on(`click${EVENTS}`, '.cd-recent-head', () => this._toggleRecent());
         $(document).on(`keydown${EVENTS}`, '.cd-recent-toggle', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                this._toggleRecent();
-            }
+            if (pressed(e)) { e.preventDefault(); this._toggleRecent(); }
+        });
+        $(document).on(`click${EVENTS}`, '.cd-group-head', (e) => this._toggleGroup($(e.currentTarget)));
+        $(document).on(`keydown${EVENTS}`, '.cd-group-toggle', (e) => {
+            if (pressed(e)) { e.preventDefault(); this._toggleGroup($(e.currentTarget).closest('.cd-group-head')); }
         });
     }
 
@@ -271,7 +296,7 @@ export default class ConnectedDevices extends BaseWidget {
             $('.cd-summary').text('');
             notes = ['Cannot read the host list.'];
         } else {
-            $('.cd-body').html(bodyHtml(data, this._recentOpen, zoneOf(data.zone)));
+            $('.cd-body').html(bodyHtml(data, this._recentOpen, zoneOf(data.zone), this._collapsed));
             $('.cd-summary').text(summaryText(data));
             notes = noteTexts(data);
         }
@@ -292,7 +317,25 @@ export default class ConnectedDevices extends BaseWidget {
     _showRecent() {
         $('.cd-recent').css('display', this._recentOpen ? '' : 'none');
         $('.cd-recent-toggle').attr('aria-expanded', String(this._recentOpen));
-        $('.cd-chevron').removeClass('fa-chevron-right fa-chevron-down')
+        $('.cd-recent-head .cd-chevron').removeClass('fa-chevron-right fa-chevron-down')
             .addClass(this._recentOpen ? 'fa-chevron-down' : 'fa-chevron-right');
+    }
+
+    // A group's header was clicked (or Enter or Space pressed on it): its rows close or open
+    // in place, and the groups closed are remembered by name.
+    _toggleGroup($head) {
+        const name = $head.attr('data-group');
+        const index = $head.attr('data-index');
+        const open = this._collapsed.has(name);         // closed until now, so it opens
+        if (open) this._collapsed.delete(name); else this._collapsed.add(name);
+        try {
+            localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...this._collapsed]));
+        } catch (e) { /* storage blocked: remembered until the page closes */ }
+        const head = `.cd-group-head[data-index="${index}"]`;
+        $(`.cd-rows-${index}`).css('display', open ? '' : 'none');
+        $(`${head} .cd-group-toggle`).attr('aria-expanded', String(open));
+        $(`${head} .cd-chevron`).removeClass('fa-chevron-right fa-chevron-down')
+            .addClass(open ? 'fa-chevron-down' : 'fa-chevron-right');
+        this._fitHeight();
     }
 }

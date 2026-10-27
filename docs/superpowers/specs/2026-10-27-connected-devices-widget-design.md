@@ -75,7 +75,10 @@ Anti-goals:
   assigned (`config.xml` order: LAN, then OPT1, OPT2 and so on), then a **VPN** group
   for WireGuard clients. Within a group, named
   devices come first, by name in natural order (9 before 10), then the unnamed ones by
-  address.
+  address. Each group's header works like the "Not connected" section's: a click, or
+  Enter or Space on it, closes and opens that group alone; groups start open, and each
+  browser remembers the ones closed, by name. A header's chevron keeps a gap before its
+  words.
 - **Host name** and **IP address** as in §7; *(unnamed)* is in italics, with a tooltip
   saying there is no DHCP reservation and no name from DHCP. **MAC address** in lower
   case with colons; a VPN client shows "—".
@@ -385,6 +388,8 @@ group is never silent:
   from the name into the Status column, with how long when that is known and alone
   when it isn't; the start before tracking moves into the tooltip, with its date
   (approved from a mockup).
+- The network groups close and open like the "Not connected" section, and the chevrons
+  keep a gap before their words (the maintainer, 2026-10-27, on the dashboard).
 
 ## 17. My calls (open to the maintainer's veto)
 

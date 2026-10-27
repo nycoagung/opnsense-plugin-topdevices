@@ -18,7 +18,7 @@ const node = (selector) => {
         html(v) { if (v === undefined) return r.html; r.html = v; return api; },
         text(v) { if (v === undefined) return r.text; r.text = v; return api; },
         css(k, v) { if (typeof k === 'object') Object.assign(r.css, k); else r.css[k] = v; return api; },
-        attr(k, v) { r.attr[k] = v; return api; },
+        attr(k, v) { if (v === undefined) return r.attr[k]; r.attr[k] = v; return api; },
         empty() { r.html = ''; return api; },
         on(event, a, b) {
             listeners.push({ on: selector, event, selector: typeof a === 'string' ? a : null, handler: typeof a === 'string' ? b : a });
@@ -32,7 +32,8 @@ const node = (selector) => {
         },
         first() { return api; }, before() { return api; }, prepend() { return api; },
         removeClass() { return api; }, addClass(c) { r.added = c; return api; },
-        find() { return node('(none)'); }, closest() { return node('(none)'); },
+        // a test can say which element closest() reaches from here (page[sel].closest)
+        find() { return node('(none)'); }, closest(s) { return node((r.closest && r.closest[s]) || '(none)'); },
     };
     return api;
 };
@@ -156,6 +157,27 @@ test('bodyHtml: groups, dots, names, MACs', () => {
     assert.ok(rows(html)[4].includes('>—</td>'), 'a VPN client shows no MAC');
 });
 
+test('bodyHtml: each group header is a button, and a closed group hides only its own rows', () => {
+    const open = rows(bodyHtml(answer(), false, 'UTC'));
+    const lanHead = open.find((r) => r.includes('cd-group-head') && r.includes('LAN · 2 connected'));
+    assert.ok(lanHead.includes('data-group="LAN"') && lanHead.includes('data-index="0"')
+              && lanHead.includes('<span class="cd-group-toggle" role="button" tabindex="0" aria-expanded="true">')
+              && lanHead.includes('fa-chevron-down'));
+    assert.equal(open.filter((r) => r.includes('class="cd-rows-0"')).length, 2);
+    assert.ok(open.every((r) => !(r.includes('cd-rows-') && r.includes('display:none'))));
+    const shut = rows(bodyHtml(answer(), false, 'UTC', new Set(['LAN'])));
+    const lanShut = shut.find((r) => r.includes('cd-group-head') && r.includes('LAN · 2 connected'));
+    assert.ok(lanShut.includes('aria-expanded="false"') && lanShut.includes('fa-chevron-right'));
+    assert.ok(shut.filter((r) => r.includes('class="cd-rows-0"')).every((r) => r.includes('display:none')));
+    assert.ok(shut.filter((r) => r.includes('class="cd-rows-1"')).every((r) => !r.includes('display:none')), 'the VPN group stays open');
+});
+
+test('bodyHtml: every header chevron keeps a gap before its words', () => {
+    const chevrons = rows(bodyHtml(answer(), false, 'UTC')).filter((r) => r.includes('cd-chevron'));
+    assert.equal(chevrons.length, 3);                 // LAN, VPN and the not-connected section
+    assert.ok(chevrons.every((r) => r.includes('style="width:12px;margin-right:6px;"')));
+});
+
 test('bodyHtml: the not-connected section, closed and open', () => {
     const closed = rows(bodyHtml(answer(), false, 'UTC'));
     const head = closed.find((r) => r.includes('cd-recent-head'));
@@ -182,11 +204,12 @@ test('bodyHtml: no section without recent devices, and a line when nobody is con
 
 // --- the widget ------------------------------------------------------------------
 
-const widget = (stored) => {
+const widget = (stored, collapsed) => {
     page = {};
     listeners.length = 0;
     for (const k of Object.keys(storage)) delete storage[k];
     if (stored !== undefined) storage['topdevices.connected.recent'] = stored;
+    if (collapsed !== undefined) storage['topdevices.connected.collapsed'] = collapsed;
     return new ConnectedDevices({});
 };
 
@@ -250,7 +273,10 @@ test('the section header toggles on a click, Enter or Space, and no other key', 
         assert.ok(head.includes(`class="${selector.slice(1)}"`), `${selector} is drawn`);
     }
     assert.ok(head.includes('<span class="cd-recent-toggle" role="button" tabindex="0"'));
-    const fire = (event, e) => listeners.filter((l) => l.on === '(document)' && kind(l) === event).forEach((l) => l.handler(e));
+    // only the section's own listeners: the groups' headers have theirs on the document too
+    const own = { click: '.cd-recent-head', keydown: '.cd-recent-toggle' };
+    const fire = (event, e) => listeners.filter((l) => l.on === '(document)' && kind(l) === event && l.selector === own[event])
+        .forEach((l) => l.handler(e));
     // a key's toggle also keeps the browser's own action (Space scrolls the page) from running
     const press = (key) => {
         let prevented = false;
@@ -264,6 +290,59 @@ test('the section header toggles on a click, Enter or Space, and no other key', 
     assert.deepEqual(press('a'), [false, '1']);
     assert.deepEqual(press('Tab'), [false, '1']);
     assert.equal(page['.cd-recent'].css.display, '');
+});
+
+test('a group header closes and opens its rows on a click, Enter or Space, remembered by name', async () => {
+    const w = widget();
+    w.ajaxCall = async () => answer();
+    await w.onMarkupRendered();
+    await w.onMarkupRendered();
+    const kind = (l) => l.event.split('.')[0];
+    for (const [event, selector] of [['click', '.cd-group-head'], ['keydown', '.cd-group-toggle']]) {
+        assert.equal(listeners.filter((l) => l.on === '(document)' && kind(l) === event && l.selector === selector).length, 1,
+                     `one ${event} listener for ${selector}`);
+    }
+    // the LAN header and its toggle, as the delegated listeners hand them over
+    page['(LAN head)'] = { css: {}, attr: { 'data-group': 'LAN', 'data-index': '0' } };
+    page['(LAN toggle)'] = { css: {}, attr: {}, closest: { '.cd-group-head': '(LAN head)' } };
+    const fire = (event, selector, e) => listeners
+        .filter((l) => l.on === '(document)' && kind(l) === event && l.selector === selector).forEach((l) => l.handler(e));
+    const saved = () => storage['topdevices.connected.collapsed'];
+    fire('click', '.cd-group-head', { currentTarget: '(LAN head)' });
+    assert.deepEqual([saved(), page['.cd-rows-0'].css.display,
+                      page['.cd-group-head[data-index="0"] .cd-group-toggle'].attr['aria-expanded'],
+                      page['.cd-group-head[data-index="0"] .cd-chevron'].added], ['["LAN"]', 'none', 'false', 'fa-chevron-right']);
+    const press = (key) => {
+        let prevented = false;
+        fire('keydown', '.cd-group-toggle', { key, currentTarget: '(LAN toggle)', preventDefault() { prevented = true; } });
+        return [prevented, saved()];
+    };
+    assert.deepEqual(press('Enter'), [true, '[]']);
+    assert.equal(page['.cd-rows-0'].css.display, '');
+    assert.deepEqual(press(' '), [true, '["LAN"]']);
+    assert.deepEqual(press('a'), [false, '["LAN"]']);
+    // a refresh draws it closed again
+    await w.refresh();
+    assert.ok(rows(page['.cd-body'].html).filter((r) => r.includes('class="cd-rows-0"')).every((r) => r.includes('display:none')));
+});
+
+test('the closed groups are read back by name; anything else stored reads as none', async () => {
+    for (const [stored, lanClosed] of [['["LAN"]', true], ['junk', false], ['{"LAN":1}', false], [undefined, false]]) {
+        const w = widget(undefined, stored);
+        w.ajaxCall = async () => answer();
+        await w.refresh();
+        const lan = rows(page['.cd-body'].html).filter((r) => r.includes('class="cd-rows-0"'));
+        assert.ok(lan.length === 2 && lan.every((r) => r.includes('display:none') === lanClosed), String(stored));
+    }
+});
+
+test("the section toggle turns its own chevron, not the groups'", async () => {
+    const w = widget();
+    w.ajaxCall = async () => answer();
+    await w.refresh();
+    w._toggleRecent();
+    assert.equal(page['.cd-recent-head .cd-chevron'].added, 'fa-chevron-down');
+    assert.equal(page['.cd-chevron'], undefined);
 });
 
 test('unknown zone falls back to the browser', async () => {

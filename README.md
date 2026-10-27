@@ -233,7 +233,9 @@ from the widget picker like Top Devices, which it leaves unchanged.
   then one table, *Host name*, *IP address*, *MAC address* and *Status*, grouped by
   internal network in the order the interfaces are assigned (LAN, then OPT1, OPT2 and
   so on), each group's header with its count ("LAN · 12 connected"), then a **VPN**
-  group for WireGuard clients. Within a group, named devices come first in natural
+  group for WireGuard clients. A click on a group's header, or Enter or Space on it,
+  closes and opens that group; the groups start open, and each browser remembers the
+  ones you closed. Within a group, named devices come first in natural
   order (9 before 10), then the unnamed ones by address. A connected device's status
   is a filled green dot with how long ago this visit began (*2 h 14 min*); its
   tooltip gives the time it connected, the vendor and when Host discovery first saw
@@ -767,17 +769,19 @@ height down to 784 px, the narrowest width with the panel beside the table.
   source can't be read*, and `list` and `track` themselves. With `OPNSENSE_CORE` set,
   core's own `list_hosts.py`, run over a scratch Host discovery database, prints what
   `connected.py` reads.
-- **The widget**, in `tests/connected_view.test.mjs`'s 19 tests: rows, dots, status
+- **The widget**, in `tests/connected_view.test.mjs`'s 24 tests: rows, dots, status
   texts, the time formats (the same day against a day and time), the section (closed
   at first; a click, Enter or Space on its header toggles it and no other key does;
-  remembered, kept across a refresh), the refresh guard and the failure message.
+  remembered, kept across a refresh), the groups (each closes by itself, remembered by
+  name, junk in storage read as none), the refresh guard and the failure message.
 - **Planted bugs**: `tests/mutate.py` plants 23 in `connected.py` and
-  `tests/mutate_widget.mjs` 29 in the widget; the tests catch every one.
+  `tests/mutate_widget.mjs` 41 in the widget; the tests catch every one.
 - **Layout**, in headless Chrome with OPNsense 26.7.7's own CSS, fonts, jQuery and
   BaseWidget, the widget inside the dashboard's own wrapper, 620 px wide, loaded from
   its HTML as the dashboard loads it: names of 25 characters, any IPv4 address, MACs
-  and the status texts fit on one line, and the header stays on one. The section opens
-  and closes on a click, Enter and Space, and stays open across a refresh. The refresh
+  and the status texts fit on one line, and the header stays on one. The section and
+  each group open and close on a click, Enter and Space, closing a group leaves the
+  others as they are, and both stay as left across a refresh. The refresh
   button sits before the link icon and hides with it while the dashboard is edited,
   and two quick clicks make one read.
 - **On real data**: over a capture of the reference install's own inputs, the
