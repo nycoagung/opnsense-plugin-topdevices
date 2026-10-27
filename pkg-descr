@@ -12,10 +12,25 @@ Local networks and the upstream interface come from the firewall's own
 interfaces (and, for Live, its routes), and hostnames from Dnsmasq DHCP
 leases and host records. Nothing is hardcoded.
 
+A second widget, Connected devices, lists the devices on each internal
+network now and how long each has been connected, and those seen in the
+last 7 days, from core's Host discovery, the ARP table and WireGuard.
+
 WWW: https://github.com/nycoagung/opnsense-plugin-topdevices
 
 Plugin Changelog
 ----------------
+
+0.5.0
+
+* A second widget, Connected devices: the devices on each internal network
+  now, grouped by network, VPN clients included, each with how long it has
+  been connected this time, and a section, closed at first, for the devices
+  seen in the last 7 days but not now, with when each was last seen. It
+  reads core's Host discovery, the ARP table, WireGuard's handshakes and the
+  Dnsmasq leases and reservations, and a new cron job notes who is connected
+  every minute. It needs its own privilege, "Dashboard: Connected devices",
+  and "Diagnostics: ARP Table". Sixteen installed files
 
 0.4.1
 
