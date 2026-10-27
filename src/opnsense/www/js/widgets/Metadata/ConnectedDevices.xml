@@ -1,0 +1,12 @@
+<metadata>
+    <connecteddevices>
+        <filename>ConnectedDevices.js</filename>
+        <link>/ui/hostdiscovery/settings</link>
+        <endpoints>
+            <endpoint>/api/topdevices/connected/*</endpoint>
+        </endpoints>
+        <translations>
+            <title>Connected devices</title>
+        </translations>
+    </connecteddevices>
+</metadata>

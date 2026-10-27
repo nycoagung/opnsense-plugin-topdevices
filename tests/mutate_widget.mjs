@@ -1,4 +1,4 @@
-// Prove the widget tests catch the lifecycle mistakes that matter.
+// Prove the widget tests catch the mistakes that matter, in both widgets.
 // Run:  node tests/mutate_widget.mjs      (exit status 1 if any mutant survives)
 import { readFileSync, writeFileSync, mkdtempSync, copyFileSync, mkdirSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -7,10 +7,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
-const widget = 'src/opnsense/www/js/widgets/TopDevices.js';
-const source = readFileSync(join(root, widget), 'utf8');
-const TESTS = ['tests/live_view.test.mjs', 'tests/netflow_ranges.test.mjs'];
 
+// TopDevices.js
 const mutants = [
     ['stream URL not forgotten when leaving Live', '        this.eventSourceUrl = null;\n        this.eventSourceOnData = null;\n', ''],
     ['no guard against a range change during start-up', "        if (token !== this.live.token || this.state.range !== 'live') return;\n", ''],
@@ -292,27 +290,55 @@ const mutants = [
     ['the VPN note when the tunnel counts no device', 't && t.devices && t.devices.length && t.from > q.from', 't && t.from > q.from'],
 ];
 
+// ConnectedDevices.js (spec 2026-10-27)
+const connectedMutants = [
+    ['not-connected rows shown while the section is closed', `\${hidden ? ' style="display:none"' : ''}`, ''],
+    ["the same-day check made in the browser's zone",
+     'const [y, mo, d, , , dow] = wall(at, zone);\n    const [ny, nmo, nd] = wall(now, zone);',
+     'const [y, mo, d, , , dow] = wall(at, undefined);\n    const [ny, nmo, nd] = wall(now, undefined);'],
+    ['hours shown as minutes', '`${Math.floor(minutes / 60)} h ago`', '`${minutes} min ago`'],
+    ['a failed answer leaves the old rows', "            $('.cd-body').empty();\n", ''],
+    ['no guard against a second read', '        if (this._reading) return;  // a click during a read: that read is the fresh one\n', ''],
+    ['an unknown zone throws',
+     "    try {\n        new Intl.DateTimeFormat('en-US', { timeZone: zone });\n        return zone;\n    } catch (e) {\n        return undefined;\n    }",
+     '    return zone;'],
+    ["a VPN client's MAC shown", "const mac = vpn ? '—' : escapeHtml(d.mac);", 'const mac = escapeHtml(d.mac);'],
+    ['the section state not saved', "            localStorage.setItem(RECENT_KEY, this._recentOpen ? '1' : '0');\n", ''],
+    ['the idle note shown while Host discovery is on', "    } else if (discovery.state === 'idle') {", '    } else {'],
+    ['the section open on a first visit', "localStorage.getItem(RECENT_KEY) === '1'", "localStorage.getItem(RECENT_KEY) !== '0'"],
+    ['the summary without the not-connected count', "(recent ? ` · ${recent} seen this week` : '')", "''"],
+    ['no note when tracking has stopped', 'if (!answer.tracking || !answer.tracking.active) {', 'if (false) {'],
+];
+
+const targets = [
+    { widget: 'src/opnsense/www/js/widgets/TopDevices.js', tests: ['tests/live_view.test.mjs', 'tests/netflow_ranges.test.mjs'], mutants },
+    { widget: 'src/opnsense/www/js/widgets/ConnectedDevices.js', tests: ['tests/connected_view.test.mjs'], mutants: connectedMutants },
+];
+
 let survivors = 0;
-for (const [name, from, to] of mutants) {
-    const count = source.split(from).length - 1;
-    if (count !== 1) { console.log(`BROKEN MUTANT ${name}: anchor found ${count} times`); process.exit(2); }
-    // one throwaway copy per mutant, removed even when the run throws: they used to pile up in $TMPDIR
-    const dir = mkdtempSync(join(tmpdir(), 'tdmut-'));
-    let run;
-    try {
-        mkdirSync(join(dir, 'src/opnsense/www/js/widgets'), { recursive: true });
-        mkdirSync(join(dir, 'tests'));
-        writeFileSync(join(dir, widget), source.replace(from, to));
-        for (const t of TESTS) copyFileSync(join(root, t), join(dir, t));
-        // a mutant that leaves a timer running keeps node alive: a hang counts as caught
-        // (netflow_ranges.test.mjs unrefs timers over 1 s: a timer leaked there fails a test instead)
-        run = spawnSync(process.execPath, ['--test', ...TESTS],
-                        { cwd: dir, encoding: 'utf8', timeout: 20000 });
-    } finally {
-        rmSync(dir, { recursive: true, force: true });
+for (const { widget, tests, mutants: list } of targets) {
+    const source = readFileSync(join(root, widget), 'utf8');
+    for (const [name, from, to] of list) {
+        const count = source.split(from).length - 1;
+        if (count !== 1) { console.log(`BROKEN MUTANT ${name}: anchor found ${count} times`); process.exit(2); }
+        // one throwaway copy per mutant, removed even when the run throws: they used to pile up in $TMPDIR
+        const dir = mkdtempSync(join(tmpdir(), 'tdmut-'));
+        let run;
+        try {
+            mkdirSync(join(dir, 'src/opnsense/www/js/widgets'), { recursive: true });
+            mkdirSync(join(dir, 'tests'));
+            writeFileSync(join(dir, widget), source.replace(from, to));
+            for (const t of tests) copyFileSync(join(root, t), join(dir, t));
+            // a mutant that leaves a timer running keeps node alive: a hang counts as caught
+            // (netflow_ranges.test.mjs unrefs timers over 1 s: a timer leaked there fails a test instead)
+            run = spawnSync(process.execPath, ['--test', ...tests],
+                            { cwd: dir, encoding: 'utf8', timeout: 20000 });
+        } finally {
+            rmSync(dir, { recursive: true, force: true });
+        }
+        const killed = run.status !== 0;
+        console.log(`${killed ? 'killed  ' : 'SURVIVED'} ${name}${run.status === null ? ' (hung)' : ''}`);
+        if (!killed) survivors++;
     }
-    const killed = run.status !== 0;
-    console.log(`${killed ? 'killed  ' : 'SURVIVED'} ${name}${run.status === null ? ' (hung)' : ''}`);
-    if (!killed) survivors++;
 }
 process.exit(survivors ? 1 : 0);
