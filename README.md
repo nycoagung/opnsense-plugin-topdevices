@@ -797,19 +797,20 @@ height down to 784 px, the narrowest width with the panel beside the table.
   endpoints, and that the uninstaller removes the cron file before the tracker's state
   and waits for a tracker run under way.
 - **On the reference install** (OPNsense 26.7.7, installed from the branch on
-  2026-10-27), read through the API twice, a minute apart:
+  2026-10-27, then again with the status dot half an hour later), read through the API
+  three times:
   - the served widget files are byte-identical to the branch, and Top Devices' own are
-    unchanged from 0.4.1; configd restarted once, at the install;
+    unchanged from 0.4.1; configd restarted once, at the first install (the second
+    changed no action);
   - the tracker ran every minute from the first minute after the install, with nothing
-    in the system log, and every device connected then dated its visit "before" that
-    first run;
-  - the connected list matched the firewall's own in both reads: the ARP table and the
+    in the system log; every device connected then dated its visit "before" that first
+    run, and the devices that arrived later showed how long ago they arrived;
+  - the connected list matched the firewall's own in every read: the ARP table and the
     WireGuard peers online, with the names from the reservations and leases, and each
     last-seen time Host discovery's newest sighting; so did the seen-this-week list,
     against Host discovery's devices seen within 7 days but not now and the peers by
     handshake, times included;
   - Top Devices' flows and Live answers carry 0.5.0; the list answered in 0.29 to 0.35 s.
-  - Still to see: a device arriving after the install showing its arrival time.
 
 **Static analysis (0.3.4)**, on 2026-10-08. PHPStan 2.3 at its strictest level (9),
 with OPNsense core 26.7.5's sources on its scan path, reports nothing for the two API
