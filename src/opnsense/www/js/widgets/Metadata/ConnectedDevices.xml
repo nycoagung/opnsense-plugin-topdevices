@@ -4,6 +4,7 @@
         <link>/ui/hostdiscovery/settings</link>
         <endpoints>
             <endpoint>/api/topdevices/connected/*</endpoint>
+            <endpoint>/api/diagnostics/interface/get_arp</endpoint>
         </endpoints>
         <translations>
             <title>Connected devices</title>

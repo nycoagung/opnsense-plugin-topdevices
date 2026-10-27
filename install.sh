@@ -42,6 +42,12 @@
 # cron file among them, so the sampler line fails silently until the next run adds
 # tunnels.py (VPN devices stay local-only meanwhile). Use the bootstrap command
 # once, or run configctl topdevices install twice straight away.
+# UPGRADING FROM 0.4.0 OR 0.4.1: likewise, those installers only know their twelve
+# files: run through configctl they install those, the new three-line cron file and
+# the new privilege among them, but not connected.py, its controller or the
+# Connected devices widget, and their actions lack [connected]. The tracker's cron
+# line fails silently until the next run. Use the bootstrap command once, or run
+# configctl topdevices install twice straight away.
 #
 # REMOVING: configctl topdevices uninstall (see uninstall.sh).
 #
@@ -76,6 +82,10 @@ $P/scripts/topdevices/flows.py|$SCRIPTS/flows.py
 $P/mvc/app/controllers/OPNsense/TopDevices/Api/FlowsController.php|$MVC/controllers/OPNsense/TopDevices/Api/FlowsController.php
 $P/scripts/topdevices/keep.py|$SCRIPTS/keep.py
 $P/scripts/topdevices/tunnels.py|$SCRIPTS/tunnels.py
+$P/scripts/topdevices/connected.py|$SCRIPTS/connected.py
+$P/mvc/app/controllers/OPNsense/TopDevices/Api/ConnectedController.php|$MVC/controllers/OPNsense/TopDevices/Api/ConnectedController.php
+$P/www/js/widgets/ConnectedDevices.js|$WIDGETS/ConnectedDevices.js
+$P/www/js/widgets/Metadata/ConnectedDevices.xml|$WIDGETS/Metadata/ConnectedDevices.xml
 src/etc/cron.d/topdevices|/usr/local/etc/cron.d/topdevices
 $P/scripts/topdevices/uninstall.sh|$SCRIPTS/uninstall.sh
 "
@@ -129,7 +139,7 @@ echo "widget installed"
 # Once now, so the kept log starts with core's current files (spec 2026-09-24 §9).
 if [ -z "$ROOT" ]; then
     if "$SCRIPTS/keep.py"; then
-        echo "flow log kept in /var/log/topdevices (cron: keep.py every 10 minutes, tunnels.py every minute)"
+        echo "flow log kept in /var/log/topdevices (cron: keep.py every 10 minutes, tunnels.py and connected.py every minute)"
     else
         echo "WARNING: keep.py failed (see the system log); cron tries again every 10 minutes" >&2
     fi
@@ -165,6 +175,12 @@ command:$SCRIPTS/flows.py device
 parameters:%s %s %s
 type:script_output
 message:TopDevices flows device %s
+
+[connected]
+command:$SCRIPTS/connected.py list
+parameters:
+type:script_output
+message:TopDevices connected devices
 
 [uninstall]
 command:$SCRIPTS/uninstall.sh
