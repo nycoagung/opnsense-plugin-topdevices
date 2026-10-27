@@ -271,6 +271,20 @@ CONNECTED_MUTANTS = [
     ('a /24 allowed IP taken as the peer\'s address',
      "            if net.version == 4 and net.prefixlen == 32:\n                ips.setdefault",
      "            if net.version == 4:\n                ips.setdefault"),
+    ('the 7-day window made exclusive',
+     "now - seen['heard'] <= RECENT_WINDOW", "now - seen['heard'] < RECENT_WINDOW"),
+    ("a VPN client's last seen set to now",
+     "'first_seen': None, 'last_seen': peer['handshake']}", "'first_seen': None, 'last_seen': now}"),
+    ('VPN clients left out of the not-connected list', "    recent += away.values()\n", ""),
+    ('the not-connected list oldest first',
+     "recent.sort(key=lambda d: (-d['last_seen'], _order(d)))", "recent.sort(key=lambda d: (d['last_seen'], _order(d)))"),
+    ('the visit gap made exclusive',
+     "if at - visit['last'] <= VISIT_GAP else", "if at - visit['last'] < VISIT_GAP else"),
+    ('the visits file created 0644', "    os.chmod(tmp, 0o600)", "    os.chmod(tmp, 0o644)"),
+    ('the visits folder left as it was', "    os.chmod(folder, 0o700)\n", ""),
+    ('a long pause does not restart tracking',
+     "if state['run'] is None or now < state['run'] or now - state['run'] > VISIT_GAP:",
+     "if state['run'] is None or now < state['run']:"),
 ]
 
 

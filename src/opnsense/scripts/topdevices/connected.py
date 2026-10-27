@@ -19,6 +19,8 @@ Design: docs/superpowers/specs/2026-10-27-connected-devices-widget-design.md
 """
 import calendar
 import ipaddress
+import json
+import os
 import re
 import time
 import xml.etree.ElementTree as ET
@@ -252,6 +254,169 @@ def discovery_state(hostwatch, networks, now):
     times = [min(t, now) for t in times if t is not None]
     last = max(times) if times else None
     return {'state': 'idle' if last is None or now - last > PRESENT_WINDOW else 'on', 'last': last}
+
+
+def natural_key(name):
+    """Case-insensitive natural order: runs of digits compare as numbers (9 before 10)."""
+    return [int(part) if i % 2 else part for i, part in enumerate(re.split(r'(\d+)', name.lower()))]
+
+
+def _order(device):
+    """Named devices first, by name in natural order; then by address."""
+    try:
+        address = int(ipaddress.IPv4Address(device['ip']))
+    except ValueError:
+        address = 0
+    return device['name'] == '', natural_key(device['name']), address
+
+
+def connected_list(networks, sightings, leases, reservations, wg, peer_names, state, tracking, now):
+    """The devices as the widget shows them: {groups, recent}.
+
+    `groups`: those connected now, a group per internal network in network order and
+    only when it has someone, then the VPN group. `recent`: those not connected now but
+    last heard from by Host discovery, or a peer's latest handshake, within RECENT_WINDOW,
+    newest first. Only Host discovery remembers devices that have left, so without it
+    `recent` holds VPN clients alone.
+
+    A device's address is its unexpired lease inside an internal network (the
+    longest-lasting one; a lease that never expires lasts longest), else its newest
+    sighting's address; its group is that address's network. Its name is the reservation
+    holding its MAC, else the reservation holding its address, else the name it gave DHCP,
+    else none. "Connected since" comes from the visits, and only while tracking runs.
+    """
+    present = present_keys(sightings, wg, now)
+
+    def network_of(ip):
+        try:
+            value = int(ipaddress.IPv4Address(ip))
+        except ValueError:
+            return None
+        return next((i for i, net in enumerate(networks) if value & net['mask'] == net['net']), None)
+
+    lease_of = {}
+    for lease in leases:
+        lasts = float('inf') if lease['expires'] == 0 else lease['expires']
+        if network_of(lease['ip']) is not None and (lease['mac'] not in lease_of or lasts > lease_of[lease['mac']][0]):
+            lease_of[lease['mac']] = (lasts, lease)
+    by_mac, by_ip = {}, {}
+    for reservation in reservations:
+        for mac in reservation['macs']:
+            by_mac.setdefault(mac.lower(), reservation['host'])
+        for ip in reservation['ips']:
+            by_ip.setdefault(ip, reservation['host'])
+
+    def visit(key):
+        """(since, before, for): a start, or "before" the start of tracking."""
+        v = state['visits'].get(key)
+        if not tracking or v is None:
+            return None, None, ''
+        if v['start'] is not None:
+            return v['start'], None, duration_text(now - v['start'])
+        return None, state['started'], ''
+
+    rows, recent = {}, []
+    for mac, seen in sightings.items():
+        lease = lease_of[mac][1] if mac in lease_of else None
+        ip = lease['ip'] if lease is not None else seen['ip']
+        n = network_of(ip)
+        if n is None:
+            continue
+        name = by_mac[mac] if mac in by_mac else by_ip[ip] if ip in by_ip else lease['hostname'] if lease else ''
+        if mac in present:
+            since, before, for_ = visit(mac)
+            rows.setdefault(n, []).append({'name': name, 'ip': ip, 'mac': mac, 'vendor': seen['vendor'],
+                                           'since': since, 'before': before, 'for': for_,
+                                           'first_seen': seen['first'], 'last_seen': seen['heard']})
+        elif seen['heard'] is not None and now - seen['heard'] <= RECENT_WINDOW:
+            recent.append({'name': name, 'ip': ip, 'mac': mac, 'vendor': seen['vendor'], 'vpn': False,
+                           'first_seen': seen['first'], 'last_seen': seen['heard']})
+    groups = [{'name': net['descr'], 'vpn': False, 'devices': sorted(rows[n], key=_order)}
+              for n, net in enumerate(networks) if rows.get(n)]
+
+    vpn, away = {}, {}
+    for peer in wg:
+        key = peer['key']
+        if key in vpn or key in away:
+            continue
+        if 'wg:' + key in present:
+            since, before, for_ = visit('wg:' + key)
+            vpn[key] = {'name': peer_names.get(key, ''), 'ip': peer['ip'], 'mac': '', 'vendor': '', 'since': since,
+                        'before': before, 'for': for_, 'first_seen': None, 'last_seen': present['wg:' + key]}
+        elif 0 < peer['handshake'] and now - peer['handshake'] <= RECENT_WINDOW:
+            away[key] = {'name': peer_names.get(key, ''), 'ip': peer['ip'], 'mac': '', 'vendor': '', 'vpn': True,
+                         'first_seen': None, 'last_seen': peer['handshake']}
+    if vpn:
+        groups.append({'name': 'VPN', 'vpn': True, 'devices': sorted(vpn.values(), key=_order)})
+    recent += away.values()
+    recent.sort(key=lambda d: (-d['last_seen'], _order(d)))
+    return {'groups': groups, 'recent': recent}
+
+
+def track_visits(state, present, now):
+    """The visits after this run, from the visits before it and who is present now
+    (present_keys).
+
+    A device seen again within VISIT_GAP of its previous sighting continues its visit;
+    after a longer gap its next sighting starts a new one. A device gone for longer than
+    the gap is dropped: the state holds current visits only. When tracking itself did not
+    run for longer than the gap, or the clock went back, nothing is known about who left
+    meanwhile: tracking starts afresh, as on its first run, and the devices present then
+    have no start ("before" that run).
+    """
+    if state['run'] is None or now < state['run'] or now - state['run'] > VISIT_GAP:
+        return {'run': now, 'started': now, 'error': state['error'],
+                'visits': {key: {'start': None, 'last': at} for key, at in present.items()}}
+    visits = {}
+    for key, visit in state['visits'].items():
+        if key in present:
+            at = present[key]
+            visits[key] = ({'start': visit['start'], 'last': max(visit['last'], at)}
+                           if at - visit['last'] <= VISIT_GAP else {'start': at, 'last': at})
+        elif now - visit['last'] <= VISIT_GAP:
+            visits[key] = visit
+    for key, at in present.items():
+        visits.setdefault(key, {'start': at, 'last': at})
+    return {'run': now, 'started': state['started'], 'error': state['error'], 'visits': visits}
+
+
+def _is_int(value):
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def read_state(path):
+    """The visits file: {run, started, error, visits}. A missing file, or one that isn't
+    what write_state writes, reads as the empty state; a visit of another shape is dropped."""
+    state = {'run': None, 'started': None, 'error': '', 'visits': {}}
+    try:
+        with open(path, encoding='utf-8') as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return state
+    if not isinstance(data, dict):
+        return state
+    state['run'] = data['run'] if _is_int(data.get('run')) else None
+    state['started'] = data['started'] if _is_int(data.get('started')) else None
+    state['error'] = data['error'] if isinstance(data.get('error'), str) else ''
+    visits = data.get('visits')
+    for key, visit in visits.items() if isinstance(visits, dict) else []:
+        if isinstance(visit, dict) and _is_int(visit.get('last')) and (visit.get('start') is None
+                                                                       or _is_int(visit.get('start'))):
+            state['visits'][key] = {'start': visit.get('start'), 'last': visit['last']}
+    return state
+
+
+def write_state(path, state):
+    """Writes the visits file for root alone (0600, in a 0700 directory), whole or not at
+    all: a temporary file, then a rename. Raises OSError."""
+    folder = os.path.dirname(path)
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    os.chmod(folder, 0o700)
+    tmp = path + '.tmp'
+    with os.fdopen(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w', encoding='utf-8') as f:
+        json.dump(state, f)
+    os.chmod(tmp, 0o600)            # O_CREAT keeps an older file's mode
+    os.replace(tmp, path)
 
 
 def duration_text(seconds):

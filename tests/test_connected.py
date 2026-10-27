@@ -5,9 +5,12 @@ CONNECTED_PY=<path> points the suite at another copy (used by mutate.py).
 """
 import calendar
 import importlib.util
+import json
 import os
 import pathlib
+import stat
 import sys
+import tempfile
 import time
 import unittest
 
@@ -242,6 +245,194 @@ class Discovery(unittest.TestCase):
     def test_only_sightings_on_internal_networks_count(self):
         self.assertEqual(connected.discovery_state(self.rows(5, device='igb0'), NETS, T0),
                          {'state': 'idle', 'last': None})
+
+
+LEASES = [{'mac': '00:00:5e:00:53:02', 'ip': '198.51.100.21', 'hostname': 'sensor', 'expires': T0 + 3600},
+          {'mac': '00:00:5e:00:53:05', 'ip': '192.0.2.50', 'hostname': '', 'expires': T0 + 3600}]
+RESERVATIONS = [{'host': 'Laptop-Example', 'macs': ['00:00:5e:00:53:01'], 'ips': []},
+                {'host': 'Tv-Example', 'macs': [], 'ips': ['192.0.2.30']},
+                {'host': 'Two-Macs', 'macs': ['00:00:5e:00:53:07', '00:00:5e:00:53:08'], 'ips': ['192.0.2.70']},
+                {'host': 'Tablet-Example', 'macs': ['00:00:5e:00:53:04'], 'ips': []}]
+PEER_NAMES = {'KEYA': 'Phone-Example'}
+LIST_STATE = {'run': T0 - 60, 'started': T0 - 7200, 'error': '', 'visits': {
+    '00:00:5e:00:53:01': {'start': T0 - 8040, 'last': T0},
+    '00:00:5e:00:53:02': {'start': None, 'last': T0 - 600},
+    'wg:KEYA': {'start': T0 - 2700, 'last': T0 - 300}}}
+
+
+def lists(sightings=S, leases=LEASES, wg=WG, peer_names=PEER_NAMES, tracking=True):
+    return connected.connected_list(NETS, sightings, leases, RESERVATIONS, wg, peer_names, LIST_STATE, tracking, T0)
+
+
+def seen(ip, age=0, mac='00:00:5e:00:53:99'):
+    """A sighting as sightings() makes it: an address on the LAN, seen `age` seconds ago."""
+    return {mac: {'last': T0 - age, 'ip': ip, 'ip_at': T0 - age, 'vendor': '', 'first': None, 'heard': None,
+                  'device': 'igb1'}}
+
+
+def rows(groups):
+    return [[g['name'], g['vpn'], [[d['name'], d['ip']] for d in g['devices']]] for g in groups]
+
+
+def times(d):
+    return [d['since'], d['before'], d['for']]
+
+
+class Lists(unittest.TestCase):
+    def test_grouped_by_network_vpn_last_named_before_unnamed(self):
+        self.assertEqual(rows(lists()['groups']), [
+            ['LAN', False, [['Laptop-Example', '192.0.2.10'], ['Tv-Example', '192.0.2.30'], ['', '192.0.2.50']]],
+            ['OPT1', False, [['sensor', '198.51.100.21']]],
+            ['VPN', True, [['Phone-Example', '198.51.100.3']]]])
+
+    def test_the_leases_address_beats_the_sightings(self):
+        self.assertEqual(lists()['groups'][1]['devices'][0]['ip'], '198.51.100.21')
+
+    def test_since_before_for(self):
+        g = lists()['groups']
+        self.assertEqual([times(g[0]['devices'][0]), times(g[1]['devices'][0]), times(g[2]['devices'][0])],
+                         [[T0 - 8040, None, '2 h 14 min'], [None, T0 - 7200, ''], [T0 - 2700, None, '45 min']])
+
+    def test_last_seen_is_host_discoverys_time_none_from_the_arp_table_alone_a_vpn_clients_handshake(self):
+        self.assertEqual([d['last_seen'] for g in lists()['groups'] for d in g['devices']],
+                         [None, T0 - 60, T0 - 1200, T0 - 600, T0 - 300])
+
+    def test_not_connected_newest_first_a_device_by_reservation_and_last_address_a_vpn_client_by_handshake(self):
+        self.assertEqual([[d['name'], d['ip'], d['mac'], d['vpn'], d['last_seen']] for d in lists()['recent']],
+                         [['', '198.51.100.4', '', True, T0 - 301],
+                          ['Tablet-Example', '192.0.2.40', '00:00:5e:00:53:04', False, T0 - 1201]])
+
+    def test_a_device_not_connected_keeps_its_vendor_and_first_sighting(self):
+        recent = lists()['recent'][1]
+        self.assertEqual([recent['vendor'], recent['first_seen']], ['', utc('2026-09-20T01:00:00Z')])
+
+    def test_7_days_is_the_limit_inclusive_for_devices_and_vpn_clients_a_peer_that_never_connected_left_out(self):
+        week = {**seen('192.0.2.81', 604800, '00:00:5e:00:53:61'), **seen('192.0.2.82', 604801, '00:00:5e:00:53:62')}
+        for s in week.values():
+            s['heard'] = s['last']
+        peers = [{'key': 'KEYE', 'handshake': T0 - 604800, 'ip': '198.51.100.6'},
+                 {'key': 'KEYF', 'handshake': T0 - 604801, 'ip': '198.51.100.7'},
+                 {'key': 'KEYG', 'handshake': 0, 'ip': '198.51.100.8'}]
+        self.assertEqual([d['ip'] for d in lists(week, [], peers, {})['recent']], ['192.0.2.81', '198.51.100.6'])
+
+    def test_without_host_discovery_no_device_is_listed_as_not_connected_only_vpn_clients(self):
+        arp_only = connected.sightings(NETS, ARP, {'source': 'arp-ndp', 'rows': HW['rows']}, T0)
+        self.assertEqual([d['ip'] for d in lists(arp_only)['recent']], ['198.51.100.4'])
+
+    def test_tracking_off_leaves_the_times_empty(self):
+        self.assertEqual({tuple(times(d)) for g in lists(tracking=False)['groups'] for d in g['devices']},
+                         {(None, None, '')})
+
+    def test_a_reservation_with_two_macs_matches_either(self):
+        two = {**S, **seen('192.0.2.71', 0, '00:00:5e:00:53:08')}
+        self.assertEqual({d['ip']: d['name'] for d in lists(two)['groups'][0]['devices']}['192.0.2.71'], 'Two-Macs')
+
+    def test_unnamed_sorted_by_number_not_text(self):
+        more = {**S, **seen('192.0.2.100', 0, '00:00:5e:00:53:21'), **seen('192.0.2.9', 0, '00:00:5e:00:53:22')}
+        self.assertEqual([d['ip'] for d in lists(more)['groups'][0]['devices'] if d['name'] == ''],
+                         ['192.0.2.9', '192.0.2.50', '192.0.2.100'])
+
+    def test_a_vpn_row_has_no_mac_vendor_or_first_seen(self):
+        phone = lists()['groups'][2]['devices'][0]
+        self.assertEqual([phone['mac'], phone['vendor'], phone['first_seen']], ['', '', None])
+
+    def test_names_in_natural_order_9_before_10(self):
+        more = {**S, **seen('192.0.2.61', 0, '00:00:5e:00:53:31'), **seen('192.0.2.62', 0, '00:00:5e:00:53:32')}
+        leases = LEASES + [{'mac': '00:00:5e:00:53:31', 'ip': '192.0.2.61', 'hostname': 'Device-10', 'expires': T0 + 3600},
+                           {'mac': '00:00:5e:00:53:32', 'ip': '192.0.2.62', 'hostname': 'Device-9', 'expires': T0 + 3600}]
+        self.assertEqual([d['name'] for d in lists(more, leases)['groups'][0]['devices'] if d['name']],
+                         ['Device-9', 'Device-10', 'Laptop-Example', 'Tv-Example'])
+
+    def test_recent_never_after_now(self):
+        row = ['igb1', '00:00:5e:00:53:23', '192.0.2.23', '', ago(1000), ago(-60)]
+        future = connected.sightings(NETS, [], {'source': 'discovery', 'rows': [row]}, T0)
+        got = lists(future, [], [{'key': 'KEYZ', 'handshake': T0 + 60, 'ip': '198.51.100.9'}], {})
+        self.assertEqual([[d['ip'], d['last_seen']] for g in got['groups'] for d in g['devices']] + got['recent'],
+                         [['192.0.2.23', T0], ['198.51.100.9', T0]])
+
+    def test_peer_without_slash32_listed_without_address(self):
+        sites = [{'key': 'KEYS', 'handshake': T0 - 10, 'ip': ''}, {'key': 'KEYT', 'handshake': T0 - 4000, 'ip': ''}]
+        got = lists({}, [], sites, {'KEYS': 'Site-Example', 'KEYT': 'Site-Example-2'})
+        self.assertEqual([rows(got['groups']), [[d['name'], d['ip'], d['vpn']] for d in got['recent']]],
+                         [[['VPN', True, [['Site-Example', '']]]], [['Site-Example-2', '', True]]])
+
+
+class Natural(unittest.TestCase):
+    def test_natural_key_orders_9_before_10_and_ignores_case(self):
+        self.assertEqual(sorted(['device-10', 'Device-9', 'device-1b', 'Device-1a'], key=connected.natural_key),
+                         ['Device-1a', 'device-1b', 'Device-9', 'device-10'])
+
+
+STATE = {'run': T0 - 60, 'started': T0 - 9000, 'error': '', 'visits': {
+    'a': {'start': T0 - 8000, 'last': T0 - 120},
+    'b': {'start': T0 - 5000, 'last': T0 - 2000},
+    'c': {'start': T0 - 4000, 'last': T0 - 1830},
+    'd': {'start': T0 - 3000, 'last': T0 - 1000},
+    'e': {'start': T0 - 3000, 'last': T0 - 1801}}}
+PRESENT = {'a': T0 - 30, 'b': T0 - 10, 'c': T0 - 30}
+EMPTY = {'run': None, 'started': None, 'error': '', 'visits': {}}
+
+
+class Visits(unittest.TestCase):
+    def test_first_run(self):
+        self.assertEqual(connected.track_visits(connected.read_state('/nonexistent'), {'m1': T0 - 30}, T0),
+                         {'run': T0, 'started': T0, 'error': '', 'visits': {'m1': {'start': None, 'last': T0 - 30}}})
+
+    def test_continue_new_after_gap_gap_is_inclusive_absent_kept_then_dropped(self):
+        self.assertEqual(connected.track_visits(STATE, PRESENT, T0)['visits'], {
+            'a': {'start': T0 - 8000, 'last': T0 - 30},
+            'b': {'start': T0 - 10, 'last': T0 - 10},
+            'c': {'start': T0 - 4000, 'last': T0 - 30},
+            'd': {'start': T0 - 3000, 'last': T0 - 1000}})
+
+    def test_tracking_paused_longer_than_the_gap_starts_afresh(self):
+        paused = connected.track_visits({**STATE, 'run': T0 - 1801}, PRESENT, T0)
+        self.assertEqual([paused['started'], paused['visits']],
+                         [T0, {'a': {'start': None, 'last': T0 - 30}, 'b': {'start': None, 'last': T0 - 10},
+                               'c': {'start': None, 'last': T0 - 30}}])
+
+    def test_a_clock_gone_back_starts_afresh(self):
+        back = connected.track_visits({**STATE, 'run': T0 + 500}, PRESENT, T0)
+        self.assertEqual([back['started'], sorted(back['visits'])], [T0, ['a', 'b', 'c']])
+        self.assertEqual({v['start'] for v in back['visits'].values()}, {None})
+
+
+class StateFile(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.dir = os.path.join(self.tmp.name, 'topdevices')
+        self.path = os.path.join(self.dir, 'connected.json')
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_root_only_through_its_directory_nothing_left_behind_read_back_the_same(self):
+        os.mkdir(self.dir, 0o755)                     # an older directory: tightened too
+        os.chmod(self.dir, 0o755)
+        written = connected.track_visits(STATE, PRESENT, T0)
+        connected.write_state(self.path, written)
+        self.assertEqual([oct(stat.S_IMODE(os.stat(self.path).st_mode)), oct(stat.S_IMODE(os.stat(self.dir).st_mode)),
+                          os.path.exists(self.path + '.tmp'), connected.read_state(self.path)],
+                         ['0o600', '0o700', False, written])
+
+    def test_the_directory_is_made_when_missing(self):
+        connected.write_state(self.path, EMPTY)
+        self.assertEqual([oct(stat.S_IMODE(os.stat(self.dir).st_mode)), connected.read_state(self.path)],
+                         ['0o700', EMPTY])
+
+    def test_junk_reads_as_empty(self):
+        os.mkdir(self.dir)
+        with open(self.path, 'w') as f:
+            f.write('{oops')
+        self.assertEqual(connected.read_state(self.path), EMPTY)
+
+    def test_a_visit_of_the_wrong_shape_is_dropped(self):
+        os.mkdir(self.dir)
+        with open(self.path, 'w') as f:
+            json.dump({'run': T0, 'started': 'yesterday', 'error': 5, 'visits': {
+                'ok': {'start': None, 'last': T0}, 'bad': {'start': 'x', 'last': T0}, 'worse': [1, 2]}}, f)
+        self.assertEqual(connected.read_state(self.path),
+                         {'run': T0, 'started': None, 'error': '', 'visits': {'ok': {'start': None, 'last': T0}}})
 
 
 if __name__ == '__main__':
